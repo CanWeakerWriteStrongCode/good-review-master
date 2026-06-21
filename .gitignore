@@ -1,0 +1,12 @@
+# IDE
+/.idea/
+/.vscode/
+/.claude/
+
+# 编译产物
+*.exe
+good-review-master
+
+# 配置文件（含真实密钥，不提交；config_example.yaml 作为模板会提交）
+/config.yaml
+/config.json
