@@ -28,7 +28,7 @@
 
 - **@机器人 + 关键词触发**：群内 @机器人并说出关键词（如"锐评下"），即可触发大模型生成回复
 - **群聊上下文感知**：基于最近的群聊记录生成上下文相关的锐评，不是无脑随机回复
-- **插件式命令扩展**：在 `config.yaml` 里加配置 + `cmd/` 下写 handler → 一行路由注册，即可新增命令
+- **插件式命令扩展**：在 `prompts.yaml` 里加配置 + `cmd/` 下写 handler → 一行路由注册，即可新增命令
 - **白名单机制**：只响应指定群号，安全可控
 - **纯内网通信**：Go 后端通过 HTTP 轮询 NapCatQQ 本地 API，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
@@ -69,8 +69,9 @@ cd good-review-master
 
 # 2. 创建配置文件
 cp config_example.yaml config.yaml
+cp prompts_example.yaml prompt.yaml
 
-# 3. 编辑 config.yaml，填入你的配置（详见下方配置说明）
+# 3. 编辑 config.yaml 和 prompt.yaml，填入你的配置（详见下方配置说明）
 
 # 4. 运行
 # Windows：双击 start_main.bat
@@ -105,24 +106,9 @@ go run .
 | `runtime.max_msg_rune` | 单条消息最大字符数 | `200` |
 | `runtime.poll_interval_sec` | 轮询间隔（秒） | `3` |
 
-### 命令配置示例
+### 命令提示词配置
 
-```yaml
-cmd:
-  sharptake:
-    keyword: "锐评下"
-    prompt: |
-      你是【不是好评大师】，群聊毒舌锐评机器人。
-      规则：
-      1. 基于群聊记录，做犀利、幽默、一针见血的总结
-      2. 禁止人身攻击、违规内容
-      3. 字数控制在80字以内，口语化，不啰嗦
-      4. 直接输出锐评结果，不要多余解释
-      5. 优先考虑最近的几条记录
-  whoami:
-    keyword: "你是谁"
-    prompt: "你是一个诚实的大模型助手，直接回答你是什么模型即可。"
-```
+命令提示词单独存放在 `prompts.yaml` 中（不常变动），详见 `prompts_example.yaml` 模板。
 
 ## 📁 项目结构
 
@@ -130,7 +116,8 @@ cmd:
 good-review-master/
 ├── main.go              # 入口：初始化配置、大模型客户端，启动轮询
 ├── config/
-│   └── config.go        # 配置加载（config.yaml → struct）
+│   ├── config.go        # 运行时配置加载（config.yaml → struct）
+│   └── prompts.go       # 提示词配置加载（prompts.yaml → struct）
 ├── cache/
 │   └── cache.go         # 消息环形缓冲区（按群维度、去重）
 ├── llm/
@@ -145,7 +132,10 @@ good-review-master/
 │   ├── router.go        # 命令路由表
 │   ├── sharptake.go     # "锐评下" 命令
 │   └── whoami.go        # "你是谁" 命令
-├── config_example.yaml  # 配置文件模板
+├── config_example.yaml  # 运行时配置模板
+├── prompts_example.yaml # 提示词配置模板
+├── config.yaml          # 运行时配置（gitignore）
+├── prompts.yaml         # 提示词配置（gitignore）
 ├── start_main.bat       # Windows 启动脚本
 ├── start_main.sh        # Linux 启动脚本
 ├── build_exe.bat        # Windows 编译脚本
@@ -168,7 +158,7 @@ config → (无内部依赖)
 
 三步完成，无需改动 `config/config.go`：
 
-**1. 在 `config.yaml` 的 `cmd:` 下添加配置**
+**1. 在 `prompts.yaml` 的 `cmd:` 下添加配置**
 
 ```yaml
 cmd:
@@ -217,7 +207,8 @@ func weather(event onebot.Event, groupID string, prompt string) {
 git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
 cp config_example.yaml config.yaml
-# Edit config.yaml with your settings, then:
+cp prompts_example.yaml prompt.yaml
+# Edit config.yaml and prompt.yaml with your settings, then:
 go run .
 ```
 

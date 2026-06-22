@@ -7,6 +7,5 @@
 *.exe
 good-review-master
 
-# 配置文件（含真实密钥，不提交；config_example.yaml 作为模板会提交）
+# 配置文件（含真实配置，不提交；*_example.yaml 作为模板会提交）
 /config.yaml
-/config.json

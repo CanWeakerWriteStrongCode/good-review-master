@@ -34,15 +34,6 @@ type LLMConf struct {
 // LLMConfig 大模型配置实例
 var LLMConfig LLMConf
 
-// CmdConf 命令配置（keyword + prompt）
-type CmdConf struct {
-	Keyword string `yaml:"keyword"`
-	Prompt  string `yaml:"prompt"`
-}
-
-// CmdConfigs 所有命令配置（key=命令名）
-var CmdConfigs map[string]CmdConf
-
 type configFile struct {
 	NapCat struct {
 		HTTPAPI     string `yaml:"http_api"`
@@ -52,7 +43,6 @@ type configFile struct {
 		QQ          string `yaml:"qq"`
 		AllowGroups string `yaml:"allow_groups"`
 	} `yaml:"bot"`
-	Cmd     map[string]CmdConf `yaml:"cmd"`
 	Runtime struct {
 		MaxCacheMsg     int `yaml:"max_cache_msg"`
 		LLMTimeoutSec   int `yaml:"llm_timeout_sec"`
@@ -68,17 +58,29 @@ type configFile struct {
 	} `yaml:"llm"`
 }
 
-func init() {
-	configPath := "config.yaml" // 优先工作目录（开发时 go run）
-	if _, err := os.Stat(configPath); err != nil {
-		// 其次 exe 所在目录（打包部署）
-		if exePath, err := os.Executable(); err == nil {
-			configPath = filepath.Join(filepath.Dir(exePath), "config.yaml")
+// resolveConfigPath 查找配置文件路径：优先工作目录，其次 exe 所在目录
+func resolveConfigPath(filename string) string {
+	for _, dir := range []string{".", exeDir()} {
+		p := filepath.Join(dir, filename)
+		if _, err := os.Stat(p); err == nil {
+			return p
 		}
 	}
-	raw, err := os.ReadFile(configPath)
+	return filename // 返回默认路径，后续 ReadFile 失败会报错
+}
+
+func exeDir() string {
+	if exePath, err := os.Executable(); err == nil {
+		return filepath.Dir(exePath)
+	}
+	return "."
+}
+
+func init() {
+	path := resolveConfigPath("config.yaml")
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		slog.Error("无法读取 config.yaml", "path", configPath, "err", err)
+		slog.Error("无法读取 config.yaml", "path", path, "err", err)
 		os.Exit(1)
 	}
 	var cf configFile
@@ -95,7 +97,6 @@ func init() {
 	LLMTimeout = time.Duration(cf.Runtime.LLMTimeoutSec) * time.Second
 	MaxMsgRune = cf.Runtime.MaxMsgRune
 	PollInterval = time.Duration(cf.Runtime.PollIntervalSec) * time.Second
-	CmdConfigs = cf.Cmd
 
 	LLMConfig = LLMConf{
 		Provider:    cf.LLM.Provider,

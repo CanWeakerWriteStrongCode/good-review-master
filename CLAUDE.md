@@ -32,7 +32,7 @@ No circular dependencies. `bot` is the top-level orchestrator; `cmd` handles com
 
 ### Config loading (`config/`)
 
-`config.yaml` is read at startup via `init()` in `config/config.go`. The struct uses `map[string]CmdConf` for the `cmd:` section — each command's keyword and prompt are parsed automatically. No per-command struct fields needed in config.
+`config.yaml` is read at startup via `init()` in `config/config.go`. Prompts are loaded separately from `prompt.yaml` via `init()` in `config/prompt.go`.
 
 All config values are exported as package-level vars (e.g., `config.BotQQ`, `config.LLMConfig`, `config.CmdConfigs`).
 
@@ -73,7 +73,7 @@ Per-group `GroupMsgCache`, initialized lazily via `GetGroupCache(groupID)`. Fixe
 
 Three steps, no changes to `config/config.go` needed:
 
-1. Add config in `config.yaml` under `cmd:`:
+1. Add config in `prompt.yaml` under `cmd:`:
    ```yaml
    weather:
      keyword: "天气"
@@ -96,4 +96,5 @@ Three steps, no changes to `config/config.go` needed:
 
 - `config.yaml` contains real credentials — NOT committed to git (the user manages this manually)
 - `config_example.yaml` is the template for new users
+- `prompt.yaml` contains LLM prompts — also NOT committed (user creates from `prompts_example.yaml`)
 - YAML with `#` comments, standard Go yaml.v3 parsing
