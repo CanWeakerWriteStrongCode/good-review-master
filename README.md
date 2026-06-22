@@ -60,7 +60,7 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 已安装并登录（HTTP 服务已开启）
 - 一个 OpenAI 兼容的大模型 API Key（DeepSeek、豆包、通义千问等均可）
 
-### 步骤
+### 代码启动
 
 ```bash
 # 1. 克隆仓库
@@ -80,11 +80,12 @@ cp config_example.yaml config.yaml
 go run .
 ```
 
-### 打包为可执行文件
+### 打包为可执行文件启动
 
 ```bash
 # Windows：双击 build_exe.bat
 # Linux：./build_linux.sh
+# config.yaml 配置和 prompt.yaml 配置放到exe同目录下，运行即可
 ```
 
 ## ⚙ 配置说明
