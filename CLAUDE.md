@@ -32,7 +32,7 @@ No circular dependencies. `bot` is the top-level orchestrator; `cmd` handles com
 
 ### Config loading (`config/`)
 
-`config.yaml` is read at startup via `init()` in `config/config.go`. Prompts are loaded separately from `prompt.yaml` via `init()` in `config/prompt.go`.
+`config.yaml` is read at startup via `init()` in `config/config.go`. Prompt are loaded separately from `prompt.yaml` via `init()` in `config/prompt.go`.
 
 All config values are exported as package-level vars (e.g., `config.BotQQ`, `config.LLMConfig`, `config.CmdConfigs`).
 
@@ -96,5 +96,5 @@ Three steps, no changes to `config/config.go` needed:
 
 - `config.yaml` contains real credentials — NOT committed to git (the user manages this manually)
 - `config_example.yaml` is the template for new users
-- `prompt.yaml` contains LLM prompts — also NOT committed (user creates from `prompts_example.yaml`)
+- `prompt.yaml` contains LLM prompt — also NOT committed (user creates from `prompts_example.yaml`)
 - YAML with `#` comments, standard Go yaml.v3 parsing

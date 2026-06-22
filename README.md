@@ -28,7 +28,7 @@
 
 - **@机器人 + 关键词触发**：群内 @机器人并说出关键词（如"锐评下"），即可触发大模型生成回复
 - **群聊上下文感知**：基于最近的群聊记录生成上下文相关的锐评，不是无脑随机回复
-- **插件式命令扩展**：在 `prompts.yaml` 里加配置 + `cmd/` 下写 handler → 一行路由注册，即可新增命令
+- **插件式命令扩展**：在 `prompt.yaml` 里加配置 + `cmd/` 下写 handler → 一行路由注册，即可新增命令
 - **白名单机制**：只响应指定群号，安全可控
 - **纯内网通信**：Go 后端通过 HTTP 轮询 NapCatQQ 本地 API，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
@@ -69,7 +69,7 @@ cd good-review-master
 
 # 2. 创建配置文件
 cp config_example.yaml config.yaml
-cp prompts_example.yaml prompt.yaml
+cp prompt_example.yaml prompt.yaml
 
 # 3. 编辑 config.yaml 和 prompt.yaml，填入你的配置（详见下方配置说明）
 
@@ -108,7 +108,7 @@ go run .
 
 ### 命令提示词配置
 
-命令提示词单独存放在 `prompts.yaml` 中（不常变动），详见 `prompts_example.yaml` 模板。
+命令提示词单独存放在 `prompt.yaml` 中（不常变动），详见 `prompt_example.yaml` 模板。
 
 ## 📁 项目结构
 
@@ -117,7 +117,7 @@ good-review-master/
 ├── main.go              # 入口：初始化配置、大模型客户端，启动轮询
 ├── config/
 │   ├── config.go        # 运行时配置加载（config.yaml → struct）
-│   └── prompts.go       # 提示词配置加载（prompts.yaml → struct）
+│   └── prompt.go       # 提示词配置加载（prompt.yaml → struct）
 ├── cache/
 │   └── cache.go         # 消息环形缓冲区（按群维度、去重）
 ├── llm/
@@ -133,9 +133,9 @@ good-review-master/
 │   ├── sharptake.go     # "锐评下" 命令
 │   └── whoami.go        # "你是谁" 命令
 ├── config_example.yaml  # 运行时配置模板
-├── prompts_example.yaml # 提示词配置模板
+├── prompt_example.yaml # 提示词配置模板
 ├── config.yaml          # 运行时配置（gitignore）
-├── prompts.yaml         # 提示词配置（gitignore）
+├── prompt.yaml         # 提示词配置（gitignore）
 ├── start_main.bat       # Windows 启动脚本
 ├── start_main.sh        # Linux 启动脚本
 ├── build_exe.bat        # Windows 编译脚本
@@ -158,7 +158,7 @@ config → (无内部依赖)
 
 三步完成，无需改动 `config/config.go`：
 
-**1. 在 `prompts.yaml` 的 `cmd:` 下添加配置**
+**1. 在 `prompt.yaml` 的 `cmd:` 下添加配置**
 
 ```yaml
 cmd:
@@ -207,7 +207,7 @@ func weather(event onebot.Event, groupID string, prompt string) {
 git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
 cp config_example.yaml config.yaml
-cp prompts_example.yaml prompt.yaml
+cp prompt_example.yaml prompt.yaml
 # Edit config.yaml and prompt.yaml with your settings, then:
 go run .
 ```
