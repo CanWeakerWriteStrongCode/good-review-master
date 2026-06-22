@@ -67,11 +67,10 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
 
-# 2. 创建配置文件
+# 2. 复制创建配置文件config_example.yaml 名字改成 config.yaml
 cp config_example.yaml config.yaml
-cp prompt_example.yaml prompt.yaml
 
-# 3. 编辑 config.yaml 和 prompt.yaml，填入你的配置（详见下方配置说明）
+# 3. 编辑 config.yaml，填入你的配置（详见下方配置说明），编辑prompt.yaml可以修改不同功能的提示词
 
 # 4. 运行
 # Windows：双击 start_main.bat
@@ -207,7 +206,6 @@ func weather(event onebot.Event, groupID string, prompt string) {
 git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
 cp config_example.yaml config.yaml
-cp prompt_example.yaml prompt.yaml
 # Edit config.yaml and prompt.yaml with your settings, then:
 go run .
 ```
