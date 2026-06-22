@@ -107,7 +107,7 @@ go run .
 
 ### 命令提示词配置
 
-命令提示词单独存放在 `prompt.yaml` 中（不常变动），详见 `prompt_example.yaml` 模板。
+命令提示词单独存放在 `prompt.yaml` 中（不常变动）。
 
 ## 📁 项目结构
 
@@ -132,7 +132,6 @@ good-review-master/
 │   ├── sharptake.go     # "锐评下" 命令
 │   └── whoami.go        # "你是谁" 命令
 ├── config_example.yaml  # 运行时配置模板
-├── prompt_example.yaml # 提示词配置模板
 ├── config.yaml          # 运行时配置（gitignore）
 ├── prompt.yaml         # 提示词配置（gitignore）
 ├── start_main.bat       # Windows 启动脚本

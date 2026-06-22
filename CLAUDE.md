@@ -96,5 +96,5 @@ Three steps, no changes to `config/config.go` needed:
 
 - `config.yaml` contains real credentials — NOT committed to git (the user manages this manually)
 - `config_example.yaml` is the template for new users
-- `prompt.yaml` contains LLM prompt — also NOT committed (user creates from `prompts_example.yaml`)
+- `prompt.yaml` contains LLM prompt — also NOT committed
 - YAML with `#` comments, standard Go yaml.v3 parsing
