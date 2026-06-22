@@ -134,7 +134,7 @@ good-review-master/
 │   └── whoami.go        # "你是谁" 命令
 ├── config_example.yaml  # 运行时配置模板
 ├── config.yaml          # 运行时配置（gitignore）
-├── prompt.yaml         # 提示词配置（gitignore）
+├── prompt.yaml         # 提示词配置
 ├── start_main.bat       # Windows 启动脚本
 ├── start_main.sh        # Linux 启动脚本
 ├── build_exe.bat        # Windows 编译脚本
