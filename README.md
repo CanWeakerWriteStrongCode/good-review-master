@@ -28,7 +28,7 @@
 
 - **@机器人 + 关键词触发**：群内 @机器人并说出关键词（如"锐评下"），即可触发大模型生成回复
 - **群聊上下文感知**：基于最近的群聊记录生成上下文相关的锐评，不是无脑随机回复
-- **插件式命令扩展**：在 `prompt.yaml` 里加配置 + `cmd/` 下写 handler → 一行路由注册，即可新增命令
+- **插件式命令扩展**：在 `prompt.yaml` 里加配置即可新增同类型命令变体，无需改代码
 - **白名单机制**：只响应指定群号，安全可控
 - **纯内网通信**：Go 后端通过 HTTP 轮询 NapCatQQ 本地 API，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
@@ -109,7 +109,41 @@ go run .
 
 ### 命令提示词配置
 
-命令提示词单独存放在 `prompt.yaml` 中（不常变动）。
+命令提示词存放在 `prompt.yaml` 中，采用 list 格式，同一类型命令可配多个 keyword + prompt 变体：
+
+```yaml
+cmd:
+  chat_review:            # 形式：发送最近群聊记录给大模型
+    - keyword: "锐评下"
+      prompt: |
+        你是群聊毒舌锐评机器人。
+        规则：...
+    - keyword: "猫娘来看看"
+      prompt: |
+        你是一只可爱的猫娘...
+  direct_ask:             # 形式：直接问大模型，无聊天上下文
+    - keyword: "你是谁"
+      prompt: "直接回答你是什么大模型"
+```
+
+新增同类型变体只需在对应列表下加一项，无需改 Go 代码。
+
+### 群内动态添加命令
+
+在群里 @机器人 发送以下格式，即可动态添加命令到 `prompt_custom.yaml`，重启后依然生效：
+
+```
+@机器人 添加永久命令(类型)关键字(关键词)提示词(提示词内容)
+@机器人 添加永久命令(类型)关键字(关键词)大模型想提示词(要点)   # 让大模型帮忙写提示词
+```
+
+示例：
+```
+@机器人 添加永久命令(chat_review)关键字(雌小鬼锐评下)提示词(你是一只嘴臭的雌小鬼，毒舌群友)
+@机器人 添加永久命令(chat_review)关键字(雌小鬼锐评下)大模型想提示词(嘴臭的雌小鬼，毒舌，喜欢说老登)
+```
+
+添加后立即生效，无需重启。动态添加的命令保存在 `prompt_custom.yaml`，与 `prompt.yaml` 分离。
 
 ## 📁 项目结构
 
@@ -130,12 +164,14 @@ good-review-master/
 │   ├── polling.go       # 轮询拉取消息 + 去重
 │   └── handler.go       # 消息处理：白名单检查 → emoji过滤 → 命令路由
 ├── cmd/
-│   ├── router.go        # 命令路由表
-│   ├── sharptake.go     # "锐评下" 命令
-│   └── whoami.go        # "你是谁" 命令
+│   ├── router.go        # 命令路由表（动态生成 + 系统路由）
+│   ├── addcommand.go    # 群内动态添加命令
+│   ├── sharptake.go     # chat_review 处理函数
+│   └── whoami.go        # direct_ask 处理函数
 ├── config_example.yaml  # 运行时配置模板
 ├── config.yaml          # 运行时配置（gitignore）
-├── prompt.yaml         # 提示词配置
+├── prompt.yaml          # 提示词配置
+├── prompt_custom.yaml   # 动态添加的提示词（gitignore，程序自动创建）
 ├── start_main.bat       # Windows 启动脚本
 ├── start_main.sh        # Linux 启动脚本
 ├── build_exe.bat        # Windows 编译脚本
@@ -156,15 +192,29 @@ config → (无内部依赖)
 
 ## ➕ 扩展新命令
 
-三步完成，无需改动 `config/config.go`：
+### 在 prompt.yaml 中添加同类型变体（无需改代码）
 
-**1. 在 `prompt.yaml` 的 `cmd:` 下添加配置**
+在 `chat_review` 或 `direct_ask` 列表下新增一项即可：
+
+```yaml
+cmd:
+  chat_review:
+    - keyword: "雌小鬼锐评下"
+      prompt: |
+        你是嘴臭的雌小鬼...
+```
+
+### 新增命令类型（需写代码）
+
+三步完成：
+
+**1. 在 `prompt.yaml` 的 `cmd:` 下添加新类型配置**
 
 ```yaml
 cmd:
   weather:
-    keyword: "天气"
-    prompt: "你是天气助手..."
+    - keyword: "天气"
+      prompt: "你是天气助手..."
 ```
 
 **2. 在 `cmd/` 下新建 handler 文件**（如 `weather.go`）
@@ -178,14 +228,14 @@ func weather(event onebot.Event, groupID string, prompt string) {
 }
 ```
 
-**3. 在 `cmd/router.go` 注册路由**
+**3. 在 `cmd/router.go` 的 `handlerMap` 注册**
 
 ```go
-{
-    Keyword: config.CmdConfigs["weather"].Keyword,
-    Prompt:  config.CmdConfigs["weather"].Prompt,
-    Handler: weather,
-},
+var handlerMap = map[string]func(onebot.Event, string, string){
+    "chat_review": sharpTake,
+    "direct_ask":  whoami,
+    "weather":     weather,  // 新增这一行
+}
 ```
 
 ## 🌐 部署说明

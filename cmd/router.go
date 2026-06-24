@@ -21,10 +21,21 @@ var handlerMap = map[string]func(onebot.Event, string, string){
 	"direct_ask":  whoami,
 }
 
-// Routes 路由表（由 init 根据 CmdConfigs 动态生成）
+// Routes 路由表（由 RebuildRoutes 动态生成）
 var Routes []Route
 
 func init() {
+	RebuildRoutes()
+}
+
+// RebuildRoutes 重建路由表（系统路由 + 用户路由）
+func RebuildRoutes() {
+	Routes = nil
+
+	// 系统路由（硬编码）
+	Routes = append(Routes, Route{Keyword: "添加永久命令", Handler: addCommand})
+
+	// 用户路由（从 CmdConfigs 生成）
 	for cmdName, entries := range config.CmdConfigs {
 		handler := handlerMap[cmdName]
 		for _, entry := range entries {

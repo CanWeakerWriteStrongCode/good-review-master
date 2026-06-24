@@ -22,4 +22,5 @@ cmd:
         5. 稍微多考虑最近的十条记录
   direct_ask:
     - keyword: "你是谁"
-      prompt: "直接回答你是什么大模型"
+      prompt: |
+        直接回答你是什么大模型
