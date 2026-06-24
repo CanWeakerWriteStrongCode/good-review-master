@@ -12,7 +12,7 @@ import (
 	"good-review-master/onebot"
 )
 
-var addCmdRe = regexp.MustCompile(`添加永久命令\((\w+)\)关键字\((.+?)\)(提示词|大模型想提示词)\((.+)\)`)
+var addCmdRe = regexp.MustCompile(`添加永久指令\((\w+)\)关键字\((.+?)\)(提示词|大模型想提示词)\((.+)\)`)
 
 const promptGenSystem = `你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。`
 
@@ -20,7 +20,7 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 5 {
-		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式：\n添加永久命令(类型)关键字(关键词)提示词(提示词内容)\n添加永久命令(类型)关键字(关键词)大模型想提示词(要点)")
+		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式：\n添加永久指令(类型)关键字(关键词)提示词(提示词内容)\n添加永久指令(类型)关键字(关键词)大模型想提示词(要点)")
 		return
 	}
 	category := matches[1]
@@ -48,20 +48,20 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	}
 
 	if err := config.AddPromptCommand(category, keyword, finalPrompt); err != nil {
-		slog.Error("添加命令失败", "err", err)
-		onebot.SendGroupMessage(groupID, "❌ 添加命令失败: "+err.Error())
+		slog.Error("添加指令失败", "err", err)
+		onebot.SendGroupMessage(groupID, "❌ 添加指令失败: "+err.Error())
 		return
 	}
 	config.ReloadPrompts()
 	RebuildRoutes()
-	onebot.SendGroupMessage(groupID, "✅ 命令已添加: "+keyword)
+	onebot.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
 }
 
 func listCommands(event onebot.Event, groupID string, _ string) {
 	var sb strings.Builder
 	sb.WriteString("可用指令：")
 	for _, r := range Routes {
-		if r.Keyword == "" || r.Keyword == "添加永久命令" || r.Keyword == "帮助" || r.Keyword == "指令" {
+		if r.Keyword == "" || r.Keyword == "添加永久指令" || r.Keyword == "帮助" || r.Keyword == "指令" {
 			continue
 		}
 		sb.WriteString("\n- " + r.Keyword)

@@ -8,7 +8,7 @@ import (
 	"good-review-master/onebot"
 )
 
-// Route 命令路由
+// Route 指令路由
 type Route struct {
 	Keyword     string
 	Prompt      string
@@ -16,7 +16,7 @@ type Route struct {
 	Handler     func(event onebot.Event, groupID string, prompt string)
 }
 
-// handlerMap 命令名 → 处理函数
+// handlerMap 指令名 → 处理函数
 var handlerMap = map[string]func(onebot.Event, string, string){
 	"chat_review": sharpTake,
 	"direct_ask":  whoami,
@@ -35,7 +35,7 @@ func RebuildRoutes() {
 
 	// 系统路由（硬编码，不在 prompt_system.yaml 中）
 	Routes = append(Routes,
-		Route{Keyword: "添加永久命令", Handler: addCommand},
+		Route{Keyword: "添加永久指令", Handler: addCommand},
 		Route{Keyword: "帮助", Handler: listCommands},
 	)
 

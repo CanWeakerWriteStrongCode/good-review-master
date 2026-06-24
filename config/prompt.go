@@ -9,13 +9,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CmdConf 命令配置（keyword + prompt）
+// CmdConf 指令配置（keyword + prompt）
 type CmdConf struct {
 	Keyword string `yaml:"keyword"`
 	Prompt  string `yaml:"prompt"`
 }
 
-// CmdConfigs 所有命令配置（key=命令名，合并了 prompt.yaml + prompt_custom.yaml）
+// CmdConfigs 所有指令配置（key=指令名，合并了 prompt.yaml + prompt_custom.yaml）
 var CmdConfigs map[string][]CmdConf
 
 type promptFile struct {
@@ -23,7 +23,7 @@ type promptFile struct {
 	Rules map[string]string    `yaml:"rules"`
 }
 
-// SharedRules prompt_system.yaml 中按命令类型定义的通用规则
+// SharedRules prompt_system.yaml 中按指令类型定义的通用规则
 var SharedRules map[string]string
 
 func init() {
@@ -87,7 +87,7 @@ func KeywordInMainPrompt(category, keyword string) bool {
 	return false
 }
 
-// AddPromptCommand 添加命令到 prompt_custom.yaml
+// AddPromptCommand 添加指令到 prompt_custom.yaml
 func AddPromptCommand(category, keyword, promptText string) error {
 	customPath := customPromptPath()
 	var pf promptFile
