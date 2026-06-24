@@ -17,6 +17,13 @@ var delCmdRe = regexp.MustCompile(`删除关键字\((.+)\)`)
 
 const promptGenSystem = `你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。`
 
+func init() {
+	Register(Command{Keyword: "添加指令", Help: "添加新指令", Category: "internal", Handler: addCommand})
+	Register(Command{Keyword: "删除关键字", Help: "删除关键字", Category: "internal", Handler: deleteCommand})
+	Register(Command{Keyword: "帮助", Help: "查看可用指令", Category: "internal", Handler: listCommands})
+	Register(Command{Keyword: "指令", Help: "查看可用指令", Category: "internal", Handler: listCommands})
+}
+
 func addCommand(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
@@ -80,11 +87,27 @@ func deleteCommand(event onebot.Event, groupID string, _ string) {
 func listCommands(event onebot.Event, groupID string, _ string) {
 	var sb strings.Builder
 	sb.WriteString("可用指令：")
-	for _, r := range Routes {
-		if r.Keyword == "" || r.Keyword == "添加指令" || r.Keyword == "删除关键字" || r.Keyword == "帮助" || r.Keyword == "指令" {
+	for _, cmd := range registry {
+		if cmd.Help == "" {
 			continue
 		}
-		sb.WriteString("\n- " + r.Keyword)
+		sb.WriteString("\n- " + cmd.Keyword + "：" + cmd.Help)
+	}
+	for _, r := range Routes {
+		if r.Keyword == "" {
+			continue
+		}
+		// 跳过已在 registry 中的系统指令
+		isSystem := false
+		for _, cmd := range registry {
+			if cmd.Keyword == r.Keyword {
+				isSystem = true
+				break
+			}
+		}
+		if !isSystem {
+			sb.WriteString("\n- " + r.Keyword)
+		}
 	}
 	onebot.SendGroupMessage(groupID, sb.String())
 }
