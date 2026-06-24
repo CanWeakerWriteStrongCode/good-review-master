@@ -34,8 +34,8 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	category := matches[2]
 	requirements := matches[3]
 
-	if config.KeywordInMainPrompt(category, keyword) {
-		onebot.SendGroupMessage(groupID, "❌ 该 keyword 已在系统指令中存在，禁止覆盖")
+	if config.KeywordInMainPrompt(category, keyword) || IsInternalKeyword(keyword) {
+		onebot.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
 		return
 	}
 
@@ -69,8 +69,8 @@ func deleteCommand(event onebot.Event, groupID string, _ string) {
 	}
 	keyword := matches[1]
 
-	if config.KeywordInMainPromptAny(keyword) {
-		onebot.SendGroupMessage(groupID, "❌ 该关键字在系统指令中，禁止删除")
+	if config.KeywordInMainPromptAny(keyword) || IsInternalKeyword(keyword) {
+		onebot.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止删除")
 		return
 	}
 

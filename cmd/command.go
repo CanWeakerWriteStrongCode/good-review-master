@@ -21,6 +21,16 @@ func Register(cmd Command) {
 	registry = append(registry, cmd)
 }
 
+// IsInternalKeyword 检查关键字是否为内部/系统指令
+func IsInternalKeyword(keyword string) bool {
+	for _, cmd := range registry {
+		if cmd.Keyword == keyword {
+			return true
+		}
+	}
+	return false
+}
+
 // Route 路由条目
 type Route struct {
 	Keyword     string
