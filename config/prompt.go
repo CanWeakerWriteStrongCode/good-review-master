@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -85,6 +86,48 @@ func KeywordInMainPrompt(category, keyword string) bool {
 		}
 	}
 	return false
+}
+
+// KeywordInMainPromptAny 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在
+func KeywordInMainPromptAny(keyword string) bool {
+	raw, err := os.ReadFile(resolveConfigPath("prompt_system.yaml"))
+	if err != nil {
+		return false
+	}
+	var pf promptFile
+	if err := yaml.Unmarshal(raw, &pf); err != nil {
+		return false
+	}
+	for _, entries := range pf.Cmd {
+		for _, e := range entries {
+			if e.Keyword == keyword {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// DeletePromptCommand 从 prompt_custom.yaml 删除指令（按 keyword 全局匹配）
+func DeletePromptCommand(keyword string) error {
+	customPath := customPromptPath()
+	raw, err := os.ReadFile(customPath)
+	if err != nil {
+		return err
+	}
+	var pf promptFile
+	if err := yaml.Unmarshal(raw, &pf); err != nil {
+		return err
+	}
+	for cat, entries := range pf.Cmd {
+		for i, e := range entries {
+			if e.Keyword == keyword {
+				pf.Cmd[cat] = append(entries[:i], entries[i+1:]...)
+				return writePromptCustom(customPath, &pf)
+			}
+		}
+	}
+	return fmt.Errorf("未找到该指令: %s", keyword)
 }
 
 // AddPromptCommand 添加指令到 prompt_custom.yaml

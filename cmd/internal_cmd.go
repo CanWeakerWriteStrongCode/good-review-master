@@ -13,6 +13,7 @@ import (
 )
 
 var addCmdRe = regexp.MustCompile(`添加永久指令\((\w+)\)关键字\((.+?)\)(提示词|大模型想提示词)\((.+)\)`)
+var delCmdRe = regexp.MustCompile(`删除关键字\((.+)\)`)
 
 const promptGenSystem = `你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。`
 
@@ -57,11 +58,34 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	onebot.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
 }
 
+func deleteCommand(event onebot.Event, groupID string, _ string) {
+	content := event.RawMessage
+	matches := delCmdRe.FindStringSubmatch(content)
+	if len(matches) != 2 {
+		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式：删除关键字(关键词)")
+		return
+	}
+	keyword := matches[1]
+
+	if config.KeywordInMainPromptAny(keyword) {
+		onebot.SendGroupMessage(groupID, "❌ 该关键字在系统指令中，禁止删除")
+		return
+	}
+
+	if err := config.DeletePromptCommand(keyword); err != nil {
+		onebot.SendGroupMessage(groupID, "❌ 删除失败: "+err.Error())
+		return
+	}
+	config.ReloadPrompts()
+	RebuildRoutes()
+	onebot.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
+}
+
 func listCommands(event onebot.Event, groupID string, _ string) {
 	var sb strings.Builder
 	sb.WriteString("可用指令：")
 	for _, r := range Routes {
-		if r.Keyword == "" || r.Keyword == "添加永久指令" || r.Keyword == "帮助" || r.Keyword == "指令" {
+		if r.Keyword == "" || r.Keyword == "添加永久指令" || r.Keyword == "删除关键字" || r.Keyword == "帮助" || r.Keyword == "指令" {
 			continue
 		}
 		sb.WriteString("\n- " + r.Keyword)
