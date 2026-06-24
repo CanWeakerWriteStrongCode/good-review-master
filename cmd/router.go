@@ -10,9 +10,10 @@ import (
 
 // Route 命令路由
 type Route struct {
-	Keyword string
-	Prompt  string
-	Handler func(event onebot.Event, groupID string, prompt string)
+	Keyword     string
+	Prompt      string
+	SharedRules string
+	Handler     func(event onebot.Event, groupID string, prompt string)
 }
 
 // handlerMap 命令名 → 处理函数
@@ -38,11 +39,13 @@ func RebuildRoutes() {
 	// 用户路由（从 CmdConfigs 生成）
 	for cmdName, entries := range config.CmdConfigs {
 		handler := handlerMap[cmdName]
+		sharedRules := config.SharedRules[cmdName]
 		for _, entry := range entries {
 			Routes = append(Routes, Route{
-				Keyword: entry.Keyword,
-				Prompt:  entry.Prompt,
-				Handler: handler,
+				Keyword:     entry.Keyword,
+				Prompt:      entry.Prompt,
+				SharedRules: sharedRules,
+				Handler:     handler,
 			})
 		}
 	}
@@ -53,7 +56,8 @@ func RouteMessage(content string, event onebot.Event, groupID string) {
 	text := stripCQPrefix(content)
 	for _, r := range Routes {
 		if strings.HasPrefix(text, r.Keyword) {
-			enrichedPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s", config.BotQQ, config.BotNickname, r.Prompt)
+			finalPrompt := r.Prompt + r.SharedRules
+			enrichedPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s", config.BotQQ, config.BotNickname, finalPrompt)
 			r.Handler(event, groupID, enrichedPrompt)
 			return
 		}

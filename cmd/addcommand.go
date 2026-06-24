@@ -14,7 +14,7 @@ import (
 
 var addCmdRe = regexp.MustCompile(`添加永久命令\((\w+)\)关键字\((.+?)\)(提示词|大模型想提示词)\((.+)\)`)
 
-const promptGenSystem = "你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。"
+const promptGenSystem = `你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。`
 
 func addCommand(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage

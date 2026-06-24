@@ -19,8 +19,12 @@ type CmdConf struct {
 var CmdConfigs map[string][]CmdConf
 
 type promptFile struct {
-	Cmd map[string][]CmdConf `yaml:"cmd"`
+	Cmd   map[string][]CmdConf `yaml:"cmd"`
+	Rules map[string]string    `yaml:"rules"`
 }
+
+// SharedRules prompt_system.yaml 中按命令类型定义的通用规则
+var SharedRules map[string]string
 
 func init() {
 	loadPrompts()
@@ -42,6 +46,7 @@ func loadPrompts() {
 		pf.Cmd = make(map[string][]CmdConf)
 	}
 	CmdConfigs = pf.Cmd
+	SharedRules = pf.Rules
 
 	// 合并 prompt_custom.yaml
 	customPath := customPromptPath()
