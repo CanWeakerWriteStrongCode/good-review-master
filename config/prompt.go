@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -14,7 +15,7 @@ type CmdConf struct {
 	Prompt  string `yaml:"prompt"`
 }
 
-// CmdConfigs 所有命令配置（key=命令名）
+// CmdConfigs 所有命令配置（key=命令名，合并了 prompt.yaml + prompt_custom.yaml）
 var CmdConfigs map[string][]CmdConf
 
 type promptFile struct {
@@ -26,7 +27,7 @@ func init() {
 }
 
 func loadPrompts() {
-	path := resolveConfigPath("prompt.yaml")
+	path := resolveConfigPath("prompt_system.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		slog.Error("无法读取 prompt.yaml", "path", path, "err", err)
@@ -37,13 +38,13 @@ func loadPrompts() {
 		slog.Error("prompt.yaml 格式错误", "err", err)
 		os.Exit(1)
 	}
-	CmdConfigs = pf.Cmd
-	if CmdConfigs == nil {
-		CmdConfigs = make(map[string][]CmdConf)
+	if pf.Cmd == nil {
+		pf.Cmd = make(map[string][]CmdConf)
 	}
+	CmdConfigs = pf.Cmd
 
 	// 合并 prompt_custom.yaml
-	customPath := resolveConfigPath("prompt_custom.yaml")
+	customPath := customPromptPath()
 	customRaw, err := os.ReadFile(customPath)
 	if err != nil {
 		return
@@ -63,9 +64,27 @@ func ReloadPrompts() {
 	loadPrompts()
 }
 
+// KeywordInMainPrompt 检查 keyword 是否已存在于 prompt.yaml（直接读文件校验）
+func KeywordInMainPrompt(category, keyword string) bool {
+	raw, err := os.ReadFile(resolveConfigPath("prompt_system.yaml"))
+	if err != nil {
+		return false
+	}
+	var pf promptFile
+	if err := yaml.Unmarshal(raw, &pf); err != nil {
+		return false
+	}
+	for _, e := range pf.Cmd[category] {
+		if e.Keyword == keyword {
+			return true
+		}
+	}
+	return false
+}
+
 // AddPromptCommand 添加命令到 prompt_custom.yaml
 func AddPromptCommand(category, keyword, promptText string) error {
-	customPath := resolveConfigPath("prompt_custom.yaml")
+	customPath := customPromptPath()
 	var pf promptFile
 	raw, err := os.ReadFile(customPath)
 	if err == nil {
@@ -78,7 +97,24 @@ func AddPromptCommand(category, keyword, promptText string) error {
 	}
 
 	pf.Cmd[category] = append(pf.Cmd[category], CmdConf{Keyword: keyword, Prompt: promptText})
+
+	// 去重：同 category 下同 keyword 只保留最后一条
+	seen := make(map[string]int)
+	for i := len(pf.Cmd[category]) - 1; i >= 0; i-- {
+		kw := pf.Cmd[category][i].Keyword
+		if _, ok := seen[kw]; ok {
+			pf.Cmd[category] = append(pf.Cmd[category][:i], pf.Cmd[category][i+1:]...)
+		} else {
+			seen[kw] = i
+		}
+	}
+
 	return writePromptCustom(customPath, &pf)
+}
+
+// customPromptPath 返回 prompt_custom.yaml 的路径（与 prompt.yaml 同目录）
+func customPromptPath() string {
+	return filepath.Join(filepath.Dir(resolveConfigPath("prompt_system.yaml")), "prompt_custom.yaml")
 }
 
 // writePromptCustom 写入 prompt_custom.yaml，强制 prompt 使用 | 格式

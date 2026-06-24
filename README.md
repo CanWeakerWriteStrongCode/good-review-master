@@ -28,7 +28,7 @@
 
 - **@机器人 + 关键词触发**：群内 @机器人并说出关键词（如"锐评下"），即可触发大模型生成回复
 - **群聊上下文感知**：基于最近的群聊记录生成上下文相关的锐评，不是无脑随机回复
-- **插件式命令扩展**：在 `prompt.yaml` 里加配置即可新增同类型命令变体，无需改代码
+- **插件式命令扩展**：在 `prompt_system.yaml` 里加配置即可新增同类型命令变体，无需改代码
 - **白名单机制**：只响应指定群号，安全可控
 - **纯内网通信**：Go 后端通过 HTTP 轮询 NapCatQQ 本地 API，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
@@ -70,7 +70,7 @@ cd good-review-master
 # 2. 复制创建配置文件config_example.yaml 名字改成 config.yaml
 cp config_example.yaml config.yaml
 
-# 3. 编辑 config.yaml，填入你的配置（详见下方配置说明），编辑prompt.yaml可以修改不同功能的提示词
+# 3. 编辑 config.yaml，填入你的配置（详见下方配置说明），编辑prompt_system.yaml可以修改不同功能的提示词
 
 # 4. 运行
 # Windows：双击 start_main.bat
@@ -85,7 +85,7 @@ go run .
 ```bash
 # Windows：双击 build_exe.bat
 # Linux：./build_linux.sh
-# config.yaml 配置和 prompt.yaml 配置放到exe同目录下，运行即可
+# config.yaml 配置和 prompt_system.yaml 配置放到exe同目录下，运行即可
 ```
 
 ## ⚙ 配置说明
@@ -109,7 +109,7 @@ go run .
 
 ### 命令提示词配置
 
-命令提示词存放在 `prompt.yaml` 中，采用 list 格式，同一类型命令可配多个 keyword + prompt 变体：
+命令提示词存放在 `prompt_system.yaml` 中，采用 list 格式，同一类型命令可配多个 keyword + prompt 变体：
 
 ```yaml
 cmd:
@@ -143,7 +143,7 @@ cmd:
 @机器人 添加永久命令(chat_review)关键字(雌小鬼锐评下)大模型想提示词(嘴臭的雌小鬼，毒舌，喜欢说老登)
 ```
 
-添加后立即生效，无需重启。动态添加的命令保存在 `prompt_custom.yaml`，与 `prompt.yaml` 分离。
+添加后立即生效，无需重启。动态添加的命令保存在 `prompt_custom.yaml`，与 `prompt_system.yaml` 分离。
 
 ## 📁 项目结构
 
@@ -152,7 +152,7 @@ good-review-master/
 ├── main.go              # 入口：初始化配置、大模型客户端，启动轮询
 ├── config/
 │   ├── config.go        # 运行时配置加载（config.yaml → struct）
-│   └── prompt.go       # 提示词配置加载（prompt.yaml → struct）
+│   └── prompt.go       # 提示词配置加载（prompt_system.yaml → struct）
 ├── cache/
 │   └── cache.go         # 消息环形缓冲区（按群维度、去重）
 ├── llm/
@@ -170,7 +170,7 @@ good-review-master/
 │   └── whoami.go        # direct_ask 处理函数
 ├── config_example.yaml  # 运行时配置模板
 ├── config.yaml          # 运行时配置（gitignore）
-├── prompt.yaml          # 提示词配置
+├── prompt_system.yaml          # 提示词配置
 ├── prompt_custom.yaml   # 动态添加的提示词（gitignore，程序自动创建）
 ├── start_main.bat       # Windows 启动脚本
 ├── start_main.sh        # Linux 启动脚本
@@ -192,7 +192,7 @@ config → (无内部依赖)
 
 ## ➕ 扩展新命令
 
-### 在 prompt.yaml 中添加同类型变体（无需改代码）
+### 在 prompt_system.yaml 中添加同类型变体（无需改代码）
 
 在 `chat_review` 或 `direct_ask` 列表下新增一项即可：
 
@@ -208,7 +208,7 @@ cmd:
 
 三步完成：
 
-**1. 在 `prompt.yaml` 的 `cmd:` 下添加新类型配置**
+**1. 在 `prompt_system.yaml` 的 `cmd:` 下添加新类型配置**
 
 ```yaml
 cmd:
@@ -257,7 +257,7 @@ var handlerMap = map[string]func(onebot.Event, string, string){
 git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
 cp config_example.yaml config.yaml
-# Edit config.yaml and prompt.yaml with your settings, then:
+# Edit config.yaml and prompt_system.yaml with your settings, then:
 go run .
 ```
 

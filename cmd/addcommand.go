@@ -28,6 +28,11 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	mode := matches[3] // "提示词" 或 "大模型想提示词"
 	promptOrReq := matches[4]
 
+	if config.KeywordInMainPrompt(category, keyword) {
+		onebot.SendGroupMessage(groupID, "❌ 该 keyword 已在系统指令中存在，禁止覆盖")
+		return
+	}
+
 	finalPrompt := promptOrReq
 	if mode == "大模型想提示词" {
 		slog.Info("使用 LLM 生成提示词", "category", category, "keyword", keyword)
