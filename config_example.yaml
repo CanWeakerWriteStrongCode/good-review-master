@@ -15,7 +15,7 @@ bot:
 # ===== 运行时参数 =====
 runtime:
   # 缓存最大消息数
-  max_cache_msg: 30
+  max_cache_msg: 20
   # 调用大模型超时（秒）
   llm_timeout_sec: 20
   # 单条消息最大字符数（超出截断）
