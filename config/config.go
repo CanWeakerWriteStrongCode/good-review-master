@@ -15,6 +15,7 @@ var (
 	NapCatHTTPAPI     string
 	NapCatAccessToken string
 	BotQQ             string
+	BotNickname       string
 	AllowGroups       string
 	MaxCacheMsg       int
 	LLMTimeout        time.Duration
@@ -29,6 +30,7 @@ type LLMConf struct {
 	APIBase     string
 	ModelName   string
 	Temperature float64
+	TopP        float64
 }
 
 // LLMConfig 大模型配置实例
@@ -55,6 +57,7 @@ type configFile struct {
 		APIBase     string  `yaml:"api_base"`
 		ModelName   string  `yaml:"model_name"`
 		Temperature float64 `yaml:"temperature"`
+		TopP        float64 `yaml:"top_p"`
 	} `yaml:"llm"`
 }
 
@@ -104,5 +107,6 @@ func init() {
 		APIBase:     cf.LLM.APIBase,
 		ModelName:   cf.LLM.ModelName,
 		Temperature: cf.LLM.Temperature,
+		TopP:        cf.LLM.TopP,
 	}
 }

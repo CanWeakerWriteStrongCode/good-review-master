@@ -14,6 +14,37 @@ import (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
+// GetLoginInfo 获取机器人登录信息（QQ号、昵称）
+func GetLoginInfo() (*LoginInfo, error) {
+	slog.Info("调用 NapCat API", "action", "get_login_info")
+	req, _ := http.NewRequest("POST", config.NapCatHTTPAPI+"/get_login_info", nil)
+	req.Header.Set("Content-Type", "application/json")
+	if config.NapCatAccessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+config.NapCatAccessToken)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Status string    `json:"status"`
+		Data   LoginInfo `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析登录信息失败: %w", err)
+	}
+	slog.Info("get_login_info 成功", "nickname", result.Data.Nickname, "user_id", result.Data.UserID)
+	return &result.Data, nil
+}
+
 // SendGroupMessage 发送群消息
 func SendGroupMessage(groupID, content string) {
 	slog.Debug("调用 NapCat API", "action", "send_group_msg", "group", groupID)

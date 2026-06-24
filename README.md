@@ -101,6 +101,7 @@ go run .
 | `llm.api_base` | 大模型接口地址 | `https://api.deepseek.com` |
 | `llm.model_name` | 模型名称 | `deepseek-v4-flash` |
 | `llm.temperature` | 锐评风格：0.8=犀利 0.5=温和 | `0.8` |
+| `llm.top_p` | 核采样参数：越小输出越集中 | `0.9` |
 | `runtime.max_cache_msg` | 缓存消息数 | `30` |
 | `runtime.llm_timeout_sec` | 大模型超时（秒） | `20` |
 | `runtime.max_msg_rune` | 单条消息最大字符数 | `200` |
@@ -222,6 +223,7 @@ go run .
 | `llm.api_base` | LLM API base URL |
 | `llm.model_name` | Model name |
 | `llm.temperature` | Review sharpness (0.8=sharp, 0.5=mild) |
+| `llm.top_p` | Nucleus sampling: lower = more focused |
 
 ## Project Structure
 

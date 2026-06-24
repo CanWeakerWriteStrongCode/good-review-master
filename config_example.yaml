@@ -33,6 +33,7 @@ llm:
   api_base: "https://api.deepseek.com"
   # 模型名
   model_name: "deepseek-v4-flash"
-  # 锐评风格：0.8=犀利 0.5=温和
-  temperature: 0.8
-
+  # 锐评风格：1.0=发散 0.5=集中
+  temperature: 1.2
+  # 核采样参数：越小输出越集中
+  top_p: 0.95

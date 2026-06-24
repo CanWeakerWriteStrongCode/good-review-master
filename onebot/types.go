@@ -29,6 +29,12 @@ type HistoryMsg struct {
 	Time       int64  `json:"time"`
 }
 
+// LoginInfo get_login_info 响应
+type LoginInfo struct {
+	UserID   int64  `json:"user_id"`
+	Nickname string `json:"nickname"`
+}
+
 // FormatGroupID int64群号转字符串
 func FormatGroupID(id int64) string {
 	return strconv.FormatInt(id, 10)

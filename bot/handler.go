@@ -55,9 +55,15 @@ func IsPureEmoji(text string) bool {
 	return true
 }
 
-// isAtBot 检查是否@机器人
+// isAtBot 检查是否@机器人（QQ号 + 昵称双重校验）
 func isAtBot(rawMsg string) bool {
-	return strings.Contains(rawMsg, config.BotQQ)
+	if strings.Contains(rawMsg, config.BotQQ) {
+		return true
+	}
+	if config.BotNickname != "" && strings.Contains(rawMsg, "@"+config.BotNickname) {
+		return true
+	}
+	return false
 }
 
 // isAllowGroup 检查群白名单

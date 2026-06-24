@@ -23,15 +23,17 @@ type OpenAIAdapter struct {
 	apiBase     string
 	modelName   string
 	temperature float64
+	topP        float64
 }
 
 // NewOpenAIAdapter 创建OpenAI兼容的大模型客户端
-func NewOpenAIAdapter(apiKey, apiBase, model string, temp float64) Client {
+func NewOpenAIAdapter(apiKey, apiBase, model string, temp, topP float64) Client {
 	return &OpenAIAdapter{
 		apiKey:      apiKey,
 		apiBase:     strings.TrimSuffix(apiBase, "/"),
 		modelName:   model,
 		temperature: temp,
+		topP:        topP,
 	}
 }
 
@@ -42,6 +44,7 @@ func (o *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt string
 	reqBody := map[string]any{
 		"model":       o.modelName,
 		"temperature": o.temperature,
+		"top_p":       o.topP,
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": "以下是群聊记录：\n" + chatLog + "\n请开始你的锐评"},

@@ -7,6 +7,7 @@ import (
 	"good-review-master/bot"
 	"good-review-master/config"
 	"good-review-master/llm"
+	"good-review-master/onebot"
 )
 
 func main() {
@@ -19,6 +20,7 @@ func main() {
 			config.LLMConfig.APIBase,
 			config.LLMConfig.ModelName,
 			config.LLMConfig.Temperature,
+			config.LLMConfig.TopP,
 		)
 	default:
 		slog.Error("不支持的大模型提供商")
@@ -29,6 +31,13 @@ func main() {
 	slog.Info("机器人QQ：" + config.BotQQ)
 	slog.Info("允许响应群：" + config.AllowGroups)
 	slog.Info("NapCat HTTP API：" + config.NapCatHTTPAPI)
+
+	if info, err := onebot.GetLoginInfo(); err != nil {
+		slog.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
+	} else {
+		config.BotNickname = info.Nickname
+		slog.Info("机器人昵称", "nickname", config.BotNickname)
+	}
 
 	bot.RunPollingLoop()
 }
