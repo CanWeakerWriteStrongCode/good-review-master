@@ -22,7 +22,7 @@ func RouteMessage(content string, event onebot.Event, groupID string) {
 			if extra != "" {
 				finalPrompt += "\n用户补充,优先级很高:" + extra
 			}
-			enrichedPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s", config.BotQQ, config.BotNickname, finalPrompt)
+			enrichedPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。当前@你的是群友 %s。\n%s", config.BotQQ, config.BotNickname, event.Nickname, finalPrompt)
 			r.Handler(event, groupID, enrichedPrompt)
 			return
 		}
