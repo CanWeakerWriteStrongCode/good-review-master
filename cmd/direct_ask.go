@@ -9,7 +9,7 @@ import (
 	"good-review-master/onebot"
 )
 
-func whoami(event onebot.Event, groupID string, prompt string) {
+func directAsk(event onebot.Event, groupID string, prompt string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), config.LLMTimeout)
 		defer cancel()

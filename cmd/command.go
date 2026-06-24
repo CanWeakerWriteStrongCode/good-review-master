@@ -34,8 +34,8 @@ var Routes []Route
 
 // handlerMap 命令类型 → 处理函数（用于用户路由）
 var handlerMap = map[string]func(onebot.Event, string, string){
-	"chat_review": sharpTake,
-	"direct_ask":  whoami,
+	"chat_review": chatReview,
+	"direct_ask":  directAsk,
 }
 
 // RebuildRoutes 重建路由表（系统路由 + 用户路由）

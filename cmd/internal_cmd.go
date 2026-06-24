@@ -21,7 +21,6 @@ func init() {
 	Register(Command{Keyword: "添加指令", Help: "添加新指令", Category: "internal", Handler: addCommand})
 	Register(Command{Keyword: "删除关键字", Help: "删除关键字", Category: "internal", Handler: deleteCommand})
 	Register(Command{Keyword: "帮助", Help: "查看可用指令", Category: "internal", Handler: listCommands})
-	Register(Command{Keyword: "指令", Help: "查看可用指令", Category: "internal", Handler: listCommands})
 }
 
 func addCommand(event onebot.Event, groupID string, _ string) {

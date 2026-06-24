@@ -10,8 +10,8 @@ import (
 	"good-review-master/onebot"
 )
 
-// sharpTake 异步锐评
-func sharpTake(event onebot.Event, groupID string, prompt string) {
+// chatReview 异步锐评
+func chatReview(event onebot.Event, groupID string, prompt string) {
 	slog.Info("触发锐评", "group", groupID, "user", event.Nickname)
 	go func() {
 		msgs := cache.GetGroupCache(groupID).GetAll()
