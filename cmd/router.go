@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 
 	"good-review-master/config"
@@ -14,17 +15,34 @@ type Route struct {
 	Handler func(event onebot.Event, groupID string, prompt string)
 }
 
-// Routes 路由表（扩展新功能只需在这里加一行）
-var Routes = []Route{
-	{Keyword: config.CmdConfigs["sharptake"].Keyword, Prompt: config.CmdConfigs["sharptake"].Prompt, Handler: sharpTake},
-	{Keyword: config.CmdConfigs["whoami"].Keyword, Prompt: config.CmdConfigs["whoami"].Prompt, Handler: whoami},
+// handlerMap 命令名 → 处理函数
+var handlerMap = map[string]func(onebot.Event, string, string){
+	"chat_review": sharpTake,
+	"direct_ask":  whoami,
+}
+
+// Routes 路由表（由 init 根据 CmdConfigs 动态生成）
+var Routes []Route
+
+func init() {
+	for cmdName, entries := range config.CmdConfigs {
+		handler := handlerMap[cmdName]
+		for _, entry := range entries {
+			Routes = append(Routes, Route{
+				Keyword: entry.Keyword,
+				Prompt:  entry.Prompt,
+				Handler: handler,
+			})
+		}
+	}
 }
 
 // RouteMessage 遍历路由表匹配并分发
 func RouteMessage(content string, event onebot.Event, groupID string) {
 	for _, r := range Routes {
 		if strings.Contains(content, r.Keyword) {
-			r.Handler(event, groupID, r.Prompt)
+			enrichedPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s", config.BotQQ, config.BotNickname, r.Prompt)
+			r.Handler(event, groupID, enrichedPrompt)
 			return
 		}
 	}

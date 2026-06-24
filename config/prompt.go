@@ -14,10 +14,10 @@ type CmdConf struct {
 }
 
 // CmdConfigs 所有命令配置（key=命令名）
-var CmdConfigs map[string]CmdConf
+var CmdConfigs map[string][]CmdConf
 
 type promptFile struct {
-	Cmd map[string]CmdConf `yaml:"cmd"`
+	Cmd map[string][]CmdConf `yaml:"cmd"`
 }
 
 func init() {
