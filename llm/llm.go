@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -47,10 +48,11 @@ func (o *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt string
 		"top_p":       o.topP,
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": "以下是群聊记录：\n" + chatLog + "\n请开始你的锐评"},
+			{"role": "user", "content": "以下是群聊记录：\n" + chatLog + "\n请回复"},
 		},
 	}
 
+	slog.Info("发送给大模型", "systemPrompt", systemPrompt, "chatLog", chatLog)
 	jsonData, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
