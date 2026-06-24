@@ -33,8 +33,11 @@ func init() {
 func RebuildRoutes() {
 	Routes = nil
 
-	// 系统路由（硬编码）
-	Routes = append(Routes, Route{Keyword: "添加永久命令", Handler: addCommand})
+	// 系统路由（硬编码，不在 prompt_system.yaml 中）
+	Routes = append(Routes,
+		Route{Keyword: "添加永久命令", Handler: addCommand},
+		Route{Keyword: "帮助", Handler: listCommands},
+	)
 
 	// 用户路由（从 CmdConfigs 生成）
 	for cmdName, entries := range config.CmdConfigs {

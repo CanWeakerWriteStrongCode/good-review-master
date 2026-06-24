@@ -25,7 +25,7 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	}
 	category := matches[1]
 	keyword := matches[2]
-	mode := matches[3] // "提示词" 或 "大模型想提示词"
+	mode := matches[3]
 	promptOrReq := matches[4]
 
 	if config.KeywordInMainPrompt(category, keyword) {
@@ -55,4 +55,16 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	config.ReloadPrompts()
 	RebuildRoutes()
 	onebot.SendGroupMessage(groupID, "✅ 命令已添加: "+keyword)
+}
+
+func listCommands(event onebot.Event, groupID string, _ string) {
+	var sb strings.Builder
+	sb.WriteString("可用指令：")
+	for _, r := range Routes {
+		if r.Keyword == "" || r.Keyword == "添加永久命令" || r.Keyword == "帮助" || r.Keyword == "指令" {
+			continue
+		}
+		sb.WriteString("\n- " + r.Keyword)
+	}
+	onebot.SendGroupMessage(groupID, sb.String())
 }

@@ -165,9 +165,9 @@ good-review-master/
 │   └── handler.go       # 消息处理：白名单检查 → emoji过滤 → 命令路由
 ├── cmd/
 │   ├── router.go        # 命令路由表（动态生成 + 系统路由）
-│   ├── addcommand.go    # 群内动态添加命令
-│   ├── sharptake.go     # chat_review 处理函数
-│   └── whoami.go        # direct_ask 处理函数
+│   ├── internal_cmd.go  # 内部指令（添加命令、查看指令列表等）
+│   ├── chat_review.go   # chat_review 处理函数
+│   └── direct_ask.go    # direct_ask 处理函数
 ├── config_example.yaml  # 运行时配置模板
 ├── config.yaml          # 运行时配置（gitignore）
 ├── prompt_system.yaml          # 提示词配置
