@@ -18,8 +18,8 @@ var delCmdRe = regexp.MustCompile(`删除关键字\((.+)\)`)
 const promptGenSystem = `你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。`
 
 func init() {
-	Register(Command{Keyword: "添加关键字", Help: "添加新指令", Category: "internal", Handler: addCommand})
-	Register(Command{Keyword: "删除关键字", Help: "删除关键字", Category: "internal", Handler: deleteCommand})
+	Register(Command{Keyword: "添加关键字", Help: "格式：添加关键字(关键词)指令(类型)大模型想提示词(要点)", Category: "internal", Handler: addCommand})
+	Register(Command{Keyword: "删除关键字", Help: "格式：删除关键字(关键词)", Category: "internal", Handler: deleteCommand})
 	Register(Command{Keyword: "帮助", Help: "查看可用指令", Category: "internal", Handler: listCommands})
 }
 
@@ -85,18 +85,20 @@ func deleteCommand(event onebot.Event, groupID string, _ string) {
 
 func listCommands(event onebot.Event, groupID string, _ string) {
 	var sb strings.Builder
-	sb.WriteString("可用指令：")
+	sb.WriteString("【指令帮助】\n\n")
+	sb.WriteString("使用方式：@机器人 + 关键词\n\n")
+	sb.WriteString("▎管理指令：\n")
 	for _, cmd := range registry {
 		if cmd.Help == "" {
 			continue
 		}
-		sb.WriteString("\n- " + cmd.Keyword + "：" + cmd.Help)
+		sb.WriteString("  " + cmd.Keyword + "\n    → " + cmd.Help + "\n")
 	}
+	sb.WriteString("\n▎功能指令：\n")
 	for _, r := range Routes {
 		if r.Keyword == "" {
 			continue
 		}
-		// 跳过已在 registry 中的系统指令
 		isSystem := false
 		for _, cmd := range registry {
 			if cmd.Keyword == r.Keyword {
@@ -105,7 +107,7 @@ func listCommands(event onebot.Event, groupID string, _ string) {
 			}
 		}
 		if !isSystem {
-			sb.WriteString("\n- " + r.Keyword)
+			sb.WriteString("  " + r.Keyword + "\n")
 		}
 	}
 	onebot.SendGroupMessage(groupID, sb.String())
