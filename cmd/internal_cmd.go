@@ -12,13 +12,13 @@ import (
 	"good-review-master/onebot"
 )
 
-var addCmdRe = regexp.MustCompile(`添加指令\((\w+)\)关键字\((.+?)\)大模型想提示词\((.+)\)`)
+var addCmdRe = regexp.MustCompile(`添加关键字\((.+?)\)指令\((\w+)\)大模型想提示词\((.+)\)`)
 var delCmdRe = regexp.MustCompile(`删除关键字\((.+)\)`)
 
 const promptGenSystem = `你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。`
 
 func init() {
-	Register(Command{Keyword: "添加指令", Help: "添加新指令", Category: "internal", Handler: addCommand})
+	Register(Command{Keyword: "添加关键字", Help: "添加新指令", Category: "internal", Handler: addCommand})
 	Register(Command{Keyword: "删除关键字", Help: "删除关键字", Category: "internal", Handler: deleteCommand})
 	Register(Command{Keyword: "帮助", Help: "查看可用指令", Category: "internal", Handler: listCommands})
 }
@@ -27,11 +27,11 @@ func addCommand(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 4 {
-		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式：添加指令(类型)关键字(关键词)大模型想提示词(要点)")
+		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式：添加关键字(关键词)指令(类型)大模型想提示词(要点)")
 		return
 	}
-	category := matches[1]
-	keyword := matches[2]
+	keyword := matches[1]
+	category := matches[2]
 	requirements := matches[3]
 
 	if config.KeywordInMainPrompt(category, keyword) {
