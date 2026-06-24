@@ -28,8 +28,8 @@ func RunPollingLoop() {
 		c := cache.GetGroupCache(groupID)
 		for _, m := range msgs {
 			content := strings.TrimSpace(m.RawMessage)
-			if content == "" || IsPureEmoji(content) {
-				content = "" // 过滤的消息记MsgID用于去重，但不存内容
+			if content == "" {
+				content = ""
 			} else if len([]rune(content)) > config.MaxMsgRune {
 				content = string([]rune(content)[:config.MaxMsgRune]) + "..."
 			}

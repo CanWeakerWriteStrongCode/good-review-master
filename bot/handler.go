@@ -21,9 +21,6 @@ func ProcessMessage(event onebot.Event) {
 	if content == "" {
 		return
 	}
-	if IsPureEmoji(content) {
-		return
-	}
 	if len([]rune(content)) > config.MaxMsgRune {
 		content = string([]rune(content)[:config.MaxMsgRune]) + "..."
 	}
@@ -41,18 +38,6 @@ func ProcessMessage(event onebot.Event) {
 	if isAtBot(content) {
 		cmd.RouteMessage(content, event, groupID)
 	}
-}
-
-// IsPureEmoji 检查是否纯表情/无实质文本内容
-func IsPureEmoji(text string) bool {
-	for _, r := range text {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') ||
-			(r >= 0x4e00 && r <= 0x9fff) {
-			return false
-		}
-	}
-	return true
 }
 
 // isAtBot 检查是否@机器人（QQ号 + 昵称双重校验）

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +27,8 @@ type promptFile struct {
 
 // SharedRules prompt_system.yaml 中按指令类型定义的通用规则
 var SharedRules map[string]string
+
+var promptMu sync.Mutex
 
 func init() {
 	loadPrompts()
@@ -67,6 +70,8 @@ func loadPrompts() {
 
 // ReloadPrompts 热重载 prompt 配置
 func ReloadPrompts() {
+	promptMu.Lock()
+	defer promptMu.Unlock()
 	loadPrompts()
 }
 
@@ -110,6 +115,8 @@ func KeywordInMainPromptAny(keyword string) bool {
 
 // DeletePromptCommand 从 prompt_custom.yaml 删除指令（按 keyword 全局匹配）
 func DeletePromptCommand(keyword string) error {
+	promptMu.Lock()
+	defer promptMu.Unlock()
 	customPath := customPromptPath()
 	raw, err := os.ReadFile(customPath)
 	if err != nil {
@@ -132,6 +139,8 @@ func DeletePromptCommand(keyword string) error {
 
 // AddPromptCommand 添加指令到 prompt_custom.yaml
 func AddPromptCommand(category, keyword, promptText string) error {
+	promptMu.Lock()
+	defer promptMu.Unlock()
 	customPath := customPromptPath()
 	var pf promptFile
 	raw, err := os.ReadFile(customPath)

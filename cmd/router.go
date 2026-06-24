@@ -35,7 +35,7 @@ func RebuildRoutes() {
 
 	// 系统路由（硬编码，不在 prompt_system.yaml 中）
 	Routes = append(Routes,
-		Route{Keyword: "添加永久指令", Handler: addCommand},
+		Route{Keyword: "添加指令", Handler: addCommand},
 		Route{Keyword: "删除关键字", Handler: deleteCommand},
 		Route{Keyword: "帮助", Handler: listCommands},
 	)
