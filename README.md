@@ -121,9 +121,6 @@ cmd:
     - keyword: "猫娘来看看"
       prompt: |
         你是一只可爱的猫娘...
-  direct_ask:             # 形式：直接问大模型，无聊天上下文
-    - keyword: "你是谁"
-      prompt: "直接回答你是什么大模型"
 ```
 
 新增同类型变体只需在对应列表下加一项，无需改 Go 代码。
@@ -165,7 +162,6 @@ good-review-master/
 │   ├── router.go        # 指令路由表（动态生成 + 系统路由）
 │   ├── internal_cmd.go  # 内部指令（添加指令、查看指令列表等）
 │   ├── chat_review.go   # chat_review 处理函数
-│   └── direct_ask.go    # direct_ask 处理函数
 ├── config_example.yaml  # 运行时配置模板
 ├── config.yaml          # 运行时配置（gitignore）
 ├── prompt_system.yaml          # 提示词配置
@@ -192,7 +188,7 @@ config → (无内部依赖)
 
 ### 在 prompt_system.yaml 中添加同类型变体（无需改代码）
 
-在 `chat_review` 或 `direct_ask` 列表下新增一项即可：
+在 `chat_review` 列表下新增一项即可：
 
 ```yaml
 cmd:
@@ -231,7 +227,6 @@ func weather(event onebot.Event, groupID string, prompt string) {
 ```go
 var handlerMap = map[string]func(onebot.Event, string, string){
     "chat_review": sharpTake,
-    "direct_ask":  whoami,
     "weather":     weather,  // 新增这一行
 }
 ```

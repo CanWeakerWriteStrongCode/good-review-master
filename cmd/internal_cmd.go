@@ -93,6 +93,13 @@ func listCommands(event onebot.Event, groupID string, _ string) {
 			continue
 		}
 		sb.WriteString("  " + cmd.Keyword + "\n    → " + cmd.Help + "\n")
+		if cmd.Keyword == "添加关键字" {
+			var types []string
+			for t := range handlerMap {
+				types = append(types, t)
+			}
+			sb.WriteString("    指令类型: " + strings.Join(types, "/") + "\n")
+		}
 	}
 	sb.WriteString("\n▎功能指令：\n")
 	for _, r := range Routes {
@@ -107,7 +114,7 @@ func listCommands(event onebot.Event, groupID string, _ string) {
 			}
 		}
 		if !isSystem {
-			sb.WriteString("  " + r.Keyword + "\n")
+			sb.WriteString("  " + r.Keyword + " [" + r.Category + "]\n")
 		}
 	}
 	onebot.SendGroupMessage(groupID, sb.String())

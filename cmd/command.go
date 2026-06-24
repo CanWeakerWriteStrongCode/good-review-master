@@ -36,6 +36,7 @@ type Route struct {
 	Keyword     string
 	Prompt      string
 	SharedRules string
+	Category    string
 	Handler     func(event onebot.Event, groupID string, prompt string)
 }
 
@@ -45,7 +46,6 @@ var Routes []Route
 // handlerMap 命令类型 → 处理函数（用于用户路由）
 var handlerMap = map[string]func(onebot.Event, string, string){
 	"chat_review": chatReview,
-	"direct_ask":  directAsk,
 }
 
 // RebuildRoutes 重建路由表（系统路由 + 用户路由）
@@ -58,6 +58,7 @@ func RebuildRoutes() {
 			Keyword:     cmd.Keyword,
 			Prompt:      "",
 			SharedRules: cmd.SharedRules,
+			Category:    cmd.Category,
 			Handler:     cmd.Handler,
 		})
 	}
@@ -65,12 +66,16 @@ func RebuildRoutes() {
 	// 用户路由（从 CmdConfigs 生成）
 	for cmdName, entries := range config.CmdConfigs {
 		handler := handlerMap[cmdName]
+		if handler == nil {
+			continue
+		}
 		sharedRules := config.SharedRules[cmdName]
 		for _, entry := range entries {
 			Routes = append(Routes, Route{
 				Keyword:     entry.Keyword,
 				Prompt:      entry.Prompt,
 				SharedRules: sharedRules,
+				Category:    cmdName,
 				Handler:     handler,
 			})
 		}

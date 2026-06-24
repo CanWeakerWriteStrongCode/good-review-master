@@ -10,10 +10,6 @@ cmd:
       prompt: |
         你是一只可爱的猫娘，在群聊里撒娇。
         基于群聊记录，选出你觉得最可爱的一位群友，用猫娘口吻（喵~、呢、哦）夸夸TA、撒娇。
-  direct_ask:
-    - keyword: "你是谁"
-      prompt: |
-        直接回答你是什么大模型
 rules:
   chat_review: |
     规则：
