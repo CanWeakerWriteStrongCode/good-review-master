@@ -35,22 +35,22 @@ func init() {
 }
 
 func loadPrompts() {
-	path := resolveConfigPath("prompt_system.yaml")
-	raw, err := os.ReadFile(path)
+	cfgPath := resolveConfigPath("prompt_system.yaml")
+	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		slog.Error("无法读取 prompt.yaml", "path", path, "err", err)
+		slog.Error("无法读取 prompt.yaml", "path", cfgPath, "err", err)
 		os.Exit(1)
 	}
-	var pf promptFile
-	if err := yaml.Unmarshal(raw, &pf); err != nil {
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		slog.Error("prompt.yaml 格式错误", "err", err)
 		os.Exit(1)
 	}
-	if pf.Cmd == nil {
-		pf.Cmd = make(map[string][]CmdConf)
+	if cfg.Cmd == nil {
+		cfg.Cmd = make(map[string][]CmdConf)
 	}
-	CmdConfigs = pf.Cmd
-	SharedRules = pf.Rules
+	CmdConfigs = cfg.Cmd
+	SharedRules = cfg.Rules
 
 	// 合并 prompt_custom.yaml
 	customPath := customPromptPath()
@@ -58,13 +58,13 @@ func loadPrompts() {
 	if err != nil {
 		return
 	}
-	var customPf promptFile
-	if err := yaml.Unmarshal(customRaw, &customPf); err != nil {
+	var customCfg promptFile
+	if err := yaml.Unmarshal(customRaw, &customCfg); err != nil {
 		slog.Warn("prompt_custom.yaml 格式错误，跳过", "err", err)
 		return
 	}
-	for k, v := range customPf.Cmd {
-		CmdConfigs[k] = append(CmdConfigs[k], v...)
+	for name, entries := range customCfg.Cmd {
+		CmdConfigs[name] = append(CmdConfigs[name], entries...)
 	}
 }
 
@@ -81,12 +81,12 @@ func KeywordInMainPrompt(category, keyword string) bool {
 	if err != nil {
 		return false
 	}
-	var pf promptFile
-	if err := yaml.Unmarshal(raw, &pf); err != nil {
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return false
 	}
-	for _, e := range pf.Cmd[category] {
-		if e.Keyword == keyword {
+	for _, entry := range cfg.Cmd[category] {
+		if entry.Keyword == keyword {
 			return true
 		}
 	}
@@ -99,13 +99,13 @@ func KeywordInMainPromptAny(keyword string) bool {
 	if err != nil {
 		return false
 	}
-	var pf promptFile
-	if err := yaml.Unmarshal(raw, &pf); err != nil {
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return false
 	}
-	for _, entries := range pf.Cmd {
-		for _, e := range entries {
-			if e.Keyword == keyword {
+	for _, entries := range cfg.Cmd {
+		for _, entry := range entries {
+			if entry.Keyword == keyword {
 				return true
 			}
 		}
@@ -122,15 +122,15 @@ func DeletePromptCommand(keyword string) error {
 	if err != nil {
 		return err
 	}
-	var pf promptFile
-	if err := yaml.Unmarshal(raw, &pf); err != nil {
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return err
 	}
-	for cat, entries := range pf.Cmd {
-		for i, e := range entries {
-			if e.Keyword == keyword {
-				pf.Cmd[cat] = append(entries[:i], entries[i+1:]...)
-				return writePromptCustom(customPath, &pf)
+	for cat, entries := range cfg.Cmd {
+		for i, entry := range entries {
+			if entry.Keyword == keyword {
+				cfg.Cmd[cat] = append(entries[:i], entries[i+1:]...)
+				return writePromptCustom(customPath, &cfg)
 			}
 		}
 	}
@@ -142,31 +142,31 @@ func AddPromptCommand(category, keyword, promptText string) error {
 	promptMu.Lock()
 	defer promptMu.Unlock()
 	customPath := customPromptPath()
-	var pf promptFile
+	var cfg promptFile
 	raw, err := os.ReadFile(customPath)
 	if err == nil {
-		if err := yaml.Unmarshal(raw, &pf); err != nil {
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
 			return err
 		}
 	}
-	if pf.Cmd == nil {
-		pf.Cmd = make(map[string][]CmdConf)
+	if cfg.Cmd == nil {
+		cfg.Cmd = make(map[string][]CmdConf)
 	}
 
-	pf.Cmd[category] = append(pf.Cmd[category], CmdConf{Keyword: keyword, Prompt: promptText})
+	cfg.Cmd[category] = append(cfg.Cmd[category], CmdConf{Keyword: keyword, Prompt: promptText})
 
 	// 去重：同 category 下同 keyword 只保留最后一条
 	seen := make(map[string]int)
-	for i := len(pf.Cmd[category]) - 1; i >= 0; i-- {
-		kw := pf.Cmd[category][i].Keyword
+	for i := len(cfg.Cmd[category]) - 1; i >= 0; i-- {
+		kw := cfg.Cmd[category][i].Keyword
 		if _, ok := seen[kw]; ok {
-			pf.Cmd[category] = append(pf.Cmd[category][:i], pf.Cmd[category][i+1:]...)
+			cfg.Cmd[category] = append(cfg.Cmd[category][:i], cfg.Cmd[category][i+1:]...)
 		} else {
 			seen[kw] = i
 		}
 	}
 
-	return writePromptCustom(customPath, &pf)
+	return writePromptCustom(customPath, &cfg)
 }
 
 // customPromptPath 返回 prompt_custom.yaml 的路径（与 prompt.yaml 同目录）
@@ -175,18 +175,18 @@ func customPromptPath() string {
 }
 
 // writePromptCustom 写入 prompt_custom.yaml，强制 prompt 使用 | 格式
-func writePromptCustom(path string, pf *promptFile) error {
-	var sb strings.Builder
-	sb.WriteString("cmd:\n")
-	for catName, entries := range pf.Cmd {
-		sb.WriteString("  " + catName + ":\n")
-		for _, e := range entries {
-			sb.WriteString("    - keyword: \"" + e.Keyword + "\"\n")
-			sb.WriteString("      prompt: |\n")
-			for _, line := range strings.Split(e.Prompt, "\n") {
-				sb.WriteString("        " + line + "\n")
+func writePromptCustom(path string, cfg *promptFile) error {
+	var buf strings.Builder
+	buf.WriteString("cmd:\n")
+	for catName, entries := range cfg.Cmd {
+		buf.WriteString("  " + catName + ":\n")
+		for _, entry := range entries {
+			buf.WriteString("    - keyword: \"" + entry.Keyword + "\"\n")
+			buf.WriteString("      prompt: |\n")
+			for _, line := range strings.Split(entry.Prompt, "\n") {
+				buf.WriteString("        " + line + "\n")
 			}
 		}
 	}
-	return os.WriteFile(path, []byte(sb.String()), 0644)
+	return os.WriteFile(path, []byte(buf.String()), 0644)
 }

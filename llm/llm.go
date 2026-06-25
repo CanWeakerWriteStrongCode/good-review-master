@@ -39,13 +39,13 @@ func NewOpenAIAdapter(apiKey, apiBase, model string, temp, topP float64) Client 
 }
 
 // Review 调用大模型
-func (o *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt string) (string, error) {
-	url := o.apiBase + "/chat/completions"
+func (adapter *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt string) (string, error) {
+	url := adapter.apiBase + "/chat/completions"
 
 	reqBody := map[string]any{
-		"model":       o.modelName,
-		"temperature": o.temperature,
-		"top_p":       o.topP,
+		"model":       adapter.modelName,
+		"temperature": adapter.temperature,
+		"top_p":       adapter.topP,
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": "以下是群聊记录：\n" + chatLog + "\n请回复"},
@@ -55,7 +55,7 @@ func (o *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt string
 	slog.Info("发送给大模型", "systemPrompt", systemPrompt, "chatLog", chatLog)
 	jsonData, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	req.Header.Set("Authorization", "Bearer "+adapter.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}

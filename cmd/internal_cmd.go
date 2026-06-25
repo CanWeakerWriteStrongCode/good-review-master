@@ -84,38 +84,38 @@ func deleteCommand(event onebot.Event, groupID string, _ string) {
 }
 
 func listCommands(event onebot.Event, groupID string, _ string) {
-	var sb strings.Builder
-	sb.WriteString("【指令帮助】\n\n")
-	sb.WriteString("使用方式：@机器人 + 关键词\n\n")
-	sb.WriteString("▎管理指令：\n")
+	var buf strings.Builder
+	buf.WriteString("【指令帮助】\n\n")
+	buf.WriteString("使用方式：@机器人 + 关键词\n\n")
+	buf.WriteString("▎管理指令：\n")
 	for _, cmd := range registry {
 		if cmd.Help == "" {
 			continue
 		}
-		sb.WriteString("  " + cmd.Keyword + "\n    → " + cmd.Help + "\n")
+		buf.WriteString("  " + cmd.Keyword + "\n    → " + cmd.Help + "\n")
 		if cmd.Keyword == "添加关键字" {
 			var types []string
-			for t := range handlerMap {
-				types = append(types, t)
+			for typ := range handlerMap {
+				types = append(types, typ)
 			}
-			sb.WriteString("    指令类型: " + strings.Join(types, "/") + "\n")
+			buf.WriteString("    指令类型: " + strings.Join(types, "/") + "\n")
 		}
 	}
-	sb.WriteString("\n▎功能指令：\n")
-	for _, r := range Routes {
-		if r.Keyword == "" {
+	buf.WriteString("\n▎功能指令：\n")
+	for _, route := range Routes {
+		if route.Keyword == "" {
 			continue
 		}
 		isSystem := false
 		for _, cmd := range registry {
-			if cmd.Keyword == r.Keyword {
+			if cmd.Keyword == route.Keyword {
 				isSystem = true
 				break
 			}
 		}
 		if !isSystem {
-			sb.WriteString("  " + r.Keyword + " [" + r.Category + "]\n")
+			buf.WriteString("  " + route.Keyword + " [" + route.Category + "]\n")
 		}
 	}
-	onebot.SendGroupMessage(groupID, sb.String())
+	onebot.SendGroupMessage(groupID, buf.String())
 }

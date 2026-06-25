@@ -53,8 +53,8 @@ func isAtBot(rawMsg string) bool {
 
 // isAllowGroup 检查群白名单
 func isAllowGroup(groupID string) bool {
-	for _, g := range strings.Split(config.AllowGroups, ",") {
-		if strings.TrimSpace(g) == groupID {
+	for _, group := range strings.Split(config.AllowGroups, ",") {
+		if strings.TrimSpace(group) == groupID {
 			return true
 		}
 	}

@@ -15,8 +15,8 @@ import (
 func RunPollingLoop() {
 	// 首次启动：拉取历史消息填充缓存
 	slog.Info("正在连接 NapCat HTTP API：" + config.NapCatHTTPAPI)
-	for _, g := range strings.Split(config.AllowGroups, ",") {
-		groupID := strings.TrimSpace(g)
+	for _, group := range strings.Split(config.AllowGroups, ",") {
+		groupID := strings.TrimSpace(group)
 		if groupID == "" {
 			continue
 		}
@@ -25,21 +25,21 @@ func RunPollingLoop() {
 			slog.Error("首次拉取群消息失败", "group", groupID, "err", err)
 			continue
 		}
-		c := cache.GetGroupCache(groupID)
-		for _, m := range msgs {
-			content := strings.TrimSpace(m.RawMessage)
+		gc := cache.GetGroupCache(groupID)
+		for _, msg := range msgs {
+			content := strings.TrimSpace(msg.RawMessage)
 			if content == "" {
 				content = ""
 			} else if len([]rune(content)) > config.MaxMsgRune {
 				content = string([]rune(content)[:config.MaxMsgRune]) + "..."
 			}
-			c.Add(cache.Message{
-				MsgID:   m.MessageID,
-				GroupID: onebot.FormatGroupID(m.GroupID),
-				UserID:  strconv.FormatInt(m.UserID, 10),
-				Nick:    m.Sender.Nickname,
+			gc.Add(cache.Message{
+				MsgID:   msg.MessageID,
+				GroupID: onebot.FormatGroupID(msg.GroupID),
+				UserID:  strconv.FormatInt(msg.UserID, 10),
+				Nick:    msg.Sender.Nickname,
 				Content: content,
-				Time:    m.Time,
+				Time:    msg.Time,
 			})
 		}
 		slog.Info("群消息缓存初始化完成", "group", groupID, "条数", len(msgs))
@@ -50,8 +50,8 @@ func RunPollingLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		for _, g := range strings.Split(config.AllowGroups, ",") {
-			groupID := strings.TrimSpace(g)
+		for _, group := range strings.Split(config.AllowGroups, ",") {
+			groupID := strings.TrimSpace(group)
 			if groupID == "" {
 				continue
 			}
@@ -62,22 +62,22 @@ func RunPollingLoop() {
 				continue
 			}
 
-			c := cache.GetGroupCache(groupID)
+			gc := cache.GetGroupCache(groupID)
 			newCount := 0
-			for _, m := range msgs {
-				if c.HasMsgID(m.MessageID) {
+			for _, msg := range msgs {
+				if gc.HasMsgID(msg.MessageID) {
 					continue
 				}
 				newCount++
-				slog.Info("收到新消息", "group", groupID, "msgID", m.MessageID, "user", m.Sender.Nickname, "content", m.RawMessage)
+				slog.Info("收到新消息", "group", groupID, "msgID", msg.MessageID, "user", msg.Sender.Nickname, "content", msg.RawMessage)
 				ProcessMessage(onebot.Event{
 					PostType:    "message",
 					MessageType: "group",
-					GroupID:     onebot.FormatGroupID(m.GroupID),
-					UserID:      strconv.FormatInt(m.UserID, 10),
-					Nickname:    m.Sender.Nickname,
-					RawMessage:  m.RawMessage,
-					MessageID:   m.MessageID,
+					GroupID:     onebot.FormatGroupID(msg.GroupID),
+					UserID:      strconv.FormatInt(msg.UserID, 10),
+					Nickname:    msg.Sender.Nickname,
+					RawMessage:  msg.RawMessage,
+					MessageID:   msg.MessageID,
 				})
 			}
 			if newCount > 0 {

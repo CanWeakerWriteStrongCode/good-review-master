@@ -64,9 +64,9 @@ type configFile struct {
 // resolveConfigPath 查找配置文件路径：优先工作目录，其次 exe 所在目录
 func resolveConfigPath(filename string) string {
 	for _, dir := range []string{".", exeDir()} {
-		p := filepath.Join(dir, filename)
-		if _, err := os.Stat(p); err == nil {
-			return p
+		path := filepath.Join(dir, filename)
+		if _, err := os.Stat(path); err == nil {
+			return path
 		}
 	}
 	return filename // 返回默认路径，后续 ReadFile 失败会报错
@@ -80,33 +80,33 @@ func exeDir() string {
 }
 
 func init() {
-	path := resolveConfigPath("config.yaml")
-	raw, err := os.ReadFile(path)
+	cfgPath := resolveConfigPath("config.yaml")
+	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		slog.Error("无法读取 config.yaml", "path", path, "err", err)
+		slog.Error("无法读取 config.yaml", "path", cfgPath, "err", err)
 		os.Exit(1)
 	}
-	var cf configFile
-	if err := yaml.Unmarshal(raw, &cf); err != nil {
+	var cfg configFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		slog.Error("config.yaml 格式错误", "err", err)
 		os.Exit(1)
 	}
 
-	NapCatHTTPAPI = cf.NapCat.HTTPAPI
-	NapCatAccessToken = cf.NapCat.AccessToken
-	BotQQ = cf.Bot.QQ
-	AllowGroups = cf.Bot.AllowGroups
-	MaxCacheMsg = cf.Runtime.MaxCacheMsg
-	LLMTimeout = time.Duration(cf.Runtime.LLMTimeoutSec) * time.Second
-	MaxMsgRune = cf.Runtime.MaxMsgRune
-	PollInterval = time.Duration(cf.Runtime.PollIntervalSec) * time.Second
+	NapCatHTTPAPI = cfg.NapCat.HTTPAPI
+	NapCatAccessToken = cfg.NapCat.AccessToken
+	BotQQ = cfg.Bot.QQ
+	AllowGroups = cfg.Bot.AllowGroups
+	MaxCacheMsg = cfg.Runtime.MaxCacheMsg
+	LLMTimeout = time.Duration(cfg.Runtime.LLMTimeoutSec) * time.Second
+	MaxMsgRune = cfg.Runtime.MaxMsgRune
+	PollInterval = time.Duration(cfg.Runtime.PollIntervalSec) * time.Second
 
 	LLMConfig = LLMConf{
-		Provider:    cf.LLM.Provider,
-		APIKey:      cf.LLM.APIKey,
-		APIBase:     cf.LLM.APIBase,
-		ModelName:   cf.LLM.ModelName,
-		Temperature: cf.LLM.Temperature,
-		TopP:        cf.LLM.TopP,
+		Provider:    cfg.LLM.Provider,
+		APIKey:      cfg.LLM.APIKey,
+		APIBase:     cfg.LLM.APIBase,
+		ModelName:   cfg.LLM.ModelName,
+		Temperature: cfg.LLM.Temperature,
+		TopP:        cfg.LLM.TopP,
 	}
 }

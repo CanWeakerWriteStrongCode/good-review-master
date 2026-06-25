@@ -10,47 +10,94 @@ go build ./...        # verify all packages compile
 go build -o good-review-master.exe .  # build binary
 ```
 
-No tests currently exist. Dependencies: `gopkg.in/yaml.v3` (config parsing), `gorilla/websocket` (declared in go.mod but unused — reserved for future WebSocket mode).
+No tests. Dependencies: `gopkg.in/yaml.v3` (config parsing).
 
 ## Architecture
 
+```
 QQ ←→ NapCatQQ (local HTTP API) ←→ Go bot (polling) ←→ LLM API (OpenAI-compatible)
+```
 
-### Package dependency graph
+### Package graph
 
 ```
-main → config, llm, bot
+main → config, llm, logutil, bot, onebot
 bot → config, cache, onebot, cmd
 cmd → config, cache, llm, onebot
 onebot → config
 cache → config
 llm → (no internal deps)
 config → (no internal deps)
+logutil → (no internal deps)
 ```
 
-No circular dependencies. `bot` is the top-level orchestrator; `cmd` handles command routing; `onebot` is the NapCat HTTP client; `cache` holds the message ring buffer; `llm` is the LLM adapter.
+`bot` is the orchestrator; `cmd` handles command routing and the handler registry; `onebot` is the NapCat HTTP client; `cache` holds per-group ring buffers; `llm` is the OpenAI-compatible client; `logutil` sets up the daily rotating logger.
 
-### Config loading (`config/`)
+## Startup sequence
 
-`config.yaml` is read at startup via `init()` in `config/config.go`. Prompt are loaded separately from `prompt_system.yaml` via `init()` in `config/prompt.go`.
+1. `logutil.SetupLogger()` — daily rotating log to `exe_dir/log/`
+2. `config/config.go` init() — loads `config.yaml` into package-level vars
+3. `config/prompt.go` init() — loads `prompt_system.yaml` → `CmdConfigs` + `SharedRules`, merges `prompt_custom.yaml`
+4. `cmd/internal_cmd.go` init() — `Register()` internal commands into the `registry`
+5. `cmd/router.go` init() — `RebuildRoutes()` builds `Routes` from registry + CmdConfigs
+6. `main.go` — instantiates `llm.DefaultClient`, fetches bot nickname via `onebot.GetLoginInfo()`, starts `bot.RunPollingLoop()`
 
-All config values are exported as package-level vars (e.g., `config.BotQQ`, `config.LLMConfig`, `config.CmdConfigs`).
+## Config files
 
-### Command routing (`cmd/`)
+| File | Loaded by | Hot-reload |
+|---|---|---|
+| `config.yaml` | `config/config.go` init() | No |
+| `prompt_system.yaml` | `config/prompt.go` init() | Yes (`ReloadPrompts()`) |
+| `prompt_custom.yaml` | merged into `CmdConfigs` at startup | Yes (`ReloadPrompts()`) |
 
-`cmd/router.go` defines `Routes`, a slice of `Route{Keyword, Prompt, Handler}`. `bot/handler.go` calls `cmd.RouteMessage()` which iterates routes and dispatches to the matching handler.
+`config.yaml` has four sections: `napcat`, `bot`, `runtime`, `llm`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
 
-Handlers have the signature `func(event onebot.Event, groupID string, prompt string)`. The prompt is passed from the route config to the handler — handlers don't read config directly.
+All config values are exported as package-level vars (`config.BotQQ`, `config.LLMConfig`, `config.CmdConfigs`, `config.SharedRules`).
 
-### LLM client (`llm/`)
+## Command system (`cmd/`)
+
+### Two kinds of commands
+
+| Kind | Defined in | Examples |
+|---|---|---|
+| Internal | `cmd/internal_cmd.go` via `Register()` | `添加关键字`, `删除关键字`, `帮助` |
+| User | `prompt_system.yaml` / `prompt_custom.yaml` YAML lists | `锐评下`, `猫娘来看看` |
+
+### Command struct and registry (`cmd/command.go`)
 
 ```go
-type Client interface {
-    Review(ctx context.Context, chatLog, systemPrompt string) (string, error)
+type Command struct {
+    Keyword     string
+    Help        string
+    Category    string  // "chat_review" | "direct_ask" | "internal"
+    SharedRules string
+    Handler     func(onebot.Event, string, string)
+}
+func Register(cmd Command)  // appends to registry (call in init())
+func RebuildRoutes()        // rebuilds Routes from registry + CmdConfigs
+func IsInternalKeyword(keyword string) bool
+```
+
+### Route building (`RebuildRoutes`)
+
+1. System routes: iterate `registry`, create one `Route` per `Command`
+2. User routes: iterate `config.CmdConfigs`, look up handler in `handlerMap`, create one `Route` per keyword
+
+`handlerMap` maps YAML category names to handler functions:
+```go
+var handlerMap = map[string]func(onebot.Event, string, string){
+    "chat_review": chatReview,
 }
 ```
 
-The prompt is NOT baked into the adapter — each handler passes its own prompt. `llm.DefaultClient` is the global instance, set by `main()`.
+### Route dispatch (`cmd/router.go`)
+
+`RouteMessage(content, event, groupID)`:
+1. `stripCQPrefix()` — strips `[CQ:at,qq=xxx]` codes and `@Nickname` text
+2. Linear scan of `Routes`, match by `strings.HasPrefix(text, keyword)`
+3. Extra text after keyword becomes `"用户补充,优先级很高:{extra}"` appended to prompt
+4. Prompt is wrapped with bot identity: QQ, nickname, and mentioner's nickname
+5. Handler receives `(event, groupID, enrichedPrompt)`
 
 ### Message flow
 
@@ -59,42 +106,56 @@ polling (bot/polling.go) → fetch history (onebot)
                          → dedup via cache.HasMsgID
                          → ProcessMessage (bot/handler.go)
                             → whitelist check
-                            → emoji filter
+                            → truncate to MaxMsgRune
                             → add to ring cache
-                            → @bot detection
+                            → @bot detection (QQ number + nickname)
                             → cmd.RouteMessage → handler
 ```
 
-### Ring buffer cache (`cache/`)
+## Adding a new command type
 
-Per-group `GroupMsgCache`, initialized lazily via `GetGroupCache(groupID)`. Fixed capacity (`config.MaxCacheMsg`), oldest evicted when full. `HasMsgID()` deduplicates across polls.
+1. Write a handler: `func handlerName(event onebot.Event, groupID string, prompt string)`
+2. Add to `handlerMap` in `cmd/command.go`: `"category_name": handlerName`
+3. Add entries in `prompt_system.yaml` under `cmd.category_name:` as a list of `{keyword, prompt}`
+4. Optionally add shared rules under `rules.category_name:`
 
-## Adding a new command
+Routes are auto-generated. No router changes needed.
 
-Three steps, no changes to `config/config.go` needed:
+## Internal commands
 
-1. Add config in `prompt_system.yaml` under `cmd:`:
-   ```yaml
-   weather:
-     keyword: "天气"
-     prompt: "你是天气助手..."
-   ```
+Defined purely in Go (no YAML). Each calls `Register(Command{...})` in `init()`. Currently three: add keyword (prompt via LLM), delete keyword, help listing.
 
-2. Create handler in `cmd/weather.go`:
-   ```go
-   func weather(event onebot.Event, groupID string, prompt string) {
-       // call llm.DefaultClient.Review(ctx, chatLog, prompt) or send static reply
-   }
-   ```
+`添加关键字` format: `添加关键字(关键词)指令(类型)大模型想提示词(要点)` — the LLM generates the prompt from the requirements. Writing goes to `prompt_custom.yaml`.
 
-3. Add route in `cmd/router.go`:
-   ```go
-   {Keyword: config.CmdConfigs["weather"].Keyword, Prompt: config.CmdConfigs["weather"].Prompt, Handler: weather},
-   ```
+`删除关键字` format: `删除关键字(关键词)`. Both refuse to touch keywords that exist in `prompt_system.yaml` or in the registry.
 
-## Configuration notes
+## @mention detection (`bot/handler.go`)
 
-- `config.yaml` contains real credentials — NOT committed to git (the user manages this manually)
-- `config_example.yaml` is the template for new users
-- `prompt_system.yaml` contains LLM prompt — also NOT committed
-- YAML with `#` comments, standard Go yaml.v3 parsing
+`isAtBot(rawMsg)` checks two things: `strings.Contains(rawMsg, config.BotQQ)` (catches CQ codes like `[CQ:at,qq=xxx]`), and `strings.Contains(rawMsg, "@"+config.BotNickname)` (catches text @mentions). The nickname is fetched at startup via `onebot.GetLoginInfo()`; failure is non-fatal.
+
+## LLM client (`llm/`)
+
+```go
+type Client interface {
+    Review(ctx context.Context, chatLog, systemPrompt string) (string, error)
+}
+```
+
+`OpenAIAdapter` implements `Client`. Sends `model`, `temperature`, `top_p`, and `messages` to `{apiBase}/chat/completions`. The user message is hardcoded as `"以下是群聊记录：\n{chatLog}\n请回复"`. Set via `llm.DefaultClient = llm.NewOpenAIAdapter(...)`.
+
+## Ring buffer cache (`cache/`)
+
+Per-group `GroupMsgCache` via `GetGroupCache(groupID)`. Fixed capacity (`config.MaxCacheMsg`), oldest evicted. `HasMsgID()` deduplicates. `BuildChatLog(msgs)` formats `"昵称：内容\n"` lines. Chat log is sent to LLM with all cached messages — no filtering or prioritization.
+
+## Logging (`logutil/`)
+
+`SetupLogger()` creates a `log/` directory next to the exe. One file per day (`2026-06-25.log`), sliced at 20MB (`2026-06-25_1.log`), cleaned after 30 days. Writes to both stdout and file via `io.MultiWriter`.
+
+## Config notes
+
+- `config.yaml` and `prompt_system.yaml` contain real credentials/prompts — NOT committed
+- `prompt_custom.yaml` is created automatically, also NOT committed
+- `config_example.yaml` is the committed template
+- YAML with `#` comments, standard `gopkg.in/yaml.v3` parsing
+- `resolveConfigPath(filename)` searches `./` then `exeDir/`
+- `customPromptPath()` forces `prompt_custom.yaml` into the same directory as `prompt_system.yaml`

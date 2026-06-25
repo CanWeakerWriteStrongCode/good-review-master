@@ -2,16 +2,16 @@ package main
 
 import (
 	"log/slog"
-	"os"
 
 	"good-review-master/bot"
 	"good-review-master/config"
 	"good-review-master/llm"
+	"good-review-master/logutil"
 	"good-review-master/onebot"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	logutil.SetupLogger()
 
 	switch config.LLMConfig.Provider {
 	case "openai":
