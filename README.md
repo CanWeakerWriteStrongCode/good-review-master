@@ -85,7 +85,8 @@ go run .
 ```bash
 # Windows：双击 build_exe.bat
 # Linux：./build_linux.sh
-# config.yaml 配置和 prompt_system.yaml 配置放到exe同目录下，运行即可
+# 将生成的 exe 放到空目录，首次运行会自动创建 config.yaml 并退出
+# 编辑 config.yaml 填入你的配置，重新运行 exe 即可
 ```
 
 ## ⚙ 配置说明
@@ -316,7 +317,8 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 ```bash
 # Windows: double-click build_exe.bat
 # Linux: ./build_linux.sh
-# Place config.yaml and prompt_system.yaml next to the exe, then run
+# Place the exe in an empty directory. First run auto-creates config.yaml.
+# Edit config.yaml with your settings, then run again.
 ```
 
 ## Configuration
