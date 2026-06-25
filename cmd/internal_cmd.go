@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -22,17 +23,26 @@ const ruleGenSystem = `你是一个提示词工程师。根据用户描述的规
 
 const (
 	fmtAddCmd  = "添加关键字(关键词)指令(指令类型)大模型想提示词(要点)"
+	helpAddCmd = "格式：" + fmtAddCmd + "\n可用指令类型: chat_review"
+
 	fmtDelCmd  = "删除关键字(关键词)"
-	fmtAddRule = "添加指令规则(指令类型)规则要点(要点)"
-	fmtDelRule = "删除指令规则(类型)"
+	helpDelCmd = "格式：" + fmtDelCmd
+
+	fmtAddRule  = "添加指令规则(指令类型)规则要点(要点)"
+	helpAddRule = "格式：" + fmtAddRule + "\n可用指令类型: chat_review\n动态修改 prompt 中特定类型指令的共享规则，如：禁止骂人"
+
+	fmtDelRule  = "删除指令规则(类型)"
+	helpDelRule = "格式：" + fmtDelRule + "\n删除 prompt 中特定类型指令的共享规则"
+
+	helpHelp = "查看可用指令"
 )
 
 func init() {
-	Register(Command{Keyword: "添加关键字", Help: "格式：" + fmtAddCmd, Category: "internal", Handler: addCommand})
-	Register(Command{Keyword: "删除关键字", Help: "格式：" + fmtDelCmd, Category: "internal", Handler: deleteCommand})
-	Register(Command{Keyword: "添加指令规则", Help: "格式：" + fmtAddRule + "\n动态修改 prompt 中特定类型指令的共享规则，如：禁止骂人", Category: "internal", Handler: addRule})
-	Register(Command{Keyword: "删除指令规则", Help: "格式：" + fmtDelRule + "\n删除 prompt 中特定类型指令的共享规则", Category: "internal", Handler: deleteRule})
-	Register(Command{Keyword: "帮助", Help: "查看可用指令", Category: "internal", Handler: listCommands})
+	Register(Command{Keyword: "添加关键字", Help: helpAddCmd, Category: "internal", Handler: addCommand})
+	Register(Command{Keyword: "删除关键字", Help: helpDelCmd, Category: "internal", Handler: deleteCommand})
+	Register(Command{Keyword: "添加指令规则", Help: helpAddRule, Category: "internal", Handler: addRule})
+	Register(Command{Keyword: "删除指令规则", Help: helpDelRule, Category: "internal", Handler: deleteRule})
+	Register(Command{Keyword: "帮助", Help: helpHelp, Category: "internal", Handler: listCommands})
 }
 
 func addCommand(event onebot.Event, groupID string, _ string) {
@@ -161,16 +171,10 @@ func listCommands(event onebot.Event, groupID string, _ string) {
 		if cmd.Help == "" {
 			continue
 		}
-		buf.WriteString("  " + cmd.Keyword + "\n")
-		for _, line := range strings.Split(cmd.Help, "\n") {
-			buf.WriteString("    → " + line + "\n")
-		}
-		if cmd.Keyword == "添加关键字" || cmd.Keyword == "添加指令规则" {
-			var types []string
-			for typ := range handlerMap {
-				types = append(types, typ)
-			}
-			buf.WriteString("    → 指令类型: " + strings.Join(types, "/") + "\n")
+		buf.WriteString("→ " + cmd.Keyword + "\n")
+		helpLines := strings.Split(cmd.Help, "\n")
+		for i, line := range helpLines {
+			buf.WriteString(fmt.Sprintf("    %d.%s\n", i+1, line))
 		}
 	}
 	buf.WriteString("\n▎功能指令：\n")
