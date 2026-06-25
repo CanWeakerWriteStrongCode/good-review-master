@@ -5,6 +5,8 @@ import (
 	"os"
 	"time"
 
+	"good-review-master/apppath"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,11 +63,11 @@ type configFile struct {
 }
 
 func init() {
-	cfgPath := resolveConfigPath("config.yaml")
+	cfgPath := apppath.ResolvePath("config.yaml")
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		// config.yaml 不存在，从内置模板创建
-		destPath := writePath("config.yaml")
+		destPath := apppath.WritePath("config.yaml")
 		if writeErr := os.WriteFile(destPath, configExampleTemplate, 0644); writeErr != nil {
 			slog.Error("无法创建 config.yaml", "path", destPath, "err", writeErr)
 			os.Exit(1)

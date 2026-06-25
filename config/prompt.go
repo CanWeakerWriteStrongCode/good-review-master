@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"good-review-master/apppath"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,10 +38,10 @@ func init() {
 
 func loadPrompts() {
 	CmdConfigs = make(map[string][]CmdConf)
-	cfgPath := resolveConfigPath("prompt_system.yaml")
+	cfgPath := apppath.ResolvePath("prompt_system.yaml")
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		destPath := writePath("prompt_system.yaml")
+		destPath := apppath.WritePath("prompt_system.yaml")
 		if writeErr := writePromptSystem(destPath); writeErr != nil {
 			slog.Warn("无法创建 prompt_system.yaml，以空指令集启动", "err", writeErr)
 		} else {
@@ -91,7 +93,7 @@ func ReloadPrompts() {
 
 // KeywordInMainPrompt 检查 keyword 是否已存在于 prompt.yaml（直接读文件校验）
 func KeywordInMainPrompt(category, keyword string) bool {
-	raw, err := os.ReadFile(resolveConfigPath("prompt_system.yaml"))
+	raw, err := os.ReadFile(apppath.ResolvePath("prompt_system.yaml"))
 	if err != nil {
 		return false
 	}
@@ -109,7 +111,7 @@ func KeywordInMainPrompt(category, keyword string) bool {
 
 // KeywordInMainPromptAny 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在
 func KeywordInMainPromptAny(keyword string) bool {
-	raw, err := os.ReadFile(resolveConfigPath("prompt_system.yaml"))
+	raw, err := os.ReadFile(apppath.ResolvePath("prompt_system.yaml"))
 	if err != nil {
 		return false
 	}
@@ -185,7 +187,7 @@ func AddPromptCommand(category, keyword, promptText string) error {
 
 // customPromptPath 返回 prompt_custom.yaml 的路径（与 prompt.yaml 同目录）
 func customPromptPath() string {
-	return filepath.Join(filepath.Dir(resolveConfigPath("prompt_system.yaml")), "prompt_custom.yaml")
+	return filepath.Join(filepath.Dir(apppath.ResolvePath("prompt_system.yaml")), "prompt_custom.yaml")
 }
 
 // writePromptCustom 写入 prompt_custom.yaml，强制 prompt/rule 使用 | 格式
@@ -263,7 +265,7 @@ func DeletePromptRule(category string) error {
 
 // RuleInMainPrompt 检查规则 category 是否在 prompt_system.yaml 中存在
 func RuleInMainPrompt(category string) bool {
-	raw, err := os.ReadFile(resolveConfigPath("prompt_system.yaml"))
+	raw, err := os.ReadFile(apppath.ResolvePath("prompt_system.yaml"))
 	if err != nil {
 		return false
 	}

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"good-review-master/apppath"
 )
 
 const (
@@ -26,8 +28,7 @@ type dailyWriter struct {
 
 // SetupLogger 初始化日志：exe 同级 log/ 目录，按天滚动，20MB 切片，30 天清理，同时输出控制台
 func SetupLogger() {
-	workDir, _ := os.Getwd()
-	logDir := filepath.Join(workDir, "log")
+	logDir := filepath.Join(apppath.ExeDir(), "log")
 	os.MkdirAll(logDir, 0755)
 
 	writer := &dailyWriter{dir: logDir}
