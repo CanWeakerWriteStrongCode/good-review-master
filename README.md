@@ -67,10 +67,10 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
 
-# 2. 复制创建配置文件config_example.yaml 名字改成 config.yaml
+# 2. 复制 config_example.yaml 为 config.yaml，填入你的配置
 cp config_example.yaml config.yaml
 
-# 3. 编辑 config.yaml，填入你的配置（详见下方配置说明），编辑prompt_system.yaml可以修改不同功能的提示词
+# 3. 编辑 config.yaml（详见下方配置说明），编辑 prompt_system.yaml 可修改提示词
 
 # 4. 运行
 # Windows：双击 start_main.bat
@@ -236,6 +236,7 @@ var handlerMap = map[string]func(onebot.Event, string, string){
 - 本机或云服务器均可，无需公网 IP
 - NapCatQQ 和 Go Bot 部署在同一台机器上，纯内网 HTTP 通信
 - 编译为单二进制文件，无运行时依赖，丢上去就跑
+- **首次启动自动创建 config.yaml**：exe 运行时若同目录没有 `config.yaml`，自动从内置模板生成一份，编辑后重新运行即可。无需手动准备 `config_example.yaml`
 - 推荐使用 `systemd`（Linux）或任务计划程序（Windows）设为开机自启
 
 ---
@@ -305,6 +306,10 @@ cp config_example.yaml config.yaml
 # Edit prompt_system.yaml to customize prompts
 go run .
 ```
+
+### Run compiled exe
+
+Drop the exe in an empty directory and run it. On first launch, if `config.yaml` is missing, the exe auto-creates it from a built-in template. Edit the generated `config.yaml` and restart.
 
 ### Build executable
 

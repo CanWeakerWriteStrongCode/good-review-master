@@ -83,8 +83,17 @@ func init() {
 	cfgPath := resolveConfigPath("config.yaml")
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		slog.Error("无法读取 config.yaml", "path", cfgPath, "err", err)
-		os.Exit(1)
+		// config.yaml 不存在，从内置模板创建
+		destPath := filepath.Join(exeDir(), "config.yaml")
+		if _, statErr := os.Stat(exeDir()); statErr != nil {
+			destPath = "config.yaml"
+		}
+		if writeErr := os.WriteFile(destPath, configExampleTemplate, 0644); writeErr != nil {
+			slog.Error("无法创建 config.yaml", "path", destPath, "err", writeErr)
+			os.Exit(1)
+		}
+		slog.Info("已从内置模板创建 config.yaml，请编辑后重新运行", "path", destPath)
+		os.Exit(0)
 	}
 	var cfg configFile
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
