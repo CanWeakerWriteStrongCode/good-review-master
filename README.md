@@ -155,7 +155,7 @@ rules:
 
 ```
 good-review-master/
-├── main.go                  # 入口：初始化配置、LLM 客户端，启动轮询
+├── main.go                  # 入口：初始化配置、LLM 客户端，启动轮询 + 优雅退出
 ├── go.mod / go.sum           # Go 模块依赖
 ├── config.yaml               # 运行时配置（gitignore）
 ├── prompt_system.yaml        # 系统提示词配置（gitignore）
@@ -165,37 +165,41 @@ good-review-master/
 ├── config/
 │   ├── config.go             # 运行时配置加载（config.yaml → struct）
 │   ├── config_example.yaml   # 内置配置模板（编译时嵌入 exe）
-│   ├── embed.go              //go:embed 模板嵌入
-│   └── prompt.go             # 提示词配置加载（prompt_system.yaml + prompt_custom.yaml）
+│   ├── embed.go              # //go:embed 模板嵌入
+│   └── prompt.go             # 提示词配置加载+热重载+增删改
 ├── cache/
-│   └── cache.go              # 消息环形缓冲区（按群维度、去重）
+│   └── cache.go              # 环形缓冲区（零拷贝写入，O(1) 去重）
 ├── llm/
-│   └── llm.go                # 大模型客户端接口（OpenAI 兼容）
+│   └── llm.go                # 大模型客户端（go-openai SDK，连接池，类型安全）
+├── safego/
+│   └── safego.go             # 安全 goroutine 管理器（errgroup + ctx 自动传播 + panic recover）
 ├── logutil/
-│   └── logger.go             # 日志（按天轮转、20MB 切片、保留 30 天）
+│   └── logger.go             # 日志（zap + lumberjack，20MB 切割，30 天保留）
 ├── onebot/
-│   ├── client.go             # NapCatQQ HTTP API 客户端
+│   ├── client.go             # NapCatQQ HTTP API 客户端（resty，自动序列化+重试）
 │   └── types.go              # API 数据类型定义
 ├── bot/
-│   ├── polling.go            # 轮询拉取消息 + 去重
+│   ├── polling.go            # 轮询拉取消息 + 去重（context 支持优雅退出）
 │   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
 └── cmd/
-    ├── command.go            # Command 结构体 + 注册表 + 路由构建
-    ├── router.go              # 指令路由分发 + @前缀剥离
+    ├── command.go            # Router + 前缀树(trie)路由匹配 + 安全 goroutine 启动
     ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、帮助）
-    └── chat_review.go         # chat_review 处理函数
+    └── chat_review.go         # chat_review 异步处理函数
 ```
 
 ### 包依赖关系
 
 ```
-main → config, llm, logutil, bot
+main → config, llm, logutil, bot, onebot, safego
 bot → config, cache, onebot, cmd
-cmd → config, cache, llm, onebot
-onebot → config
-cache → config
+cmd → config, cache, llm, onebot, safego
+safego → logutil
+onebot → (无内部依赖)
+cache → (无内部依赖)
 llm → (无内部依赖)
-config → (无内部依赖)
+config → apppath
+logutil → apppath
+apppath → (无内部依赖)
 ```
 
 ## ➕ 扩展新指令
@@ -225,23 +229,25 @@ cmd:
       prompt: "你是天气助手..."
 ```
 
-**2. 在 `cmd/` 下新建 handler 文件**（如 `weather.go`）
+**2. 在 `cmd/` 下新建 handler 文件**（如 `weather.go`），handler 为 Router 的方法：
 
 ```go
-func weather(event onebot.Event, groupID string, prompt string) {
-    go func() {
-        // 调用 llm.DefaultClient.Review(ctx, chatLog, prompt)
-        // 或发送静态回复
-    }()
+func (r *Router) weatherHandler(event onebot.Event, groupID string, prompt string) {
+    r.Go(func(ctx context.Context) error {
+        // 异步安全启动：ctx 自动继承 shutdown 信号
+        reply, err := r.llmClient.Review(ctx, chatLog, prompt)
+        ...
+        return nil
+    })
 }
 ```
 
-**3. 在 `cmd/router.go` 的 `handlerMap` 注册**
+**3. 在 `cmd/command.go` 的 `NewRouter()` 中注册到 `handlerMap`**：
 
 ```go
-var handlerMap = map[string]func(onebot.Event, string, string){
-    "chat_review": sharpTake,
-    "weather":     weather,  // 新增这一行
+r.handlerMap = map[string]HandlerFunc{
+    "chat_review": r.chatReview,
+    "weather":     r.weatherHandler,  // 新增这一行
 }
 ```
 
@@ -292,14 +298,14 @@ QQ ←→ NapCatQQ (local HTTP API) ←→ Go Bot (polling) ←→ LLM API (Open
 
 ```
 Polling loop (bot/polling.go)
-  → Fetch history from NapCat (onebot)
-  → Dedup via message ID cache
+  → Fetch history from NapCat (onebot, resty)
+  → Dedup via O(1) msgID set
   → ProcessMessage (bot/handler.go)
      → Whitelist check
      → Truncate to max length
-     → Store in per-group ring buffer
+     → Store in ring buffer (zero-copy write)
      → @bot detection (QQ number + nickname)
-     → Route to matching command handler
+     → Prefix trie match → command handler
 ```
 
 ## Quick Start
@@ -457,23 +463,25 @@ cmd:
       prompt: "You are a weather assistant..."
 ```
 
-**2. Create a new handler file in `cmd/`** (e.g. `weather.go`)
+**2. Create a new handler file in `cmd/`** (e.g. `weather.go`), handler must be a Router method:
 
 ```go
-func weather(event onebot.Event, groupID string, prompt string) {
-    go func() {
-        // Call llm.DefaultClient.Review(ctx, chatLog, prompt)
-        // Or send a static reply
-    }()
+func (r *Router) weatherHandler(event onebot.Event, groupID string, prompt string) {
+    r.Go(func(ctx context.Context) error {
+        // Safe async: ctx auto-inherits shutdown signal
+        reply, err := r.llmClient.Review(ctx, chatLog, prompt)
+        ...
+        return nil
+    })
 }
 ```
 
-**3. Register in `handlerMap` in `cmd/command.go`**
+**3. Register in `handlerMap` in `cmd/command.go` `NewRouter()`**
 
 ```go
-var handlerMap = map[string]func(onebot.Event, string, string){
-    "chat_review": chatReview,
-    "weather":     weather,  // add this line
+r.handlerMap = map[string]HandlerFunc{
+    "chat_review": r.chatReview,
+    "weather":     r.weatherHandler,  // add this line
 }
 ```
 
@@ -481,7 +489,7 @@ var handlerMap = map[string]func(onebot.Event, string, string){
 
 ```
 good-review-master/
-├── main.go                  # Entry point: init config, LLM client, start polling
+├── main.go                  # Entry point: init config, LLM client, start polling + graceful shutdown
 ├── go.mod / go.sum           # Go module dependencies
 ├── config.yaml               # Live config (gitignored)
 ├── prompt_system.yaml        # System prompts (gitignored)
@@ -492,29 +500,30 @@ good-review-master/
 │   ├── config.go             # Runtime config (config.yaml → struct)
 │   ├── config_example.yaml   # Built-in config template (embedded at build time)
 │   ├── embed.go              # //go:embed template embedding
-│   └── prompt.go             # Prompt config (prompt_system.yaml + prompt_custom.yaml)
+│   └── prompt.go             # Prompt config loading + hot-reload + CRUD
 ├── cache/
-│   └── cache.go              # Per-group message ring buffer with dedup
+│   └── cache.go              # Per-group ring buffer (zero-copy writes, O(1) dedup)
 ├── llm/
-│   └── llm.go                # OpenAI-compatible LLM client
+│   └── llm.go                # LLM client (go-openai SDK, connection pooling, typed)
+├── safego/
+│   └── safego.go             # Safe goroutine manager (errgroup + auto ctx + panic recover)
 ├── logutil/
-│   └── logger.go             # Daily rotating file logger (20MB slices, 30-day retention)
+│   └── logger.go             # Logging (zap + lumberjack, 20MB rotation, 30-day retention)
 ├── onebot/
-│   ├── client.go             # NapCatQQ HTTP API client
+│   ├── client.go             # NapCatQQ HTTP API client (resty, auto-marshal + retry)
 │   └── types.go              # API data types
 ├── bot/
-│   ├── polling.go            # HTTP poll loop + history fetching
+│   ├── polling.go            # HTTP poll loop + history fetching (context-aware)
 │   └── handler.go            # Message processing: whitelist → @detection → routing
 └── cmd/
-    ├── command.go            # Command struct + registry + route builder
-    ├── router.go             # Route dispatcher + @prefix stripping
+    ├── command.go            # Router + prefix trie matching + safe goroutine launch
     ├── internal_cmd.go       # Internal commands (add/delete keyword, help)
-    └── chat_review.go        # chat_review handler
+    └── chat_review.go        # Async chat_review handler
 ```
 
 ## Logging
 
-Logs are written to the `log/` directory under the working directory. Files are named by date (`2026-06-25.log`), split at 20MB (`2026-06-25_1.log`), and auto-cleaned after 30 days. Logs go to both stdout and file.
+Logs are written to the `log/` directory under the working directory. Uses `zap` + `lumberjack`: size-based rotation at 20MB, max 30 backup files, 30-day retention, gzip-compressed old files. Logs go to both stdout (colored) and file.
 
 ## Deployment
 
