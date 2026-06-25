@@ -91,22 +91,22 @@ go run .
 
 ## ⚙ 配置说明
 
-| 配置项 | 说明 | 示例值 |
-|--------|------|--------|
-| `napcat.http_api` | NapCatQQ HTTP API 地址 | `http://127.0.0.1:3000` |
-| `napcat.access_token` | NapCatQQ 访问令牌（WebUI 中设置） | `""` |
-| `bot.qq` | 机器人 QQ 号 | `123456` |
-| `bot.allow_groups` | 允许响应的群号（逗号分隔） | `123456,789012` |
-| `llm.provider` | 固定填 `openai`（兼容所有 OpenAI 格式） | `openai` |
-| `llm.api_key` | 大模型 API Key | `sk-xxx` |
-| `llm.api_base` | 大模型接口地址 | `https://api.deepseek.com` |
-| `llm.model_name` | 模型名称 | `deepseek-v4-flash` |
-| `llm.temperature` | 锐评风格：1.0=发散 0.5=集中 | `0.8` |
-| `llm.top_p` | 核采样参数：越小输出越集中 | `0.9` |
-| `runtime.max_cache_msg` | 缓存消息数 | `30` |
-| `runtime.llm_timeout_sec` | 大模型超时（秒） | `20` |
-| `runtime.max_msg_rune` | 单条消息最大字符数 | `200` |
-| `runtime.poll_interval_sec` | 轮询间隔（秒） | `3` |
+| 配置项                         | 说明                           | 示例值                        |
+|-----------------------------|------------------------------|----------------------------|
+| `napcat.http_api`           | NapCatQQ HTTP API 地址         | `http://127.0.0.1:3000`    |
+| `napcat.access_token`       | NapCatQQ 访问令牌（WebUI 中设置）     | `""`                       |
+| `bot.qq`                    | 机器人 QQ 号                     | `123456`                   |
+| `bot.allow_groups`          | 允许响应的群号（逗号分隔）                | `123456,789012`            |
+| `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式） | `openai`                   |
+| `llm.api_key`               | 大模型 API Key                  | `sk-xxx`                   |
+| `llm.api_base`              | 大模型接口地址                      | `https://api.deepseek.com` |
+| `llm.model_name`            | 模型名称                         | `deepseek-v4-flash`        |
+| `llm.temperature`           | 锐评风格：1.0=发散 0.5=集中           | `1.2`                      |
+| `llm.top_p`                 | 核采样参数：越小输出越集中                | `0.95`                     |
+| `runtime.max_cache_msg`     | 缓存消息数                        | `30`                       |
+| `runtime.llm_timeout_sec`   | 大模型超时（秒）                     | `20`                       |
+| `runtime.max_msg_rune`      | 单条消息最大字符数                    | `200`                      |
+| `runtime.poll_interval_sec` | 轮询间隔（秒）                      | `3`                        |
 
 ### 指令提示词配置
 
