@@ -16,11 +16,12 @@ type Message struct {
 	Time    int64
 }
 
-// GroupMsgCache 群消息环形缓存
+// GroupMsgCache 群消息环形缓存（零拷贝实现）
 type GroupMsgCache struct {
-	messages []Message
+	buf      []Message          // 固定大小环形缓冲区，只分配一次
+	writeAt  int                // 下一个写入位置
 	msgIDSet map[int64]struct{} // O(1) 去重查找
-	maxSize  int
+	filled   bool               // 是否已写满一圈
 	mu       sync.RWMutex
 }
 
@@ -39,9 +40,8 @@ func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 		cacheMu.Lock()
 		if gc, ok = cacheMap[groupID]; !ok {
 			gc = &GroupMsgCache{
-				messages: make([]Message, 0, maxSize),
+				buf:      make([]Message, maxSize),
 				msgIDSet: make(map[int64]struct{}, maxSize),
-				maxSize:  maxSize,
 			}
 			cacheMap[groupID] = gc
 		}
@@ -50,26 +50,43 @@ func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 	return gc
 }
 
-// Add 添加消息到缓存（环形队列，超出容量自动淘汰最早的）
+// Add 添加消息到环形缓存（满了直接覆盖，零拷贝）
 func (gc *GroupMsgCache) Add(msg Message) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 
-	if len(gc.messages) >= gc.maxSize {
-		evicted := gc.messages[0]
-		delete(gc.msgIDSet, evicted.MsgID)
-		gc.messages = gc.messages[1:]
+	// 淘汰即将被覆盖的老消息
+	old := gc.buf[gc.writeAt]
+	if old.MsgID != 0 {
+		delete(gc.msgIDSet, old.MsgID)
 	}
-	gc.messages = append(gc.messages, msg)
+
+	gc.buf[gc.writeAt] = msg
 	gc.msgIDSet[msg.MsgID] = struct{}{}
+	gc.writeAt++
+	if gc.writeAt >= len(gc.buf) {
+		gc.writeAt = 0
+		gc.filled = true
+	}
 }
 
-// GetAll 获取所有缓存消息（快照副本）
+// GetAll 获取所有缓存消息（按时间排序的快照副本）
 func (gc *GroupMsgCache) GetAll() []Message {
 	gc.mu.RLock()
 	defer gc.mu.RUnlock()
-	msgs := make([]Message, len(gc.messages))
-	copy(msgs, gc.messages)
+
+	if !gc.filled {
+		// 没满一圈，直接返回 [0, writeAt)
+		msgs := make([]Message, gc.writeAt)
+		copy(msgs, gc.buf[:gc.writeAt])
+		return msgs
+	}
+
+	// 已满一圈，返回 [writeAt, end) + [0, writeAt) 保持时间顺序
+	n := len(gc.buf)
+	msgs := make([]Message, n)
+	tailLen := copy(msgs, gc.buf[gc.writeAt:])
+	copy(msgs[tailLen:], gc.buf[:gc.writeAt])
 	return msgs
 }
 
