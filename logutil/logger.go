@@ -60,7 +60,8 @@ func SetupLogger() {
 	)
 
 	base := zap.New(zapcore.NewTee(consoleCore, fileCore), zap.AddCaller())
-	sugar = base.Sugar()
+	// AddCallerSkip(1) 跳过 logutil 包装函数帧，让 caller 指向真实调用位置
+	sugar = base.WithOptions(zap.AddCallerSkip(1)).Sugar()
 	zap.ReplaceGlobals(base)
 }
 
