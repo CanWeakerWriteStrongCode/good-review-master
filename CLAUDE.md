@@ -125,7 +125,7 @@ Routes are auto-generated. No router changes needed.
 
 Defined purely in Go (no YAML). Each calls `Register(Command{...})` in `init()`. Currently three: add keyword (prompt via LLM), delete keyword, help listing.
 
-`添加关键字` format: `添加关键字(关键词)指令(类型)大模型想提示词(要点)` — the LLM generates the prompt from the requirements. Writing goes to `prompt_custom.yaml`.
+`添加关键字` format: `添加关键字(关键词)指令(指令类型)大模型想提示词(要点)` — the LLM generates the prompt from the requirements. Writing goes to `prompt_custom.yaml`.
 
 `删除关键字` format: `删除关键字(关键词)`. Both refuse to touch keywords that exist in `prompt_system.yaml` or in the registry.
 
