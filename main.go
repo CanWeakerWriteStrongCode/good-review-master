@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"good-review-master/apppath"
 	"good-review-master/bot"
@@ -66,7 +69,13 @@ func main() {
 	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
 	logutil.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
 
-	// 7. 创建机器人并启动轮询
+	// 7. 创建机器人并启动轮询（支持优雅退出）
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	botInstance := bot.NewBot(cfg, obClient, router)
-	botInstance.RunPollingLoop()
+	go botInstance.RunPollingLoop(ctx)
+
+	<-ctx.Done()
+	logutil.Info("收到退出信号，正在关闭...")
 }

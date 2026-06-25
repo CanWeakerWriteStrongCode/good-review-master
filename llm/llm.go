@@ -1,13 +1,13 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"good-review-master/logutil"
-	"net/http"
 	"strings"
+
+	"good-review-master/logutil"
+
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // Client 大模型统一接口
@@ -15,62 +15,43 @@ type Client interface {
 	Review(ctx context.Context, chatLog, systemPrompt string) (string, error)
 }
 
-// OpenAIAdapter 适配所有OpenAI协议的大模型
+// OpenAIAdapter 适配所有OpenAI协议的大模型（基于 go-openai SDK）
 type OpenAIAdapter struct {
-	apiKey      string
-	apiBase     string
-	modelName   string
-	temperature float64
-	topP        float64
+	client *openai.Client
+	model  string
+	temp   float32
+	topP   float32
 }
 
 // NewOpenAIAdapter 创建OpenAI兼容的大模型客户端
 func NewOpenAIAdapter(apiKey, apiBase, model string, temp, topP float64) Client {
+	cfg := openai.DefaultConfig(apiKey)
+	cfg.BaseURL = strings.TrimSuffix(apiBase, "/")
 	return &OpenAIAdapter{
-		apiKey:      apiKey,
-		apiBase:     strings.TrimSuffix(apiBase, "/"),
-		modelName:   model,
-		temperature: temp,
-		topP:        topP,
+		client: openai.NewClientWithConfig(cfg),
+		model:  model,
+		temp:   float32(temp),
+		topP:   float32(topP),
 	}
 }
 
 // Review 调用大模型
 func (adapter *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt string) (string, error) {
-	url := adapter.apiBase + "/chat/completions"
-
-	reqBody := map[string]any{
-		"model":       adapter.modelName,
-		"temperature": adapter.temperature,
-		"top_p":       adapter.topP,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": "以下是群聊记录：\n" + chatLog + "\n请回复"},
-		},
-	}
-
 	logutil.Info("发送给大模型", "systemPrompt", systemPrompt, "chatLog", chatLog)
-	jsonData, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	req.Header.Set("Authorization", "Bearer "+adapter.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := adapter.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model: adapter.model,
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
+			{Role: openai.ChatMessageRoleUser, Content: "以下是群聊记录：\n" + chatLog + "\n请回复"},
+		},
+		Temperature: adapter.temp,
+		TopP:        adapter.topP,
+	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("大模型调用失败: %w", err)
 	}
-	defer resp.Body.Close()
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	choices, ok := result["choices"].([]any)
-	if !ok || len(choices) == 0 {
+	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("大模型返回为空")
 	}
-	msg := choices[0].(map[string]any)["message"].(map[string]any)
-	return msg["content"].(string), nil
+	return resp.Choices[0].Message.Content, nil
 }

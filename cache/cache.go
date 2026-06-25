@@ -19,6 +19,7 @@ type Message struct {
 // GroupMsgCache 群消息环形缓存
 type GroupMsgCache struct {
 	messages []Message
+	msgIDSet map[int64]struct{} // O(1) 去重查找
 	maxSize  int
 	mu       sync.RWMutex
 }
@@ -39,6 +40,7 @@ func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 		if gc, ok = cacheMap[groupID]; !ok {
 			gc = &GroupMsgCache{
 				messages: make([]Message, 0, maxSize),
+				msgIDSet: make(map[int64]struct{}, maxSize),
 				maxSize:  maxSize,
 			}
 			cacheMap[groupID] = gc
@@ -54,9 +56,12 @@ func (gc *GroupMsgCache) Add(msg Message) {
 	defer gc.mu.Unlock()
 
 	if len(gc.messages) >= gc.maxSize {
+		evicted := gc.messages[0]
+		delete(gc.msgIDSet, evicted.MsgID)
 		gc.messages = gc.messages[1:]
 	}
 	gc.messages = append(gc.messages, msg)
+	gc.msgIDSet[msg.MsgID] = struct{}{}
 }
 
 // GetAll 获取所有缓存消息（快照副本）
@@ -68,16 +73,12 @@ func (gc *GroupMsgCache) GetAll() []Message {
 	return msgs
 }
 
-// HasMsgID 检查消息ID是否已在缓存中
+// HasMsgID 检查消息ID是否已在缓存中（O(1) map 查找）
 func (gc *GroupMsgCache) HasMsgID(msgID int64) bool {
 	gc.mu.RLock()
 	defer gc.mu.RUnlock()
-	for i := len(gc.messages) - 1; i >= 0; i-- {
-		if gc.messages[i].MsgID == msgID {
-			return true
-		}
-	}
-	return false
+	_, ok := gc.msgIDSet[msgID]
+	return ok
 }
 
 // BuildChatLog 将消息列表组装为群聊上下文文本
