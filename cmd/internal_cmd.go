@@ -6,10 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 
-	"good-review-master/config"
-	"good-review-master/llm"
 	"good-review-master/onebot"
 )
 
@@ -37,137 +34,138 @@ const (
 	helpHelp = "查看可用指令"
 )
 
-func init() {
-	Register(Command{Keyword: "添加关键字", Help: helpAddCmd, Category: "internal", Handler: addCommand})
-	Register(Command{Keyword: "删除关键字", Help: helpDelCmd, Category: "internal", Handler: deleteCommand})
-	Register(Command{Keyword: "添加指令规则", Help: helpAddRule, Category: "internal", Handler: addRule})
-	Register(Command{Keyword: "删除指令规则", Help: helpDelRule, Category: "internal", Handler: deleteRule})
-	Register(Command{Keyword: "帮助", Help: helpHelp, Category: "internal", Handler: listCommands})
+// registerInternalCommands 向路由器注册所有内置管理指令
+func (r *Router) registerInternalCommands() {
+	r.register(Command{Keyword: "添加关键字", Help: helpAddCmd, Category: "internal", Handler: r.handleAddCommand})
+	r.register(Command{Keyword: "删除关键字", Help: helpDelCmd, Category: "internal", Handler: r.handleDeleteCommand})
+	r.register(Command{Keyword: "添加指令规则", Help: helpAddRule, Category: "internal", Handler: r.handleAddRule})
+	r.register(Command{Keyword: "删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
+	r.register(Command{Keyword: "帮助", Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
 }
 
-func addCommand(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 4 {
-		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtAddCmd)
+		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtAddCmd)
 		return
 	}
 	keyword := matches[1]
 	category := matches[2]
 	requirements := matches[3]
 
-	if config.KeywordInMainPrompt(category, keyword) || IsInternalKeyword(keyword) {
-		onebot.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
+	if r.promptCfg.KeywordInMainPrompt(category, keyword) || r.isInternalKeyword(keyword) {
+		r.obClient.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
 		return
 	}
 
 	slog.Info("使用 LLM 生成提示词", "category", category, "keyword", keyword)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LLMTimeout))
+	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 	defer cancel()
-	generated, err := llm.DefaultClient.Review(ctx, requirements, promptGenSystem)
+	generated, err := r.llmClient.Review(ctx, requirements, promptGenSystem)
 	if err != nil {
 		slog.Error("LLM 生成提示词失败", "err", err)
-		onebot.SendGroupMessage(groupID, "❌ 生成提示词失败: "+err.Error())
+		r.obClient.SendGroupMessage(groupID, "❌ 生成提示词失败: "+err.Error())
 		return
 	}
 	finalPrompt := strings.TrimSpace(generated)
 
-	if err := config.AddPromptCommand(category, keyword, finalPrompt); err != nil {
+	if err := r.promptCfg.AddCommand(category, keyword, finalPrompt); err != nil {
 		slog.Error("添加指令失败", "err", err)
-		onebot.SendGroupMessage(groupID, "❌ 添加指令失败: "+err.Error())
+		r.obClient.SendGroupMessage(groupID, "❌ 添加指令失败: "+err.Error())
 		return
 	}
-	config.ReloadPrompts()
-	RebuildRoutes()
-	onebot.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
+	r.promptCfg.Reload()
+	r.rebuild()
+	r.obClient.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
 }
 
-func deleteCommand(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage
 	matches := delCmdRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
-		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtDelCmd)
+		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtDelCmd)
 		return
 	}
 	keyword := matches[1]
 
-	if config.KeywordInMainPromptAny(keyword) || IsInternalKeyword(keyword) {
-		onebot.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止删除")
+	if r.promptCfg.KeywordInMainPromptAny(keyword) || r.isInternalKeyword(keyword) {
+		r.obClient.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止删除")
 		return
 	}
 
-	if err := config.DeletePromptCommand(keyword); err != nil {
-		onebot.SendGroupMessage(groupID, "❌ 删除失败: "+err.Error())
+	if err := r.promptCfg.DeleteCommand(keyword); err != nil {
+		r.obClient.SendGroupMessage(groupID, "❌ 删除失败: "+err.Error())
 		return
 	}
-	config.ReloadPrompts()
-	RebuildRoutes()
-	onebot.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
+	r.promptCfg.Reload()
+	r.rebuild()
+	r.obClient.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
 }
 
-func addRule(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage
 	matches := addRuleRe.FindStringSubmatch(content)
 	if len(matches) != 3 {
-		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtAddRule)
+		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtAddRule)
 		return
 	}
 	category := matches[1]
 	requirements := matches[2]
 
-	if config.RuleInMainPrompt(category) {
-		onebot.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中已存在，禁止覆盖")
+	if r.promptCfg.RuleInMainPrompt(category) {
+		r.obClient.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中已存在，禁止覆盖")
 		return
 	}
 
 	slog.Info("使用 LLM 生成规则", "category", category)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.LLMTimeout))
+	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 	defer cancel()
-	generated, err := llm.DefaultClient.Review(ctx, requirements, ruleGenSystem)
+	generated, err := r.llmClient.Review(ctx, requirements, ruleGenSystem)
 	if err != nil {
 		slog.Error("LLM 生成规则失败", "err", err)
-		onebot.SendGroupMessage(groupID, "❌ 生成规则失败: "+err.Error())
+		r.obClient.SendGroupMessage(groupID, "❌ 生成规则失败: "+err.Error())
 		return
 	}
 	ruleText := strings.TrimSpace(generated)
 
-	if err := config.AddPromptRule(category, ruleText); err != nil {
+	if err := r.promptCfg.AddRule(category, ruleText); err != nil {
 		slog.Error("添加规则失败", "err", err)
-		onebot.SendGroupMessage(groupID, "❌ 添加规则失败: "+err.Error())
+		r.obClient.SendGroupMessage(groupID, "❌ 添加规则失败: "+err.Error())
 		return
 	}
-	config.ReloadPrompts()
-	onebot.SendGroupMessage(groupID, "✅ 规则已添加: "+category)
+	r.promptCfg.Reload()
+	r.obClient.SendGroupMessage(groupID, "✅ 规则已添加: "+category)
 }
 
-func deleteRule(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleDeleteRule(event onebot.Event, groupID string, _ string) {
 	content := event.RawMessage
 	matches := delRuleRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
-		onebot.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtDelRule)
+		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtDelRule)
 		return
 	}
 	category := matches[1]
 
-	if config.RuleInMainPrompt(category) {
-		onebot.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中，禁止删除")
+	if r.promptCfg.RuleInMainPrompt(category) {
+		r.obClient.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中，禁止删除")
 		return
 	}
 
-	if err := config.DeletePromptRule(category); err != nil {
-		onebot.SendGroupMessage(groupID, "❌ 删除失败: "+err.Error())
+	if err := r.promptCfg.DeleteRule(category); err != nil {
+		r.obClient.SendGroupMessage(groupID, "❌ 删除失败: "+err.Error())
 		return
 	}
-	config.ReloadPrompts()
-	onebot.SendGroupMessage(groupID, "✅ 规则已删除: "+category)
+	r.promptCfg.Reload()
+	r.obClient.SendGroupMessage(groupID, "✅ 规则已删除: "+category)
 }
 
-func listCommands(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleListCommands(event onebot.Event, groupID string, _ string) {
 	var buf strings.Builder
 	buf.WriteString("【指令帮助】\n\n")
 	buf.WriteString("使用方式：@机器人 + 关键词\n\n")
 	buf.WriteString("▎管理指令：\n")
-	for _, cmd := range registry {
+	for _, cmd := range r.registry {
 		if cmd.Help == "" {
 			continue
 		}
@@ -178,12 +176,12 @@ func listCommands(event onebot.Event, groupID string, _ string) {
 		}
 	}
 	buf.WriteString("\n▎功能指令：\n")
-	for _, route := range Routes {
+	for _, route := range r.routes {
 		if route.Keyword == "" {
 			continue
 		}
 		isSystem := false
-		for _, cmd := range registry {
+		for _, cmd := range r.registry {
 			if cmd.Keyword == route.Keyword {
 				isSystem = true
 				break
@@ -193,5 +191,5 @@ func listCommands(event onebot.Event, groupID string, _ string) {
 			buf.WriteString("  " + route.Keyword + " [" + route.Category + "]\n")
 		}
 	}
-	onebot.SendGroupMessage(groupID, buf.String())
+	r.obClient.SendGroupMessage(groupID, buf.String())
 }

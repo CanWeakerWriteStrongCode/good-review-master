@@ -5,30 +5,28 @@ import (
 	"log/slog"
 
 	"good-review-master/cache"
-	"good-review-master/config"
-	"good-review-master/llm"
 	"good-review-master/onebot"
 )
 
-// chatReview 异步锐评
-func chatReview(event onebot.Event, groupID string, prompt string) {
+// chatReview 异步锐评（作为 Router 的方法，通过 r 访问依赖）
+func (r *Router) chatReview(event onebot.Event, groupID string, prompt string) {
 	slog.Info("触发锐评", "group", groupID, "user", event.Nickname)
 	go func() {
-		msgs := cache.GetGroupCache(groupID).GetAll()
+		msgs := cache.GetGroupCache(groupID, r.appCfg.MaxCacheMsg).GetAll()
 		if len(msgs) == 0 {
-			onebot.SendGroupMessage(groupID, "暂无群聊记录，无法锐评~")
+			r.obClient.SendGroupMessage(groupID, "暂无群聊记录，无法锐评~")
 			return
 		}
 		chatLog := cache.BuildChatLog(msgs)
-		ctx, cancel := context.WithTimeout(context.Background(), config.LLMTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 		defer cancel()
 
-		reply, err := llm.DefaultClient.Review(ctx, chatLog, prompt)
+		reply, err := r.llmClient.Review(ctx, chatLog, prompt)
 		if err != nil {
 			slog.Error("大模型调用失败", "err", err)
-			onebot.SendGroupMessage(groupID, "大师今天罢工了，稍后再试~")
+			r.obClient.SendGroupMessage(groupID, "大师今天罢工了，稍后再试~")
 			return
 		}
-		onebot.SendGroupMessage(groupID, reply)
+		r.obClient.SendGroupMessage(groupID, reply)
 	}()
 }

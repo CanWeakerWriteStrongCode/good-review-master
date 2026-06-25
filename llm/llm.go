@@ -15,9 +15,6 @@ type Client interface {
 	Review(ctx context.Context, chatLog, systemPrompt string) (string, error)
 }
 
-// DefaultClient 全局大模型客户端实例
-var DefaultClient Client
-
 // OpenAIAdapter 适配所有OpenAI协议的大模型
 type OpenAIAdapter struct {
 	apiKey      string

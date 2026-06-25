@@ -19,26 +19,34 @@ type CmdConf struct {
 	Prompt  string `yaml:"prompt"`
 }
 
-// CmdConfigs 所有指令配置（key=指令名，合并了 prompt.yaml + prompt_custom.yaml）
-var CmdConfigs map[string][]CmdConf
+// PromptConfig 提示词配置（系统 + 自定义合并），支持热重载
+type PromptConfig struct {
+	CmdConfigs  map[string][]CmdConf
+	SharedRules map[string]string
+	mu          sync.Mutex
+	systemPath  string
+	customPath  string
+}
 
 type promptFile struct {
 	Cmd   map[string][]CmdConf `yaml:"cmd"`
 	Rules map[string]string    `yaml:"rules"`
 }
 
-// SharedRules prompt_system.yaml 中按指令类型定义的通用规则
-var SharedRules map[string]string
-
-var promptMu sync.Mutex
-
-func init() {
-	loadPrompts()
+// LoadPromptConfig 加载提示词配置（系统 + 自定义合并）
+func LoadPromptConfig(systemPath, customPath string) (*PromptConfig, error) {
+	pc := &PromptConfig{
+		systemPath: systemPath,
+		customPath: customPath,
+	}
+	pc.load()
+	return pc, nil
 }
 
-func loadPrompts() {
-	CmdConfigs = make(map[string][]CmdConf)
-	cfgPath := apppath.ResolvePath("prompt_system.yaml")
+// load 读取并合并提示词配置文件（调用方需持有 mu）
+func (pc *PromptConfig) load() {
+	pc.CmdConfigs = make(map[string][]CmdConf)
+	cfgPath := pc.systemPath
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		destPath := apppath.WritePath("prompt_system.yaml")
@@ -57,12 +65,11 @@ func loadPrompts() {
 	if cfg.Cmd == nil {
 		cfg.Cmd = make(map[string][]CmdConf)
 	}
-	CmdConfigs = cfg.Cmd
-	SharedRules = cfg.Rules
+	pc.CmdConfigs = cfg.Cmd
+	pc.SharedRules = cfg.Rules
 
 	// 合并 prompt_custom.yaml
-	customPath := customPromptPath()
-	customRaw, err := os.ReadFile(customPath)
+	customRaw, err := os.ReadFile(pc.customPath)
 	if err != nil {
 		return
 	}
@@ -72,28 +79,28 @@ func loadPrompts() {
 		return
 	}
 	for name, entries := range customCfg.Cmd {
-		CmdConfigs[name] = append(CmdConfigs[name], entries...)
+		pc.CmdConfigs[name] = append(pc.CmdConfigs[name], entries...)
 	}
 	if customCfg.Rules != nil {
-		if SharedRules == nil {
-			SharedRules = make(map[string]string)
+		if pc.SharedRules == nil {
+			pc.SharedRules = make(map[string]string)
 		}
 		for cat, rule := range customCfg.Rules {
-			SharedRules[cat] = rule
+			pc.SharedRules[cat] = rule
 		}
 	}
 }
 
-// ReloadPrompts 热重载 prompt 配置
-func ReloadPrompts() {
-	promptMu.Lock()
-	defer promptMu.Unlock()
-	loadPrompts()
+// Reload 热重载提示词配置
+func (pc *PromptConfig) Reload() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.load()
 }
 
-// KeywordInMainPrompt 检查 keyword 是否已存在于 prompt.yaml（直接读文件校验）
-func KeywordInMainPrompt(category, keyword string) bool {
-	raw, err := os.ReadFile(apppath.ResolvePath("prompt_system.yaml"))
+// KeywordInMainPrompt 检查 keyword 是否已存在于 prompt_system.yaml 的指定 category 中
+func (pc *PromptConfig) KeywordInMainPrompt(category, keyword string) bool {
+	raw, err := os.ReadFile(pc.systemPath)
 	if err != nil {
 		return false
 	}
@@ -110,8 +117,8 @@ func KeywordInMainPrompt(category, keyword string) bool {
 }
 
 // KeywordInMainPromptAny 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在
-func KeywordInMainPromptAny(keyword string) bool {
-	raw, err := os.ReadFile(apppath.ResolvePath("prompt_system.yaml"))
+func (pc *PromptConfig) KeywordInMainPromptAny(keyword string) bool {
+	raw, err := os.ReadFile(pc.systemPath)
 	if err != nil {
 		return false
 	}
@@ -129,12 +136,11 @@ func KeywordInMainPromptAny(keyword string) bool {
 	return false
 }
 
-// DeletePromptCommand 从 prompt_custom.yaml 删除指令（按 keyword 全局匹配）
-func DeletePromptCommand(keyword string) error {
-	promptMu.Lock()
-	defer promptMu.Unlock()
-	customPath := customPromptPath()
-	raw, err := os.ReadFile(customPath)
+// DeleteCommand 从 prompt_custom.yaml 删除指令（按 keyword 全局匹配）
+func (pc *PromptConfig) DeleteCommand(keyword string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	raw, err := os.ReadFile(pc.customPath)
 	if err != nil {
 		return err
 	}
@@ -146,20 +152,19 @@ func DeletePromptCommand(keyword string) error {
 		for i, entry := range entries {
 			if entry.Keyword == keyword {
 				cfg.Cmd[cat] = append(entries[:i], entries[i+1:]...)
-				return writePromptCustom(customPath, &cfg)
+				return writePromptCustom(pc.customPath, &cfg)
 			}
 		}
 	}
 	return fmt.Errorf("未找到该指令: %s", keyword)
 }
 
-// AddPromptCommand 添加指令到 prompt_custom.yaml
-func AddPromptCommand(category, keyword, promptText string) error {
-	promptMu.Lock()
-	defer promptMu.Unlock()
-	customPath := customPromptPath()
+// AddCommand 添加指令到 prompt_custom.yaml
+func (pc *PromptConfig) AddCommand(category, keyword, promptText string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
 	var cfg promptFile
-	raw, err := os.ReadFile(customPath)
+	raw, err := os.ReadFile(pc.customPath)
 	if err == nil {
 		if err := yaml.Unmarshal(raw, &cfg); err != nil {
 			return err
@@ -174,20 +179,76 @@ func AddPromptCommand(category, keyword, promptText string) error {
 	// 去重：同 category 下同 keyword 只保留最后一条
 	seen := make(map[string]int)
 	for i := len(cfg.Cmd[category]) - 1; i >= 0; i-- {
-		kw := cfg.Cmd[category][i].Keyword
-		if _, ok := seen[kw]; ok {
+		keywordKey := cfg.Cmd[category][i].Keyword
+		if _, ok := seen[keywordKey]; ok {
 			cfg.Cmd[category] = append(cfg.Cmd[category][:i], cfg.Cmd[category][i+1:]...)
 		} else {
-			seen[kw] = i
+			seen[keywordKey] = i
 		}
 	}
 
-	return writePromptCustom(customPath, &cfg)
+	return writePromptCustom(pc.customPath, &cfg)
 }
 
-// customPromptPath 返回 prompt_custom.yaml 的路径（与 prompt.yaml 同目录）
-func customPromptPath() string {
-	return filepath.Join(filepath.Dir(apppath.ResolvePath("prompt_system.yaml")), "prompt_custom.yaml")
+// AddRule 添加/更新规则到 prompt_custom.yaml
+func (pc *PromptConfig) AddRule(category, ruleText string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	var cfg promptFile
+	raw, err := os.ReadFile(pc.customPath)
+	if err == nil {
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			return err
+		}
+	}
+	if cfg.Rules == nil {
+		cfg.Rules = make(map[string]string)
+	}
+	cfg.Rules[category] = ruleText
+	return writePromptCustom(pc.customPath, &cfg)
+}
+
+// DeleteRule 删除 prompt_custom.yaml 中的规则
+func (pc *PromptConfig) DeleteRule(category string) error {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	raw, err := os.ReadFile(pc.customPath)
+	if err != nil {
+		return err
+	}
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return err
+	}
+	if _, ok := cfg.Rules[category]; !ok {
+		return fmt.Errorf("未找到该类型规则: %s", category)
+	}
+	delete(cfg.Rules, category)
+	return writePromptCustom(pc.customPath, &cfg)
+}
+
+// RuleInMainPrompt 检查规则 category 是否在 prompt_system.yaml 中存在
+func (pc *PromptConfig) RuleInMainPrompt(category string) bool {
+	raw, err := os.ReadFile(pc.systemPath)
+	if err != nil {
+		return false
+	}
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return false
+	}
+	_, ok := cfg.Rules[category]
+	return ok
+}
+
+// customPromptPath 返回 prompt_custom.yaml 的路径（与 prompt_system.yaml 同目录）
+func customPromptPath(systemPath string) string {
+	return filepath.Join(filepath.Dir(systemPath), "prompt_custom.yaml")
+}
+
+// CustomPromptPath 导出 customPromptPath（供 main.go 使用）
+func CustomPromptPath(systemPath string) string {
+	return customPromptPath(systemPath)
 }
 
 // writePromptCustom 写入 prompt_custom.yaml，强制 prompt/rule 使用 | 格式
@@ -222,57 +283,4 @@ func writePromptCustom(path string, cfg *promptFile) error {
 func writePromptSystem(path string) error {
 	content := "# ===== 指令提示词配置 （群内指令无法修改） =====\n# 扩展新功能：在对应指令下新增 keyword + prompt 即可，无需改代码\n# 格式参考 README 中的配置说明\n"
 	return os.WriteFile(path, []byte(content), 0644)
-}
-
-// AddPromptRule 添加/更新规则到 prompt_custom.yaml
-func AddPromptRule(category, ruleText string) error {
-	promptMu.Lock()
-	defer promptMu.Unlock()
-	customPath := customPromptPath()
-	var cfg promptFile
-	raw, err := os.ReadFile(customPath)
-	if err == nil {
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
-			return err
-		}
-	}
-	if cfg.Rules == nil {
-		cfg.Rules = make(map[string]string)
-	}
-	cfg.Rules[category] = ruleText
-	return writePromptCustom(customPath, &cfg)
-}
-
-// DeletePromptRule 删除 prompt_custom.yaml 中的规则
-func DeletePromptRule(category string) error {
-	promptMu.Lock()
-	defer promptMu.Unlock()
-	customPath := customPromptPath()
-	raw, err := os.ReadFile(customPath)
-	if err != nil {
-		return err
-	}
-	var cfg promptFile
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return err
-	}
-	if _, ok := cfg.Rules[category]; !ok {
-		return fmt.Errorf("未找到该类型规则: %s", category)
-	}
-	delete(cfg.Rules, category)
-	return writePromptCustom(customPath, &cfg)
-}
-
-// RuleInMainPrompt 检查规则 category 是否在 prompt_system.yaml 中存在
-func RuleInMainPrompt(category string) bool {
-	raw, err := os.ReadFile(apppath.ResolvePath("prompt_system.yaml"))
-	if err != nil {
-		return false
-	}
-	var cfg promptFile
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return false
-	}
-	_, ok := cfg.Rules[category]
-	return ok
 }

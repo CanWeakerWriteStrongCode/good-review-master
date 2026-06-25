@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
-	"good-review-master/config"
 )
 
 // Message 群聊消息
@@ -21,6 +19,7 @@ type Message struct {
 // GroupMsgCache 群消息环形缓存
 type GroupMsgCache struct {
 	messages []Message
+	maxSize  int
 	mu       sync.RWMutex
 }
 
@@ -30,7 +29,7 @@ var (
 )
 
 // GetGroupCache 获取或创建群消息缓存
-func GetGroupCache(groupID string) *GroupMsgCache {
+func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 	cacheMu.RLock()
 	gc, ok := cacheMap[groupID]
 	cacheMu.RUnlock()
@@ -38,7 +37,10 @@ func GetGroupCache(groupID string) *GroupMsgCache {
 	if !ok {
 		cacheMu.Lock()
 		if gc, ok = cacheMap[groupID]; !ok {
-			gc = &GroupMsgCache{messages: make([]Message, 0, config.MaxCacheMsg)}
+			gc = &GroupMsgCache{
+				messages: make([]Message, 0, maxSize),
+				maxSize:  maxSize,
+			}
 			cacheMap[groupID] = gc
 		}
 		cacheMu.Unlock()
@@ -47,31 +49,31 @@ func GetGroupCache(groupID string) *GroupMsgCache {
 }
 
 // Add 添加消息到缓存（环形队列，超出容量自动淘汰最早的）
-func (gpMsgCache *GroupMsgCache) Add(msg Message) {
-	gpMsgCache.mu.Lock()
-	defer gpMsgCache.mu.Unlock()
+func (gc *GroupMsgCache) Add(msg Message) {
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
 
-	if len(gpMsgCache.messages) >= config.MaxCacheMsg {
-		gpMsgCache.messages = gpMsgCache.messages[1:]
+	if len(gc.messages) >= gc.maxSize {
+		gc.messages = gc.messages[1:]
 	}
-	gpMsgCache.messages = append(gpMsgCache.messages, msg)
+	gc.messages = append(gc.messages, msg)
 }
 
 // GetAll 获取所有缓存消息（快照副本）
-func (gpMsgCache *GroupMsgCache) GetAll() []Message {
-	gpMsgCache.mu.RLock()
-	defer gpMsgCache.mu.RUnlock()
-	msgs := make([]Message, len(gpMsgCache.messages))
-	copy(msgs, gpMsgCache.messages)
+func (gc *GroupMsgCache) GetAll() []Message {
+	gc.mu.RLock()
+	defer gc.mu.RUnlock()
+	msgs := make([]Message, len(gc.messages))
+	copy(msgs, gc.messages)
 	return msgs
 }
 
 // HasMsgID 检查消息ID是否已在缓存中
-func (gpMsgCache *GroupMsgCache) HasMsgID(msgID int64) bool {
-	gpMsgCache.mu.RLock()
-	defer gpMsgCache.mu.RUnlock()
-	for i := len(gpMsgCache.messages) - 1; i >= 0; i-- {
-		if gpMsgCache.messages[i].MsgID == msgID {
+func (gc *GroupMsgCache) HasMsgID(msgID int64) bool {
+	gc.mu.RLock()
+	defer gc.mu.RUnlock()
+	for i := len(gc.messages) - 1; i >= 0; i-- {
+		if gc.messages[i].MsgID == msgID {
 			return true
 		}
 	}

@@ -8,22 +8,34 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
-	"good-review-master/config"
 )
 
-var httpClient = &http.Client{Timeout: 10 * time.Second}
+// Client NapCat HTTP API 客户端
+type Client struct {
+	httpAPI     string
+	accessToken string
+	httpClient  *http.Client
+}
+
+// NewClient 创建 OneBot HTTP 客户端
+func NewClient(httpAPI, accessToken string) *Client {
+	return &Client{
+		httpAPI:     httpAPI,
+		accessToken: accessToken,
+		httpClient:  &http.Client{Timeout: 10 * time.Second},
+	}
+}
 
 // GetLoginInfo 获取机器人登录信息（QQ号、昵称）
-func GetLoginInfo() (*LoginInfo, error) {
+func (ob *Client) GetLoginInfo() (*LoginInfo, error) {
 	slog.Info("调用 NapCat API", "action", "get_login_info")
-	req, _ := http.NewRequest("POST", config.NapCatHTTPAPI+"/get_login_info", nil)
+	req, _ := http.NewRequest("POST", ob.httpAPI+"/get_login_info", nil)
 	req.Header.Set("Content-Type", "application/json")
-	if config.NapCatAccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+config.NapCatAccessToken)
+	if ob.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+ob.accessToken)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := ob.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -46,20 +58,20 @@ func GetLoginInfo() (*LoginInfo, error) {
 }
 
 // SendGroupMessage 发送群消息
-func SendGroupMessage(groupID, content string) {
+func (ob *Client) SendGroupMessage(groupID, content string) {
 	slog.Debug("调用 NapCat API", "action", "send_group_msg", "group", groupID)
 	body, _ := json.Marshal(map[string]any{
 		"group_id": groupID,
 		"message":  content,
 	})
 
-	req, _ := http.NewRequest("POST", config.NapCatHTTPAPI+"/send_group_msg", bytes.NewBuffer(body))
+	req, _ := http.NewRequest("POST", ob.httpAPI+"/send_group_msg", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	if config.NapCatAccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+config.NapCatAccessToken)
+	if ob.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+ob.accessToken)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := ob.httpClient.Do(req)
 	if err != nil {
 		slog.Error("send_group_msg 请求失败", "err", err, "group", groupID)
 		return
@@ -75,20 +87,20 @@ func SendGroupMessage(groupID, content string) {
 }
 
 // FetchGroupMsgHistory 拉取群消息历史
-func FetchGroupMsgHistory(groupID string, count int) ([]HistoryMsg, error) {
+func (ob *Client) FetchGroupMsgHistory(groupID string, count int) ([]HistoryMsg, error) {
 	slog.Debug("调用 NapCat API", "action", "get_group_msg_history", "group", groupID, "count", count)
 	body, _ := json.Marshal(map[string]any{
 		"group_id": groupID,
 		"count":    count,
 	})
 
-	req, _ := http.NewRequest("POST", config.NapCatHTTPAPI+"/get_group_msg_history", bytes.NewBuffer(body))
+	req, _ := http.NewRequest("POST", ob.httpAPI+"/get_group_msg_history", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
-	if config.NapCatAccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+config.NapCatAccessToken)
+	if ob.accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+ob.accessToken)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := ob.httpClient.Do(req)
 	if err != nil {
 		slog.Error("get_group_msg_history 请求失败", "err", err, "group", groupID)
 		return nil, err
