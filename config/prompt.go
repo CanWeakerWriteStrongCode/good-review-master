@@ -72,6 +72,14 @@ func loadPrompts() {
 	for name, entries := range customCfg.Cmd {
 		CmdConfigs[name] = append(CmdConfigs[name], entries...)
 	}
+	if customCfg.Rules != nil {
+		if SharedRules == nil {
+			SharedRules = make(map[string]string)
+		}
+		for cat, rule := range customCfg.Rules {
+			SharedRules[cat] = rule
+		}
+	}
 }
 
 // ReloadPrompts 热重载 prompt 配置
@@ -180,17 +188,28 @@ func customPromptPath() string {
 	return filepath.Join(filepath.Dir(resolveConfigPath("prompt_system.yaml")), "prompt_custom.yaml")
 }
 
-// writePromptCustom 写入 prompt_custom.yaml，强制 prompt 使用 | 格式
+// writePromptCustom 写入 prompt_custom.yaml，强制 prompt/rule 使用 | 格式
 func writePromptCustom(path string, cfg *promptFile) error {
 	var buf strings.Builder
-	buf.WriteString("cmd:\n")
-	for catName, entries := range cfg.Cmd {
-		buf.WriteString("  " + catName + ":\n")
-		for _, entry := range entries {
-			buf.WriteString("    - keyword: \"" + entry.Keyword + "\"\n")
-			buf.WriteString("      prompt: |\n")
-			for _, line := range strings.Split(entry.Prompt, "\n") {
-				buf.WriteString("        " + line + "\n")
+	if len(cfg.Cmd) > 0 {
+		buf.WriteString("cmd:\n")
+		for catName, entries := range cfg.Cmd {
+			buf.WriteString("  " + catName + ":\n")
+			for _, entry := range entries {
+				buf.WriteString("    - keyword: \"" + entry.Keyword + "\"\n")
+				buf.WriteString("      prompt: |\n")
+				for _, line := range strings.Split(entry.Prompt, "\n") {
+					buf.WriteString("        " + line + "\n")
+				}
+			}
+		}
+	}
+	if len(cfg.Rules) > 0 {
+		buf.WriteString("rules:\n")
+		for catName, rule := range cfg.Rules {
+			buf.WriteString("  " + catName + ": |\n")
+			for _, line := range strings.Split(rule, "\n") {
+				buf.WriteString("    " + line + "\n")
 			}
 		}
 	}
@@ -199,6 +218,59 @@ func writePromptCustom(path string, cfg *promptFile) error {
 
 // writePromptSystem 写入空 prompt_system.yaml（首次启动自动创建）
 func writePromptSystem(path string) error {
-	content := "# ===== 指令提示词配置 =====\n# 扩展新功能：在对应指令下新增 keyword + prompt 即可，无需改代码\n# 格式参考 README 中的配置说明\n"
+	content := "# ===== 指令提示词配置 （群内指令无法修改） =====\n# 扩展新功能：在对应指令下新增 keyword + prompt 即可，无需改代码\n# 格式参考 README 中的配置说明\n"
 	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// AddPromptRule 添加/更新规则到 prompt_custom.yaml
+func AddPromptRule(category, ruleText string) error {
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	customPath := customPromptPath()
+	var cfg promptFile
+	raw, err := os.ReadFile(customPath)
+	if err == nil {
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			return err
+		}
+	}
+	if cfg.Rules == nil {
+		cfg.Rules = make(map[string]string)
+	}
+	cfg.Rules[category] = ruleText
+	return writePromptCustom(customPath, &cfg)
+}
+
+// DeletePromptRule 删除 prompt_custom.yaml 中的规则
+func DeletePromptRule(category string) error {
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	customPath := customPromptPath()
+	raw, err := os.ReadFile(customPath)
+	if err != nil {
+		return err
+	}
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return err
+	}
+	if _, ok := cfg.Rules[category]; !ok {
+		return fmt.Errorf("未找到该类型规则: %s", category)
+	}
+	delete(cfg.Rules, category)
+	return writePromptCustom(customPath, &cfg)
+}
+
+// RuleInMainPrompt 检查规则 category 是否在 prompt_system.yaml 中存在
+func RuleInMainPrompt(category string) bool {
+	raw, err := os.ReadFile(resolveConfigPath("prompt_system.yaml"))
+	if err != nil {
+		return false
+	}
+	var cfg promptFile
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return false
+	}
+	_, ok := cfg.Rules[category]
+	return ok
 }
