@@ -144,7 +144,7 @@ func (pc *PromptConfig) DeleteCommand(keyword string) error {
 	return fmt.Errorf("未找到该指令: %s", keyword)
 }
 
-// AddCommand 添加指令到 prompt_custom.yaml
+// AddCommand 添加指令到 prompt_custom.yaml（全局 keyword 唯一，最后写入生效）
 func (pc *PromptConfig) AddCommand(category, keyword, promptText string) error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
@@ -159,17 +159,28 @@ func (pc *PromptConfig) AddCommand(category, keyword, promptText string) error {
 		cfg.Cmd = make(map[string][]CmdConf)
 	}
 
+	// 全局去重：keyword 在所有 category 中唯一，已有则移除（move 语义 / 最后写入生效）
+	removedFrom := ""
+	for cat, entries := range cfg.Cmd {
+		filtered := entries[:0]
+		for _, entry := range entries {
+			if entry.Keyword != keyword {
+				filtered = append(filtered, entry)
+			} else if cat != category {
+				removedFrom = cat
+			}
+		}
+		if len(filtered) == 0 {
+			delete(cfg.Cmd, cat)
+		} else if len(filtered) != len(entries) {
+			cfg.Cmd[cat] = filtered
+		}
+	}
+
 	cfg.Cmd[category] = append(cfg.Cmd[category], CmdConf{Keyword: keyword, Prompt: promptText})
 
-	// 去重：同 category 下同 keyword 只保留最后一条
-	seen := make(map[string]int)
-	for i := len(cfg.Cmd[category]) - 1; i >= 0; i-- {
-		keywordKey := cfg.Cmd[category][i].Keyword
-		if _, ok := seen[keywordKey]; ok {
-			cfg.Cmd[category] = append(cfg.Cmd[category][:i], cfg.Cmd[category][i+1:]...)
-		} else {
-			seen[keywordKey] = i
-		}
+	if removedFrom != "" {
+		logutil.Info("关键字跨类别移动", "keyword", keyword, "from", removedFrom, "to", category)
 	}
 
 	return writePromptCustom(pc.customPath, &cfg)
