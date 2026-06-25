@@ -1,5 +1,5 @@
 // Package apppath 提供应用路径解析工具函数。
-// 可执行文件目录优先作为读写目标，工作目录作为回退。
+// 工作目录优先作为读写目标，可执行文件目录作为回退。
 package apppath
 
 import (
@@ -7,26 +7,27 @@ import (
 	"path/filepath"
 )
 
-// ExeDir 返回可执行文件所在目录，获取失败时返回当前目录
+// ExeDir 返回当前工作目录，获取失败时回退到可执行文件所在目录
 func ExeDir() string {
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
 	if exePath, err := os.Executable(); err == nil {
 		return filepath.Dir(exePath)
 	}
 	return "."
 }
 
-// ResolvePath 查找文件路径：优先工作目录，其次 exe 所在目录
+// ResolvePath 查找文件路径：ExeDir（cwd 优先 → exeDir 回退），用 os.Stat 确认存在
 func ResolvePath(filename string) string {
-	for _, dir := range []string{".", ExeDir()} {
-		path := filepath.Join(dir, filename)
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+	path := filepath.Join(ExeDir(), filename)
+	if _, err := os.Stat(path); err == nil {
+		return path
 	}
 	return filename
 }
 
-// WritePath 返回写文件的优先路径：exe 所在目录，不可用时回退到当前目录
+// WritePath 返回写文件的路径：ExeDir 目录存在则写入其下，否则回退到当前目录
 func WritePath(filename string) string {
 	dir := ExeDir()
 	if _, err := os.Stat(dir); err != nil {

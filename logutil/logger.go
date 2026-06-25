@@ -16,7 +16,8 @@ var sugar *zap.SugaredLogger
 
 // SetupLogger 初始化 zap 日志：控制台 + 文件（lumberjack 按大小切割，保留 30 天，压缩旧文件）
 func SetupLogger() {
-	logDir := filepath.Join(apppath.ExeDir(), "log")
+	dir := apppath.ExeDir()
+	logDir := filepath.Join(dir, "log")
 	os.MkdirAll(logDir, 0755)
 
 	// 文件输出：lumberjack 自动切割
