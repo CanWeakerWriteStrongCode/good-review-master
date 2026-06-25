@@ -54,7 +54,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string) 
 	category := matches[2]
 	requirements := matches[3]
 
-	if r.promptCfg.KeywordInMainPrompt(category, keyword) || r.isInternalKeyword(keyword) {
+	if r.promptCfg.KeywordInMainPromptAny(keyword) || r.isInternalKeyword(keyword) {
 		r.obClient.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
 		return
 	}

@@ -53,8 +53,10 @@ func main() {
 	// 4. 创建 OneBot HTTP 客户端
 	obClient := onebot.NewClient(cfg.NapCatHTTPAPI, cfg.NapCatAccessToken)
 
-	// 5. 创建指令路由器
-	router := cmd.NewRouter(cfg, promptCfg, llmClient, obClient)
+	// 5. 创建指令路由器（传入 shutdown context，goroutine 通过 errgroup 自动继承）
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	router := cmd.NewRouter(cfg, promptCfg, llmClient, obClient, shutdownCtx)
 
 	// 6. 获取机器人昵称
 	if info, err := obClient.GetLoginInfo(); err != nil {
@@ -70,12 +72,13 @@ func main() {
 	logutil.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
 
 	// 7. 创建机器人并启动轮询（支持优雅退出）
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	botInstance := bot.NewBot(cfg, obClient, router)
-	go botInstance.RunPollingLoop(ctx)
+	go botInstance.RunPollingLoop(shutdownCtx)
 
-	<-ctx.Done()
+	<-shutdownCtx.Done()
 	logutil.Info("收到退出信号，正在关闭...")
+	if err := router.Wait(); err != nil {
+		logutil.Error("等待 goroutine 退出失败", "err", err)
+	}
+	logutil.Info("已安全退出")
 }

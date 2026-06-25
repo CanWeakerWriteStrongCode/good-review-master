@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"good-review-master/config"
 	"good-review-master/llm"
 	"good-review-master/onebot"
+	"good-review-master/safego"
 )
 
 // HandlerFunc 指令处理函数类型
@@ -39,16 +41,18 @@ type Router struct {
 	obClient   *onebot.Client
 	promptCfg  *config.PromptConfig
 	appCfg     *config.Config
+	starter    *safego.Group
 }
 
 // NewRouter 创建路由器并初始化所有内部指令
-func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client) *Router {
+func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client, shutdownCtx context.Context) *Router {
 	r := &Router{
 		routes:    nil,
 		llmClient: llmClient,
 		obClient:  obClient,
 		promptCfg: promptCfg,
 		appCfg:    appCfg,
+		starter:   safego.New(shutdownCtx),
 	}
 	r.handlerMap = map[string]HandlerFunc{
 		"chat_review": r.chatReview,
@@ -123,6 +127,16 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 			return
 		}
 	}
+}
+
+// Go 安全启动 goroutine（代理 safego.Group）
+func (r *Router) Go(fn func(context.Context) error) {
+	r.starter.Go(fn)
+}
+
+// Wait 等待所有 goroutine 完成（代理 safego.Group）
+func (r *Router) Wait() error {
+	return r.starter.Wait()
 }
 
 // stripCQPrefix 去除消息开头的 CQ 码和 @昵称

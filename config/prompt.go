@@ -98,32 +98,23 @@ func (pc *PromptConfig) Reload() {
 	pc.load()
 }
 
-// KeywordInMainPrompt 检查 keyword 是否已存在于 prompt_system.yaml 的指定 category 中
-func (pc *PromptConfig) KeywordInMainPrompt(category, keyword string) bool {
+// readSystemPrompt 读取并解析 prompt_system.yaml（私有辅助方法）
+func (pc *PromptConfig) readSystemPrompt() *promptFile {
 	raw, err := os.ReadFile(pc.systemPath)
 	if err != nil {
-		return false
+		return nil
 	}
 	var cfg promptFile
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return false
+		return nil
 	}
-	for _, entry := range cfg.Cmd[category] {
-		if entry.Keyword == keyword {
-			return true
-		}
-	}
-	return false
+	return &cfg
 }
 
 // KeywordInMainPromptAny 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在
 func (pc *PromptConfig) KeywordInMainPromptAny(keyword string) bool {
-	raw, err := os.ReadFile(pc.systemPath)
-	if err != nil {
-		return false
-	}
-	var cfg promptFile
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	cfg := pc.readSystemPrompt()
+	if cfg == nil {
 		return false
 	}
 	for _, entries := range cfg.Cmd {
@@ -229,26 +220,17 @@ func (pc *PromptConfig) DeleteRule(category string) error {
 
 // RuleInMainPrompt 检查规则 category 是否在 prompt_system.yaml 中存在
 func (pc *PromptConfig) RuleInMainPrompt(category string) bool {
-	raw, err := os.ReadFile(pc.systemPath)
-	if err != nil {
-		return false
-	}
-	var cfg promptFile
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	cfg := pc.readSystemPrompt()
+	if cfg == nil {
 		return false
 	}
 	_, ok := cfg.Rules[category]
 	return ok
 }
 
-// customPromptPath 返回 prompt_custom.yaml 的路径（与 prompt_system.yaml 同目录）
-func customPromptPath(systemPath string) string {
-	return filepath.Join(filepath.Dir(systemPath), "prompt_custom.yaml")
-}
-
 // CustomPromptPath 导出 customPromptPath（供 main.go 使用）
 func CustomPromptPath(systemPath string) string {
-	return customPromptPath(systemPath)
+	return filepath.Join(filepath.Dir(systemPath), "prompt_custom.yaml")
 }
 
 // writePromptCustom 写入 prompt_custom.yaml，强制 prompt/rule 使用 | 格式
