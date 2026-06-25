@@ -30,7 +30,7 @@ const (
 func init() {
 	Register(Command{Keyword: "添加关键字", Help: "格式：" + fmtAddCmd, Category: "internal", Handler: addCommand})
 	Register(Command{Keyword: "删除关键字", Help: "格式：" + fmtDelCmd, Category: "internal", Handler: deleteCommand})
-	Register(Command{Keyword: "添加指令规则", Help: "格式：" + fmtAddRule + "\n动态修改 prompt 中特定类型指令的共享规则", Category: "internal", Handler: addRule})
+	Register(Command{Keyword: "添加指令规则", Help: "格式：" + fmtAddRule + "\n动态修改 prompt 中特定类型指令的共享规则，如：禁止骂人", Category: "internal", Handler: addRule})
 	Register(Command{Keyword: "删除指令规则", Help: "格式：" + fmtDelRule + "\n删除 prompt 中特定类型指令的共享规则", Category: "internal", Handler: deleteRule})
 	Register(Command{Keyword: "帮助", Help: "查看可用指令", Category: "internal", Handler: listCommands})
 }
