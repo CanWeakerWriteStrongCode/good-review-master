@@ -54,7 +54,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string) 
 	category := matches[2]
 	requirements := matches[3]
 
-	if r.promptCfg.KeywordInMainPromptAny(keyword) || r.isInternalKeyword(keyword) {
+	if r.promptCfg.KeywordInSystemCmd(keyword) || r.isInternalKeyword(keyword) {
 		r.obClient.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
 		return
 	}
@@ -89,7 +89,7 @@ func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, _ strin
 	}
 	keyword := matches[1]
 
-	if r.promptCfg.KeywordInMainPromptAny(keyword) || r.isInternalKeyword(keyword) {
+	if r.promptCfg.KeywordInSystemCmd(keyword) || r.isInternalKeyword(keyword) {
 		r.obClient.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止删除")
 		return
 	}
@@ -113,7 +113,7 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string) {
 	category := matches[1]
 	requirements := matches[2]
 
-	if r.promptCfg.RuleInMainPrompt(category) {
+	if r.promptCfg.CategoryInSystemRule(category) {
 		r.obClient.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中已存在，禁止覆盖")
 		return
 	}
@@ -147,7 +147,7 @@ func (r *Router) handleDeleteRule(event onebot.Event, groupID string, _ string) 
 	}
 	category := matches[1]
 
-	if r.promptCfg.RuleInMainPrompt(category) {
+	if r.promptCfg.CategoryInSystemRule(category) {
 		r.obClient.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中，禁止删除")
 		return
 	}

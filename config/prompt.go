@@ -21,11 +21,12 @@ type CmdConf struct {
 
 // PromptConfig 提示词配置（系统 + 自定义合并），支持热重载
 type PromptConfig struct {
-	CmdConfigs  map[string][]CmdConf
-	SharedRules map[string]string
-	mu          sync.Mutex
-	systemPath  string
-	customPath  string
+	CmdConfigs   map[string][]CmdConf
+	SharedRules  map[string]string
+	mu           sync.Mutex
+	systemPath   string
+	customPath   string
+	systemPrompt *promptFile // 缓存 prompt_system.yaml 解析结果，启动后只读
 }
 
 type promptFile struct {
@@ -65,6 +66,7 @@ func (pc *PromptConfig) load() {
 	if cfg.Cmd == nil {
 		cfg.Cmd = make(map[string][]CmdConf)
 	}
+	pc.systemPrompt = &cfg // 缓存系统提示词，后续只读不重新解析
 	pc.CmdConfigs = cfg.Cmd
 	pc.SharedRules = cfg.Rules
 
@@ -98,22 +100,14 @@ func (pc *PromptConfig) Reload() {
 	pc.load()
 }
 
-// readSystemPrompt 读取并解析 prompt_system.yaml（私有辅助方法）
-func (pc *PromptConfig) readSystemPrompt() *promptFile {
-	raw, err := os.ReadFile(pc.systemPath)
-	if err != nil {
-		return nil
-	}
-	var cfg promptFile
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil
-	}
-	return &cfg
+// getSystemPrompt 返回缓存 prompt_system.yaml 解析结果（启动后只读，不需要每次读文件）
+func (pc *PromptConfig) getSystemPrompt() *promptFile {
+	return pc.systemPrompt
 }
 
-// KeywordInMainPromptAny 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在
-func (pc *PromptConfig) KeywordInMainPromptAny(keyword string) bool {
-	cfg := pc.readSystemPrompt()
+// KeywordInSystemCmd 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在
+func (pc *PromptConfig) KeywordInSystemCmd(keyword string) bool {
+	cfg := pc.getSystemPrompt()
 	if cfg == nil {
 		return false
 	}
@@ -181,6 +175,16 @@ func (pc *PromptConfig) AddCommand(category, keyword, promptText string) error {
 	return writePromptCustom(pc.customPath, &cfg)
 }
 
+// CategoryInSystemRule 检查规则 category 是否在 prompt_system.yaml 中存在
+func (pc *PromptConfig) CategoryInSystemRule(category string) bool {
+	cfg := pc.getSystemPrompt()
+	if cfg == nil {
+		return false
+	}
+	_, ok := cfg.Rules[category]
+	return ok
+}
+
 // AddRule 添加/更新规则到 prompt_custom.yaml
 func (pc *PromptConfig) AddRule(category, ruleText string) error {
 	pc.mu.Lock()
@@ -216,16 +220,6 @@ func (pc *PromptConfig) DeleteRule(category string) error {
 	}
 	delete(cfg.Rules, category)
 	return writePromptCustom(pc.customPath, &cfg)
-}
-
-// RuleInMainPrompt 检查规则 category 是否在 prompt_system.yaml 中存在
-func (pc *PromptConfig) RuleInMainPrompt(category string) bool {
-	cfg := pc.readSystemPrompt()
-	if cfg == nil {
-		return false
-	}
-	_, ok := cfg.Rules[category]
-	return ok
 }
 
 // CustomPromptPath 导出 customPromptPath（供 main.go 使用）
