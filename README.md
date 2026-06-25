@@ -29,6 +29,7 @@
 - **@机器人 + 关键词触发**：群内 @机器人并说出关键词（如"锐评下"），即可触发大模型生成回复
 - **群聊上下文感知**：基于最近的群聊记录生成上下文相关的锐评，不是无脑随机回复
 - **插件式指令扩展**：在 `prompt_system.yaml` 里加配置即可新增同类型指令变体，无需改代码
+- **群内动态添加指令**：在群里 @机器人即可动态增删自定义指令，无需重启
 - **白名单机制**：只响应指定群号，安全可控
 - **纯内网通信**：Go 后端通过 HTTP 轮询 NapCatQQ 本地 API，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
@@ -68,7 +69,7 @@ git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
 
 # 2. 复制 config_example.yaml 为 config.yaml，填入你的配置
-cp config_example.yaml config.yaml
+cp ./config/config_example.yaml config.yaml
 
 # 3. 编辑 config.yaml（详见下方配置说明），编辑 prompt_system.yaml 可修改提示词
 
@@ -122,6 +123,13 @@ cmd:
     - keyword: "猫娘来看看"
       prompt: |
         你是一只可爱的猫娘...
+
+rules:
+  chat_review: |          # 共享规则：追加到每条 chat_review 指令的 prompt 末尾
+    1. 禁止人身攻击和违禁内容
+    2. 字数控制在 100 字以内
+    3. 直接输出结果，不额外解释
+    4. 重点关注最近 10 条消息
 ```
 
 新增同类型变体只需在对应列表下加一项，无需改 Go 代码。
@@ -141,42 +149,47 @@ cmd:
 
 添加后立即生效，无需重启。动态添加的指令保存在 `prompt_custom.yaml`，与 `prompt_system.yaml` 分离。
 
+通过群内指令只能增删 `prompt_custom.yaml` 中的自定义指令，无法修改或删除 `prompt_system.yaml` 中的系统指令和内置指令（如 `帮助`、`添加关键字`）。
+
 ## 📁 项目结构
 
 ```
 good-review-master/
-├── main.go              # 入口：初始化配置、大模型客户端，启动轮询
+├── main.go                  # 入口：初始化配置、LLM 客户端，启动轮询
+├── go.mod / go.sum           # Go 模块依赖
+├── config.yaml               # 运行时配置（gitignore）
+├── prompt_system.yaml        # 系统提示词配置（gitignore）
+├── prompt_custom.yaml        # 动态添加的提示词（gitignore，程序自动创建）
+├── start_main.bat / .sh      # 开发启动脚本
+├── build_exe.bat / .sh       # 编译打包脚本
 ├── config/
-│   ├── config.go        # 运行时配置加载（config.yaml → struct）
-│   └── prompt.go       # 提示词配置加载（prompt_system.yaml → struct）
+│   ├── config.go             # 运行时配置加载（config.yaml → struct）
+│   ├── config_example.yaml   # 内置配置模板（编译时嵌入 exe）
+│   ├── embed.go              //go:embed 模板嵌入
+│   └── prompt.go             # 提示词配置加载（prompt_system.yaml + prompt_custom.yaml）
 ├── cache/
-│   └── cache.go         # 消息环形缓冲区（按群维度、去重）
+│   └── cache.go              # 消息环形缓冲区（按群维度、去重）
 ├── llm/
-│   └── llm.go           # 大模型客户端接口（OpenAI 兼容）
+│   └── llm.go                # 大模型客户端接口（OpenAI 兼容）
+├── logutil/
+│   └── logger.go             # 日志（按天轮转、20MB 切片、保留 30 天）
 ├── onebot/
-│   ├── client.go        # NapCatQQ HTTP API 客户端
-│   └── types.go         # API 数据类型定义
+│   ├── client.go             # NapCatQQ HTTP API 客户端
+│   └── types.go              # API 数据类型定义
 ├── bot/
-│   ├── polling.go       # 轮询拉取消息 + 去重
-│   └── handler.go       # 消息处理：白名单检查 → @检测 → 指令路由
-├── cmd/
-│   ├── router.go        # 指令路由表（动态生成 + 系统路由）
-│   ├── internal_cmd.go  # 内部指令（添加指令、查看指令列表等）
-│   ├── chat_review.go   # chat_review 处理函数
-├── config_example.yaml  # 运行时配置模板
-├── config.yaml          # 运行时配置（gitignore）
-├── prompt_system.yaml          # 提示词配置
-├── prompt_custom.yaml   # 动态添加的提示词（gitignore，程序自动创建）
-├── start_main.bat       # Windows 启动脚本
-├── start_main.sh        # Linux 启动脚本
-├── build_exe.bat        # Windows 编译脚本
-└── build_linux.sh       # Linux 编译脚本
+│   ├── polling.go            # 轮询拉取消息 + 去重
+│   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
+└── cmd/
+    ├── command.go            # Command 结构体 + 注册表 + 路由构建
+    ├── router.go              # 指令路由分发 + @前缀剥离
+    ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、帮助）
+    └── chat_review.go         # chat_review 处理函数
 ```
 
 ### 包依赖关系
 
 ```
-main → config, llm, bot
+main → config, llm, logutil, bot
 bot → config, cache, onebot, cmd
 cmd → config, cache, llm, onebot
 onebot → config
@@ -300,11 +313,20 @@ Polling loop (bot/polling.go)
 ### Run from source
 
 ```bash
+# 1. Clone the repo
 git clone https://github.com/your-username/good-review-master.git
 cd good-review-master
-cp config_example.yaml config.yaml
-# Edit config.yaml with your credentials
-# Edit prompt_system.yaml to customize prompts
+
+# 2. Copy the config template and fill in your settings
+cp ./config/config_example.yaml config.yaml
+
+# 3. Edit config.yaml (see Configuration below) and prompt_system.yaml for prompts
+
+# 4. Run
+# Windows: double-click start_main.bat
+# Linux/macOS: ./start_main.sh
+
+# Or run directly with go
 go run .
 ```
 
@@ -335,9 +357,9 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `llm.api_key` | LLM API key | `sk-xxx` |
 | `llm.api_base` | LLM API base URL | `https://api.deepseek.com` |
 | `llm.model_name` | Model name | `deepseek-v4-flash` |
-| `llm.temperature` | Sampling temperature (0.8=sharp, 0.5=mild) | `0.8` |
-| `llm.top_p` | Nucleus sampling (lower = more focused) | `0.9` |
-| `runtime.max_cache_msg` | Max cached messages per group | `30` |
+| `llm.temperature` | Sampling temperature (1.0=creative, 0.5=focused) | `1.2` |
+| `llm.top_p` | Nucleus sampling (lower = more focused) | `0.95` |
+| `runtime.max_cache_msg` | Max cached messages per group | `20` |
 | `runtime.llm_timeout_sec` | LLM timeout (seconds) | `20` |
 | `runtime.max_msg_rune` | Max characters per message | `200` |
 | `runtime.poll_interval_sec` | Poll interval (seconds) | `3` |
@@ -424,45 +446,70 @@ cmd:
 
 ### Add a new command type (requires code)
 
-1. Write a handler: `func newHandler(event onebot.Event, groupID string, prompt string)`
-2. Add to `handlerMap` in `cmd/command.go`: `"category_name": newHandler`
-3. Add entries in `prompt_system.yaml` under `cmd.category_name:`
+Three steps:
 
-Routes are auto-generated. No router changes needed.
+**1. Add new type config under `cmd:` in `prompt_system.yaml`**
+
+```yaml
+cmd:
+  weather:
+    - keyword: "weather"
+      prompt: "You are a weather assistant..."
+```
+
+**2. Create a new handler file in `cmd/`** (e.g. `weather.go`)
+
+```go
+func weather(event onebot.Event, groupID string, prompt string) {
+    go func() {
+        // Call llm.DefaultClient.Review(ctx, chatLog, prompt)
+        // Or send a static reply
+    }()
+}
+```
+
+**3. Register in `handlerMap` in `cmd/command.go`**
+
+```go
+var handlerMap = map[string]func(onebot.Event, string, string){
+    "chat_review": chatReview,
+    "weather":     weather,  // add this line
+}
+```
 
 ## Project Structure
 
 ```
 good-review-master/
-├── main.go              # Entry point: init config, LLM client, start polling
+├── main.go                  # Entry point: init config, LLM client, start polling
+├── go.mod / go.sum           # Go module dependencies
+├── config.yaml               # Live config (gitignored)
+├── prompt_system.yaml        # System prompts (gitignored)
+├── prompt_custom.yaml        # Dynamic prompts (gitignored, auto-created)
+├── start_main.bat / .sh      # Dev launcher scripts
+├── build_exe.bat / .sh       # Build & package scripts
 ├── config/
-│   ├── config.go        # Runtime config (config.yaml → struct)
-│   └── prompt.go        # Prompt config (prompt_system.yaml + prompt_custom.yaml)
+│   ├── config.go             # Runtime config (config.yaml → struct)
+│   ├── config_example.yaml   # Built-in config template (embedded at build time)
+│   ├── embed.go              # //go:embed template embedding
+│   └── prompt.go             # Prompt config (prompt_system.yaml + prompt_custom.yaml)
 ├── cache/
-│   └── cache.go         # Per-group message ring buffer with dedup
+│   └── cache.go              # Per-group message ring buffer with dedup
 ├── llm/
-│   └── llm.go           # OpenAI-compatible LLM client
+│   └── llm.go                # OpenAI-compatible LLM client
 ├── logutil/
-│   └── logger.go        # Daily rotating file logger (20MB slices, 30-day retention)
+│   └── logger.go             # Daily rotating file logger (20MB slices, 30-day retention)
 ├── onebot/
-│   ├── client.go        # NapCatQQ HTTP API client
-│   └── types.go         # API data types
+│   ├── client.go             # NapCatQQ HTTP API client
+│   └── types.go              # API data types
 ├── bot/
-│   ├── polling.go       # HTTP poll loop + history fetching
-│   └── handler.go       # Message processing: whitelist → @detection → routing
-├── cmd/
-│   ├── command.go       # Command registry + route builder
-│   ├── router.go        # Route dispatcher + @prefix stripping
-│   ├── internal_cmd.go  # Internal commands (add/delete/list)
-│   └── chat_review.go   # chat_review handler
-├── config_example.yaml  # Config template (committed)
-├── config.yaml          # Live config (gitignored)
-├── prompt_system.yaml   # System prompts (gitignored)
-├── prompt_custom.yaml   # Dynamic prompts (gitignored, auto-created)
-├── start_main.bat       # Windows launcher
-├── start_main.sh        # Linux launcher
-├── build_exe.bat        # Windows build script
-└── build_linux.sh       # Linux build script
+│   ├── polling.go            # HTTP poll loop + history fetching
+│   └── handler.go            # Message processing: whitelist → @detection → routing
+└── cmd/
+    ├── command.go            # Command struct + registry + route builder
+    ├── router.go             # Route dispatcher + @prefix stripping
+    ├── internal_cmd.go       # Internal commands (add/delete keyword, help)
+    └── chat_review.go        # chat_review handler
 ```
 
 ## Logging
@@ -474,4 +521,5 @@ Logs are written to the `log/` directory under the working directory. Files are 
 - Local machine or cloud server — no public IP needed
 - NapCatQQ and Go Bot run on the same machine, communicate via local HTTP
 - Compile to a single binary, no runtime dependencies
+- **Auto-create config on first launch**: If `config.yaml` is missing, the exe auto-generates one from its built-in template. Edit it and restart. No need to manually prepare `config_example.yaml`.
 - Use `systemd` (Linux) or Task Scheduler (Windows) for auto-start on boot

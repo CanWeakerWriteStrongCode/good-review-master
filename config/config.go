@@ -79,15 +79,21 @@ func exeDir() string {
 	return "."
 }
 
+// writePath 返回写文件的优先路径：exe 所在目录，不可用时回退到当前目录
+func writePath(filename string) string {
+	dir := exeDir()
+	if _, err := os.Stat(dir); err != nil {
+		return filename
+	}
+	return filepath.Join(dir, filename)
+}
+
 func init() {
 	cfgPath := resolveConfigPath("config.yaml")
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		// config.yaml 不存在，从内置模板创建
-		destPath := filepath.Join(exeDir(), "config.yaml")
-		if _, statErr := os.Stat(exeDir()); statErr != nil {
-			destPath = "config.yaml"
-		}
+		destPath := writePath("config.yaml")
 		if writeErr := os.WriteFile(destPath, configExampleTemplate, 0644); writeErr != nil {
 			slog.Error("无法创建 config.yaml", "path", destPath, "err", writeErr)
 			os.Exit(1)

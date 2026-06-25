@@ -35,16 +35,22 @@ func init() {
 }
 
 func loadPrompts() {
+	CmdConfigs = make(map[string][]CmdConf)
 	cfgPath := resolveConfigPath("prompt_system.yaml")
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		slog.Error("无法读取 prompt.yaml", "path", cfgPath, "err", err)
-		os.Exit(1)
+		destPath := writePath("prompt_system.yaml")
+		if writeErr := writePromptSystem(destPath); writeErr != nil {
+			slog.Warn("无法创建 prompt_system.yaml，以空指令集启动", "err", writeErr)
+		} else {
+			slog.Info("已创建 prompt_system.yaml", "path", destPath)
+		}
+		return
 	}
 	var cfg promptFile
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		slog.Error("prompt.yaml 格式错误", "err", err)
-		os.Exit(1)
+		slog.Warn("prompt_system.yaml 格式错误，将以空指令集启动", "err", err)
+		return
 	}
 	if cfg.Cmd == nil {
 		cfg.Cmd = make(map[string][]CmdConf)
@@ -189,4 +195,10 @@ func writePromptCustom(path string, cfg *promptFile) error {
 		}
 	}
 	return os.WriteFile(path, []byte(buf.String()), 0644)
+}
+
+// writePromptSystem 写入空 prompt_system.yaml（首次启动自动创建）
+func writePromptSystem(path string) error {
+	content := "# ===== 指令提示词配置 =====\n# 扩展新功能：在对应指令下新增 keyword + prompt 即可，无需改代码\n# 格式参考 README 中的配置说明\n"
+	return os.WriteFile(path, []byte(content), 0644)
 }
