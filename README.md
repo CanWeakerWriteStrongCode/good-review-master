@@ -103,7 +103,7 @@ go run .
 | `llm.model_name`            | 模型名称                         | `deepseek-v4-flash`        |
 | `llm.temperature`           | 锐评风格：1.0=发散 0.5=集中           | `1.2`                      |
 | `llm.top_p`                 | 核采样参数：越小输出越集中                | `0.95`                     |
-| `runtime.max_cache_msg`     | 缓存消息数                        | `30`                       |
+| `runtime.max_cache_msg`     | 缓存消息数                        | `20`                       |
 | `runtime.llm_timeout_sec`   | 大模型超时（秒）                     | `20`                       |
 | `runtime.max_msg_rune`      | 单条消息最大字符数                    | `200`                      |
 | `runtime.poll_interval_sec` | 轮询间隔（秒）                      | `3`                        |
