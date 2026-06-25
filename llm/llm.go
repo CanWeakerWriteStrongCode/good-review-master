@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"good-review-master/logutil"
 	"net/http"
 	"strings"
 )
@@ -49,7 +49,7 @@ func (adapter *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt 
 		},
 	}
 
-	slog.Info("发送给大模型", "systemPrompt", systemPrompt, "chatLog", chatLog)
+	logutil.Info("发送给大模型", "systemPrompt", systemPrompt, "chatLog", chatLog)
 	jsonData, _ := json.Marshal(reqBody)
 	req, _ := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	req.Header.Set("Authorization", "Bearer "+adapter.apiKey)

@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
+	"good-review-master/logutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,15 +51,15 @@ func (pc *PromptConfig) load() {
 	if err != nil {
 		destPath := apppath.WritePath("prompt_system.yaml")
 		if writeErr := writePromptSystem(destPath); writeErr != nil {
-			slog.Warn("无法创建 prompt_system.yaml，以空指令集启动", "err", writeErr)
+			logutil.Warn("无法创建 prompt_system.yaml，以空指令集启动", "err", writeErr)
 		} else {
-			slog.Info("已创建 prompt_system.yaml", "path", destPath)
+			logutil.Info("已创建 prompt_system.yaml", "path", destPath)
 		}
 		return
 	}
 	var cfg promptFile
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		slog.Warn("prompt_system.yaml 格式错误，将以空指令集启动", "err", err)
+		logutil.Warn("prompt_system.yaml 格式错误，将以空指令集启动", "err", err)
 		return
 	}
 	if cfg.Cmd == nil {
@@ -75,7 +75,7 @@ func (pc *PromptConfig) load() {
 	}
 	var customCfg promptFile
 	if err := yaml.Unmarshal(customRaw, &customCfg); err != nil {
-		slog.Warn("prompt_custom.yaml 格式错误，跳过", "err", err)
+		logutil.Warn("prompt_custom.yaml 格式错误，跳过", "err", err)
 		return
 	}
 	for name, entries := range customCfg.Cmd {

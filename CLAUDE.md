@@ -10,7 +10,7 @@ go build ./...        # verify all packages compile
 go build -o good-review-master.exe .  # build binary
 ```
 
-No tests. Dependencies: `gopkg.in/yaml.v3` (config parsing).
+No tests. Dependencies: `gopkg.in/yaml.v3` (config parsing), `go.uber.org/zap` (structured logging).
 
 ## Architecture
 
@@ -189,7 +189,12 @@ Per-group `GroupMsgCache` via `GetGroupCache(groupID, maxSize)`. Fixed capacity 
 
 ## Logging (`logutil/`)
 
-`SetupLogger()` creates a `log/` directory next to the exe. One file per day (`2026-06-25.log`), sliced at 20MB (`2026-06-25_1.log`), cleaned after 30 days. Writes to both stdout and file via `io.MultiWriter`.
+Uses `go.uber.org/zap` with console encoder + caller annotation. `SetupLogger()`:
+- Creates `log/` directory next to the exe
+- Custom `dailyWriter` implements `io.Writer` for date-based rotation (one file per day, sliced at 20MB)
+- Cleans logs older than 30 days
+- Writes to both stdout + file via `zapcore.NewCore` + multi-writer
+- Calls `zap.ReplaceGlobals()` — all other packages use `zap.S().Infow/Errorw/Warnw/Debugw`
 
 ## Config notes
 

@@ -1,107 +1,85 @@
 package logutil
 
 import (
-	"fmt"
-	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"good-review-master/apppath"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-const (
-	maxSize = 20 * 1024 * 1024 // 20MB
-	maxDays = 30
-)
+var sugar *zap.SugaredLogger
 
-type dailyWriter struct {
-	mu       sync.Mutex
-	dir      string
-	file     *os.File
-	curDate  string
-	curSize  int64
-	curIndex int
-}
-
-// SetupLogger 初始化日志：exe 同级 log/ 目录，按天滚动，20MB 切片，30 天清理，同时输出控制台
+// SetupLogger 初始化 zap 日志：控制台 + 文件（lumberjack 按大小切割，保留 30 天，压缩旧文件）
 func SetupLogger() {
 	logDir := filepath.Join(apppath.ExeDir(), "log")
 	os.MkdirAll(logDir, 0755)
 
-	writer := &dailyWriter{dir: logDir}
-
-	handler := slog.NewTextHandler(io.MultiWriter(os.Stdout, writer), &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+	// 文件输出：lumberjack 自动切割
+	fileWriter := zapcore.AddSync(&lumberjack.Logger{
+		Filename:   filepath.Join(logDir, "bot.log"),
+		MaxSize:    20,   // MB
+		MaxBackups: 30,   // 最多保留 30 个旧文件
+		MaxAge:     30,   // 最多保留 30 天
+		Compress:   true, // 旧文件 gzip 压缩
 	})
-	slog.SetDefault(slog.New(handler))
+
+	// 控制台输出
+	consoleWriter := zapcore.AddSync(os.Stdout)
+
+	encoderConfig := zapcore.EncoderConfig{
+		TimeKey:       "time",
+		LevelKey:      "level",
+		NameKey:       "logger",
+		CallerKey:     "caller",
+		MessageKey:    "msg",
+		StacktraceKey: "stacktrace",
+		LineEnding:    zapcore.DefaultLineEnding,
+		EncodeLevel:   zapcore.CapitalColorLevelEncoder,
+		EncodeTime: func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+			enc.AppendString(t.Format("2006-01-02 15:04:05"))
+		},
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+	}
+
+	// 双输出：控制台用 console 编码，文件用 console 编码（可读性好）
+	consoleCore := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderConfig),
+		consoleWriter,
+		zap.InfoLevel,
+	)
+	fileCore := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderConfig),
+		fileWriter,
+		zap.InfoLevel,
+	)
+
+	base := zap.New(zapcore.NewTee(consoleCore, fileCore), zap.AddCaller())
+	sugar = base.Sugar()
+	zap.ReplaceGlobals(base)
 }
 
-func (dw *dailyWriter) Write(data []byte) (written int, err error) {
-	dw.mu.Lock()
-	defer dw.mu.Unlock()
-
-	today := time.Now().Format("2006-01-02")
-	if dw.file == nil || today != dw.curDate || dw.curSize >= maxSize {
-		if err := dw.rotate(today); err != nil {
-			return 0, err
-		}
-	}
-
-	written, err = dw.file.Write(data)
-	dw.curSize += int64(written)
-	return
+// Info 输出 Info 级别日志
+func Info(msg string, keysAndValues ...interface{}) {
+	sugar.Infow(msg, keysAndValues...)
 }
 
-func (dw *dailyWriter) rotate(today string) error {
-	if dw.file != nil {
-		dw.file.Close()
-	}
-
-	if today != dw.curDate {
-		dw.curIndex = 0
-		dw.curDate = today
-		go dw.cleanOld()
-	} else {
-		dw.curIndex++
-	}
-
-	var name string
-	if dw.curIndex == 0 {
-		name = today + ".log"
-	} else {
-		name = fmt.Sprintf("%s_%d.log", today, dw.curIndex)
-	}
-
-	logFile, err := os.OpenFile(filepath.Join(dw.dir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	info, _ := logFile.Stat()
-	dw.file = logFile
-	dw.curSize = info.Size()
-	return nil
+// Error 输出 Error 级别日志
+func Error(msg string, keysAndValues ...interface{}) {
+	sugar.Errorw(msg, keysAndValues...)
 }
 
-func (dw *dailyWriter) cleanOld() {
-	cutoff := time.Now().AddDate(0, 0, -maxDays)
-	entries, _ := os.ReadDir(dw.dir)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if len(name) < 10 {
-			continue
-		}
-		fileDate, err := time.Parse("2006-01-02", name[:10])
-		if err != nil {
-			continue
-		}
-		if fileDate.Before(cutoff) {
-			os.Remove(filepath.Join(dw.dir, name))
-		}
-	}
+// Warn 输出 Warn 级别日志
+func Warn(msg string, keysAndValues ...interface{}) {
+	sugar.Warnw(msg, keysAndValues...)
+}
+
+// Debug 输出 Debug 级别日志
+func Debug(msg string, keysAndValues ...interface{}) {
+	sugar.Debugw(msg, keysAndValues...)
 }

@@ -3,7 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"good-review-master/logutil"
 	"regexp"
 	"strings"
 
@@ -59,19 +59,19 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string) 
 		return
 	}
 
-	slog.Info("使用 LLM 生成提示词", "category", category, "keyword", keyword)
+	logutil.Info("使用 LLM 生成提示词", "category", category, "keyword", keyword)
 	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 	defer cancel()
 	generated, err := r.llmClient.Review(ctx, requirements, promptGenSystem)
 	if err != nil {
-		slog.Error("LLM 生成提示词失败", "err", err)
+		logutil.Error("LLM 生成提示词失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 生成提示词失败: "+err.Error())
 		return
 	}
 	finalPrompt := strings.TrimSpace(generated)
 
 	if err := r.promptCfg.AddCommand(category, keyword, finalPrompt); err != nil {
-		slog.Error("添加指令失败", "err", err)
+		logutil.Error("添加指令失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 添加指令失败: "+err.Error())
 		return
 	}
@@ -118,19 +118,19 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string) {
 		return
 	}
 
-	slog.Info("使用 LLM 生成规则", "category", category)
+	logutil.Info("使用 LLM 生成规则", "category", category)
 	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 	defer cancel()
 	generated, err := r.llmClient.Review(ctx, requirements, ruleGenSystem)
 	if err != nil {
-		slog.Error("LLM 生成规则失败", "err", err)
+		logutil.Error("LLM 生成规则失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 生成规则失败: "+err.Error())
 		return
 	}
 	ruleText := strings.TrimSpace(generated)
 
 	if err := r.promptCfg.AddRule(category, ruleText); err != nil {
-		slog.Error("添加规则失败", "err", err)
+		logutil.Error("添加规则失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 添加规则失败: "+err.Error())
 		return
 	}

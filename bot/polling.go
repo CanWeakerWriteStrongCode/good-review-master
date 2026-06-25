@@ -1,7 +1,7 @@
 package bot
 
 import (
-	"log/slog"
+	"good-review-master/logutil"
 	"strconv"
 	"strings"
 	"time"
@@ -13,11 +13,11 @@ import (
 // RunPollingLoop HTTP轮询主循环
 func (b *Bot) RunPollingLoop() {
 	// 首次启动：拉取历史消息填充缓存
-	slog.Info("正在连接 NapCat HTTP API：" + b.cfg.NapCatHTTPAPI)
+	logutil.Info("正在连接 NapCat HTTP API：" + b.cfg.NapCatHTTPAPI)
 	for _, groupID := range b.cfg.AllowGroups {
 		msgs, err := b.ob.FetchGroupMsgHistory(groupID, b.cfg.MaxCacheMsg)
 		if err != nil {
-			slog.Error("首次拉取群消息失败", "group", groupID, "err", err)
+			logutil.Error("首次拉取群消息失败", "group", groupID, "err", err)
 			continue
 		}
 		gc := cache.GetGroupCache(groupID, b.cfg.MaxCacheMsg)
@@ -37,10 +37,10 @@ func (b *Bot) RunPollingLoop() {
 				Time:    msg.Time,
 			})
 		}
-		slog.Info("群消息缓存初始化完成", "group", groupID, "条数", len(msgs))
+		logutil.Info("群消息缓存初始化完成", "group", groupID, "条数", len(msgs))
 	}
 
-	slog.Info("✅ 机器人已上线！轮询中（间隔 " + b.cfg.PollInterval.String() + "）")
+	logutil.Info("✅ 机器人已上线！轮询中（间隔 " + b.cfg.PollInterval.String() + "）")
 	ticker := time.NewTicker(b.cfg.PollInterval)
 	defer ticker.Stop()
 
@@ -48,7 +48,7 @@ func (b *Bot) RunPollingLoop() {
 		for _, groupID := range b.cfg.AllowGroups {
 			msgs, err := b.ob.FetchGroupMsgHistory(groupID, 10)
 			if err != nil {
-				slog.Error("轮询群消息失败", "group", groupID, "err", err)
+				logutil.Error("轮询群消息失败", "group", groupID, "err", err)
 				continue
 			}
 
@@ -59,7 +59,7 @@ func (b *Bot) RunPollingLoop() {
 					continue
 				}
 				newCount++
-				slog.Info("收到新消息", "group", groupID, "msgID", msg.MessageID, "user", msg.Sender.Nickname, "content", msg.RawMessage)
+				logutil.Info("收到新消息", "group", groupID, "msgID", msg.MessageID, "user", msg.Sender.Nickname, "content", msg.RawMessage)
 				b.ProcessMessage(onebot.Event{
 					PostType:    "message",
 					MessageType: "group",
@@ -71,7 +71,7 @@ func (b *Bot) RunPollingLoop() {
 				})
 			}
 			if newCount > 0 {
-				slog.Debug("本轮轮询结果", "group", groupID, "新消息数", newCount)
+				logutil.Debug("本轮轮询结果", "group", groupID, "新消息数", newCount)
 			}
 		}
 	}

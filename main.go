@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log/slog"
 	"os"
 
 	"good-review-master/apppath"
@@ -19,7 +18,7 @@ func main() {
 	// 1. 加载主配置
 	cfg, err := config.LoadConfig(apppath.ResolvePath("config.yaml"))
 	if err != nil {
-		slog.Error("加载配置失败", "err", err)
+		logutil.Error("加载配置失败", "err", err)
 		os.Exit(1)
 	}
 
@@ -28,7 +27,7 @@ func main() {
 	customPromptPath := config.CustomPromptPath(systemPromptPath)
 	promptCfg, err := config.LoadPromptConfig(systemPromptPath, customPromptPath)
 	if err != nil {
-		slog.Error("加载提示词配置失败", "err", err)
+		logutil.Error("加载提示词配置失败", "err", err)
 		os.Exit(1)
 	}
 
@@ -44,7 +43,7 @@ func main() {
 			cfg.LLMConfig.TopP,
 		)
 	default:
-		slog.Error("不支持的大模型提供商", "provider", cfg.LLMConfig.Provider)
+		logutil.Error("不支持的大模型提供商", "provider", cfg.LLMConfig.Provider)
 		os.Exit(1)
 	}
 
@@ -56,16 +55,16 @@ func main() {
 
 	// 6. 获取机器人昵称
 	if info, err := obClient.GetLoginInfo(); err != nil {
-		slog.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
+		logutil.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
 	} else {
 		cfg.BotNickname = info.Nickname
-		slog.Info("机器人昵称", "nickname", cfg.BotNickname)
+		logutil.Info("机器人昵称", "nickname", cfg.BotNickname)
 	}
 
-	slog.Info("🚀 【不是好评大师】机器人启动成功")
-	slog.Info("机器人QQ：" + cfg.BotQQ)
-	slog.Info("允许响应群：" + cfg.AllowGroupsStr())
-	slog.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
+	logutil.Info("🚀 【不是好评大师】机器人启动成功")
+	logutil.Info("机器人QQ：" + cfg.BotQQ)
+	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
+	logutil.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
 
 	// 7. 创建机器人并启动轮询
 	botInstance := bot.NewBot(cfg, obClient, router)

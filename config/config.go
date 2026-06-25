@@ -1,7 +1,7 @@
 package config
 
 import (
-	"log/slog"
+	"good-review-master/logutil"
 	"os"
 	"strings"
 	"time"
@@ -67,15 +67,15 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		// config.yaml 不存在，从内置模板创建
 		destPath := apppath.WritePath("config.yaml")
 		if writeErr := os.WriteFile(destPath, configExampleTemplate, 0644); writeErr != nil {
-			slog.Error("无法创建 config.yaml", "path", destPath, "err", writeErr)
+			logutil.Error("无法创建 config.yaml", "path", destPath, "err", writeErr)
 			os.Exit(1)
 		}
-		slog.Info("已从内置模板创建 config.yaml，请编辑后重新运行", "path", destPath)
+		logutil.Info("已从内置模板创建 config.yaml，请编辑后重新运行", "path", destPath)
 		os.Exit(0)
 	}
 	var cfgFile configFile
 	if err := yaml.Unmarshal(raw, &cfgFile); err != nil {
-		slog.Error("config.yaml 格式错误", "err", err)
+		logutil.Error("config.yaml 格式错误", "err", err)
 		os.Exit(1)
 	}
 
