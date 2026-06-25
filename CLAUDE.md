@@ -159,3 +159,7 @@ Per-group `GroupMsgCache` via `GetGroupCache(groupID)`. Fixed capacity (`config.
 - YAML with `#` comments, standard `gopkg.in/yaml.v3` parsing
 - `resolveConfigPath(filename)` searches `./` then `exeDir/`
 - `customPromptPath()` forces `prompt_custom.yaml` into the same directory as `prompt_system.yaml`
+
+## Code conventions
+
+- **Variable naming**: 变量名尽量是要有场景区分度的多单词组合，禁止单字母或缩写。接收者命名用类型名的有意义简写。

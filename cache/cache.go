@@ -47,31 +47,31 @@ func GetGroupCache(groupID string) *GroupMsgCache {
 }
 
 // Add 添加消息到缓存（环形队列，超出容量自动淘汰最早的）
-func (gc *GroupMsgCache) Add(msg Message) {
-	gc.mu.Lock()
-	defer gc.mu.Unlock()
+func (gpMsgCache *GroupMsgCache) Add(msg Message) {
+	gpMsgCache.mu.Lock()
+	defer gpMsgCache.mu.Unlock()
 
-	if len(gc.messages) >= config.MaxCacheMsg {
-		gc.messages = gc.messages[1:]
+	if len(gpMsgCache.messages) >= config.MaxCacheMsg {
+		gpMsgCache.messages = gpMsgCache.messages[1:]
 	}
-	gc.messages = append(gc.messages, msg)
+	gpMsgCache.messages = append(gpMsgCache.messages, msg)
 }
 
 // GetAll 获取所有缓存消息（快照副本）
-func (gc *GroupMsgCache) GetAll() []Message {
-	gc.mu.RLock()
-	defer gc.mu.RUnlock()
-	msgs := make([]Message, len(gc.messages))
-	copy(msgs, gc.messages)
+func (gpMsgCache *GroupMsgCache) GetAll() []Message {
+	gpMsgCache.mu.RLock()
+	defer gpMsgCache.mu.RUnlock()
+	msgs := make([]Message, len(gpMsgCache.messages))
+	copy(msgs, gpMsgCache.messages)
 	return msgs
 }
 
 // HasMsgID 检查消息ID是否已在缓存中
-func (gc *GroupMsgCache) HasMsgID(msgID int64) bool {
-	gc.mu.RLock()
-	defer gc.mu.RUnlock()
-	for i := len(gc.messages) - 1; i >= 0; i-- {
-		if gc.messages[i].MsgID == msgID {
+func (gpMsgCache *GroupMsgCache) HasMsgID(msgID int64) bool {
+	gpMsgCache.mu.RLock()
+	defer gpMsgCache.mu.RUnlock()
+	for i := len(gpMsgCache.messages) - 1; i >= 0; i-- {
+		if gpMsgCache.messages[i].MsgID == msgID {
 			return true
 		}
 	}

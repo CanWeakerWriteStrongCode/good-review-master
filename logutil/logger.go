@@ -26,7 +26,8 @@ type dailyWriter struct {
 
 // SetupLogger 初始化日志：exe 同级 log/ 目录，按天滚动，20MB 切片，30 天清理，同时输出控制台
 func SetupLogger() {
-	logDir := filepath.Join(exeDir(), "log")
+	workDir, _ := os.Getwd()
+	logDir := filepath.Join(workDir, "log")
 	os.MkdirAll(logDir, 0755)
 
 	writer := &dailyWriter{dir: logDir}
@@ -35,13 +36,6 @@ func SetupLogger() {
 		Level: slog.LevelInfo,
 	})
 	slog.SetDefault(slog.New(handler))
-}
-
-func exeDir() string {
-	if exePath, err := os.Executable(); err == nil {
-		return filepath.Dir(exePath)
-	}
-	return "."
 }
 
 func (dw *dailyWriter) Write(data []byte) (written int, err error) {
