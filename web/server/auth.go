@@ -1,37 +1,34 @@
 package server
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"sync"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// TokenStore 内存 token 仓库，用于管理面板的登录会话
-type TokenStore struct {
-	tokens sync.Map // token → struct{}
+const jwtExpire = 24 * time.Hour
+
+// GenerateJWT 签发 JWT token
+func GenerateJWT(username, secret string) (string, error) {
+	claims := jwt.MapClaims{
+		"sub": username,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(jwtExpire).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
 }
 
-// NewTokenStore 创建新的 token 仓库
-func NewTokenStore() *TokenStore {
-	return &TokenStore{}
-}
-
-// Generate 生成随机 token 并存入仓库
-func (ts *TokenStore) Generate() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	token := hex.EncodeToString(b)
-	ts.tokens.Store(token, struct{}{})
-	return token
-}
-
-// Exists 检查 token 是否有效
-func (ts *TokenStore) Exists(token string) bool {
-	_, ok := ts.tokens.Load(token)
-	return ok
-}
-
-// Remove 删除 token（退出登录）
-func (ts *TokenStore) Remove(token string) {
-	ts.tokens.Delete(token)
+// ParseJWT 校验 JWT token，成功返回 claims
+func ParseJWT(tokenStr, secret string) (jwt.MapClaims, error) {
+	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		return claims, nil
+	}
+	return nil, jwt.ErrSignatureInvalid
 }

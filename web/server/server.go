@@ -20,7 +20,6 @@ import (
 type Server struct {
 	cfg        *config.Config
 	httpServer *http.Server
-	tokens     *TokenStore
 	obClient   *onebot.Client
 	groupNames map[string]string // groupID → groupName 缓存
 }
@@ -35,18 +34,17 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 	engine.Use(LoggerMiddleware())
 	engine.Use(CORSMiddleware())
 
-	tokens := NewTokenStore()
-	s := &Server{cfg: cfg, tokens: tokens, obClient: obClient, groupNames: make(map[string]string)}
+	s := &Server{cfg: cfg, obClient: obClient, groupNames: make(map[string]string)}
 
 	// API 路由
 	apiGroup := engine.Group("/api")
-	apiGroup.POST("/login", handleLogin(cfg.WebUsername, cfg.WebPassword, tokens))
-	apiGroup.Use(AuthMiddleware(cfg.WebPassword, tokens))
+	apiGroup.POST("/login", handleLogin(cfg.WebUsername, cfg.WebPassword))
+	apiGroup.Use(AuthMiddleware(cfg.WebPassword, cfg.WebPassword))
 	{
 		apiGroup.GET("/status", handleAPIStatus(cfg))
 		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames))
 		apiGroup.GET("/groups/:id", handleAPIMessages(cfg, obClient, s.groupNames))
-		apiGroup.POST("/logout", handleLogout(tokens))
+		apiGroup.POST("/logout", handleLogout())
 	}
 
 	// SPA fallback：非 /api/* 路径返回前端静态文件

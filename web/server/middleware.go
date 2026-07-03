@@ -51,8 +51,8 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
-// AuthMiddleware token 校验中间件。若未配置密码则直接放行。
-func AuthMiddleware(password string, tokens *TokenStore) gin.HandlerFunc {
+// AuthMiddleware JWT 校验中间件。若未配置密码则直接放行。
+func AuthMiddleware(password, secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if password == "" {
 			c.Next()
@@ -62,7 +62,7 @@ func AuthMiddleware(password string, tokens *TokenStore) gin.HandlerFunc {
 		if len(token) > 7 && token[:7] == "Bearer " {
 			token = token[7:]
 		}
-		if token == "" || !tokens.Exists(token) {
+		if _, err := ParseJWT(token, secret); err != nil {
 			c.AbortWithStatusJSON(401, gin.H{"code": 401, "data": nil})
 			return
 		}

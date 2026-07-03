@@ -141,7 +141,7 @@ func formatTimestamp(ts int64) string {
 }
 
 // handleLogin 登录校验，成功返回 token
-func handleLogin(username, password string, tokens *TokenStore) gin.HandlerFunc {
+func handleLogin(username, password string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if password == "" {
 			c.JSON(200, APIResponse{Code: 200, Data: gin.H{"need_password": false}})
@@ -159,17 +159,17 @@ func handleLogin(username, password string, tokens *TokenStore) gin.HandlerFunc 
 			c.JSON(200, APIResponse{Code: 401, Data: gin.H{"msg": "账号或密码错误"}})
 			return
 		}
-		token := tokens.Generate()
+		token, err := GenerateJWT(username, password)
+		if err != nil {
+			c.JSON(500, APIResponse{Code: 500, Data: gin.H{"msg": "token 生成失败"}})
+			return
+		}
 		c.JSON(200, APIResponse{Code: 200, Data: gin.H{"token": token}})
 	}
 }
 
-func handleLogout(tokens *TokenStore) gin.HandlerFunc {
+func handleLogout() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := c.GetHeader("Authorization")
-		if len(token) > 7 && token[:7] == "Bearer " {
-			tokens.Remove(token[7:])
-		}
 		c.JSON(200, APIResponse{Code: 200, Data: nil})
 	}
 }
