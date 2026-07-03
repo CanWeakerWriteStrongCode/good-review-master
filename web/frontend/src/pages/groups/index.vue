@@ -7,6 +7,7 @@
         监控 {{ store.botStatus.group_count }} 个群 |
         API: {{ store.botStatus.api_key }}
       </text>
+      <text class="logout-btn" @click="doLogout">退出</text>
     </view>
 
     <!-- 群列表 -->
@@ -55,6 +56,7 @@
 import { onMounted } from 'vue'
 import { useGroupsStore } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
+import { logout as apiLogout } from '@/api'
 
 const authStore = useAuthStore()
 const store = useGroupsStore()
@@ -66,6 +68,12 @@ onMounted(() => {
   }
   store.loadGroups()
 })
+
+async function doLogout() {
+  await apiLogout()
+  authStore.logout()
+  uni.reLaunch({ url: '/pages/login/index' })
+}
 
 function goMessages(groupId: string) {
   uni.navigateTo({
@@ -86,10 +94,21 @@ function goMessages(groupId: string) {
   border-radius: 10px;
   padding: 14px 16px;
   margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 .status-text {
   color: #aab;
   font-size: 13px;
+  flex: 1;
+}
+.logout-btn {
+  color: #e74c3c;
+  font-size: 13px;
+  padding: 4px 12px;
+  border: 1px solid #e74c3c;
+  border-radius: 6px;
 }
 
 /* 群卡片 */

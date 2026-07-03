@@ -43,6 +43,7 @@ func New(cfg *config.Config) *Server {
 		apiGroup.GET("/status", handleAPIStatus(cfg))
 		apiGroup.GET("/groups", handleAPIGroups(cfg))
 		apiGroup.GET("/groups/:id", handleAPIMessages(cfg))
+		apiGroup.POST("/logout", handleLogout(tokens))
 	}
 
 	// SPA fallback：非 /api/* 路径返回前端静态文件

@@ -70,3 +70,11 @@ export async function login(username: string, password: string): Promise<LoginRe
   }
   return body.data
 }
+
+export async function logout() {
+  await uni.request({
+    url: BASE_URL + '/logout',
+    method: 'POST',
+    header: getAuthHeader(),
+  })
+}

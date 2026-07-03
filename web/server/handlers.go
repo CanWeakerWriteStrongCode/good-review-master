@@ -148,3 +148,13 @@ func handleLogin(username, password string, tokens *TokenStore) gin.HandlerFunc 
 		c.JSON(200, APIResponse{Code: 200, Data: gin.H{"token": token}})
 	}
 }
+
+func handleLogout(tokens *TokenStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.GetHeader("Authorization")
+		if len(token) > 7 && token[:7] == "Bearer " {
+			tokens.Remove(token[7:])
+		}
+		c.JSON(200, APIResponse{Code: 200, Data: nil})
+	}
+}

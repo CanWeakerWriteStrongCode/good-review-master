@@ -30,3 +30,8 @@ func (ts *TokenStore) Exists(token string) bool {
 	_, ok := ts.tokens.Load(token)
 	return ok
 }
+
+// Remove 删除 token（退出登录）
+func (ts *TokenStore) Remove(token string) {
+	ts.tokens.Delete(token)
+}
