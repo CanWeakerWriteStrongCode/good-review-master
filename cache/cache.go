@@ -8,12 +8,12 @@ import (
 
 // Message 群聊消息
 type Message struct {
-	MsgID   int64
-	GroupID string
-	UserID  string
-	Nick    string
-	Content string
-	Time    int64
+	MsgID   int64  `json:"msg_id"`
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+	Nick    string `json:"nick"`
+	Content string `json:"content"`
+	Time    int64  `json:"time"`
 }
 
 // GroupMsgCache 群消息环形缓存（零拷贝实现）

@@ -19,6 +19,7 @@ import (
 type Server struct {
 	cfg        *config.Config
 	httpServer *http.Server
+	tokens     *TokenStore
 }
 
 // New 创建 Web 服务器实例
@@ -31,10 +32,13 @@ func New(cfg *config.Config) *Server {
 	engine.Use(LoggerMiddleware())
 	engine.Use(CORSMiddleware())
 
-	s := &Server{cfg: cfg}
+	tokens := NewTokenStore()
+	s := &Server{cfg: cfg, tokens: tokens}
 
 	// API 路由
 	apiGroup := engine.Group("/api")
+	apiGroup.POST("/login", handleLogin(cfg.WebUsername, cfg.WebPassword, tokens))
+	apiGroup.Use(AuthMiddleware(cfg.WebPassword, tokens))
 	{
 		apiGroup.GET("/status", handleAPIStatus(cfg))
 		apiGroup.GET("/groups", handleAPIGroups(cfg))

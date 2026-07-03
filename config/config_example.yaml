@@ -24,6 +24,9 @@ runtime:
   poll_interval_sec: 3
   # Web 管理面板端口（<=0 禁用）
   web_port: 8080
+  # Web 管理面板登录账号、密码（留空则不校验）
+  web_username: "admin"
+  web_password: "123456"
 
 # ===== 大模型配置 =====
 llm:

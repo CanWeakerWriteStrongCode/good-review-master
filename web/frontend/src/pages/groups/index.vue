@@ -52,12 +52,18 @@
 </template>
 
 <script setup lang="ts">
-import { onLoad } from '@dcloudio/uni-app'
+import { onMounted } from 'vue'
 import { useGroupsStore } from '@/stores/groups'
+import { useAuthStore } from '@/stores/auth'
 
+const authStore = useAuthStore()
 const store = useGroupsStore()
 
-onLoad(() => {
+onMounted(() => {
+  if (!authStore.isAuthenticated()) {
+    uni.reLaunch({ url: '/pages/login/index' })
+    return
+  }
   store.loadGroups()
 })
 

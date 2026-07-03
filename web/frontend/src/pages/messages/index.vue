@@ -30,14 +30,26 @@
 </template>
 
 <script setup lang="ts">
-import { onLoad } from '@dcloudio/uni-app'
+import { onMounted } from 'vue'
 import { useMessagesStore } from '@/stores/groups'
+import { useAuthStore } from '@/stores/auth'
 
+const authStore = useAuthStore()
 const store = useMessagesStore()
 
-onLoad((options?: AnyObject) => {
-  if (options?.id) {
-    store.loadMessages(options.id as string)
+onMounted(() => {
+  if (!authStore.isAuthenticated()) {
+    uni.reLaunch({ url: '/pages/login/index' })
+    return
+  }
+  const hash = window.location.hash
+  const queryIndex = hash.indexOf('?')
+  if (queryIndex !== -1) {
+    const params = new URLSearchParams(hash.slice(queryIndex))
+    const id = params.get('id')
+    if (id) {
+      store.loadMessages(id)
+    }
   }
 })
 </script>

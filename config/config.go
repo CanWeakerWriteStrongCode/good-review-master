@@ -22,7 +22,9 @@ type Config struct {
 	LLMTimeout        time.Duration
 	MaxMsgRune        int
 	PollInterval      time.Duration
-	WebPort           int // Web 管理面板端口，<=0 禁用
+	WebPort           int    // Web 管理面板端口，<=0 禁用
+	WebUsername       string // Web 管理面板登录账号
+	WebPassword       string // Web 管理面板登录密码，空则不校验
 	LLMConfig         LLMConf
 }
 
@@ -46,11 +48,13 @@ type configFile struct {
 		AllowGroups string `yaml:"allow_groups"`
 	} `yaml:"bot"`
 	Runtime struct {
-		MaxCacheMsg     int `yaml:"max_cache_msg"`
-		LLMTimeoutSec   int `yaml:"llm_timeout_sec"`
-		MaxMsgRune      int `yaml:"max_msg_rune"`
-		PollIntervalSec int `yaml:"poll_interval_sec"`
-		WebPort         int `yaml:"web_port"`
+		MaxCacheMsg     int    `yaml:"max_cache_msg"`
+		LLMTimeoutSec   int    `yaml:"llm_timeout_sec"`
+		MaxMsgRune      int    `yaml:"max_msg_rune"`
+		PollIntervalSec int    `yaml:"poll_interval_sec"`
+		WebPort         int    `yaml:"web_port"`
+		WebUsername     string `yaml:"web_username"`
+		WebPassword     string `yaml:"web_password"`
 	} `yaml:"runtime"`
 	LLM struct {
 		Provider    string  `yaml:"provider"`
@@ -93,6 +97,8 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		MaxMsgRune:        cfgFile.Runtime.MaxMsgRune,
 		PollInterval:      time.Duration(cfgFile.Runtime.PollIntervalSec) * time.Second,
 		WebPort:           cfgFile.Runtime.WebPort,
+		WebUsername:       cfgFile.Runtime.WebUsername,
+		WebPassword:       cfgFile.Runtime.WebPassword,
 		LLMConfig: LLMConf{
 			Provider:    cfgFile.LLM.Provider,
 			APIKey:      cfgFile.LLM.APIKey,

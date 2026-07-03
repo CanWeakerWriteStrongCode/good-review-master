@@ -124,3 +124,27 @@ func handleAPIStatus(cfg *config.Config) gin.HandlerFunc {
 func formatTimestamp(ts int64) string {
 	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
 }
+
+// handleLogin 登录校验，成功返回 token
+func handleLogin(username, password string, tokens *TokenStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if password == "" {
+			c.JSON(200, APIResponse{Code: 200, Data: gin.H{"need_password": false}})
+			return
+		}
+		var body struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, APIResponse{Code: 400, Data: nil})
+			return
+		}
+		if body.Username != username || body.Password != password {
+			c.JSON(200, APIResponse{Code: 401, Data: gin.H{"msg": "账号或密码错误"}})
+			return
+		}
+		token := tokens.Generate()
+		c.JSON(200, APIResponse{Code: 200, Data: gin.H{"token": token}})
+	}
+}
