@@ -8,7 +8,7 @@ import (
 	"good-review-master/onebot"
 )
 
-// chatReview 异步锐评（通过 safeGo 管理生命周期，自动继承 shutdown context）
+// chatReview 异步锐评（通过 async 管理生命周期，自动继承 shutdown context）
 func (r *Router) chatReview(event onebot.Event, groupID string, prompt string) {
 	logutil.Info("触发锐评", "group", groupID, "user", event.Nickname)
 	r.Go(func(ctx context.Context) error {

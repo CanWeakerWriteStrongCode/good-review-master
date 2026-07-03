@@ -171,8 +171,8 @@ good-review-master/
 │   └── cache.go              # 环形缓冲区（零拷贝写入，O(1) 去重）
 ├── llm/
 │   └── llm.go                # 大模型客户端（go-openai SDK，连接池，类型安全）
-├── safego/
-│   └── safego.go             # 安全 goroutine 管理器（errgroup + ctx 自动传播 + panic recover）
+├── async/
+│   └── async.go             # 安全 goroutine 管理器（errgroup + ctx 自动传播 + panic recover）
 ├── logutil/
 │   └── logger.go             # 日志（zap + lumberjack，20MB 切割，30 天保留）
 ├── onebot/
@@ -190,10 +190,10 @@ good-review-master/
 ### 包依赖关系
 
 ```
-main → config, llm, logutil, bot, onebot, safego
+main → config, llm, logutil, bot, onebot, async
 bot → config, cache, onebot, cmd
-cmd → config, cache, llm, onebot, safego
-safego → logutil
+cmd → config, cache, llm, onebot, async
+async → logutil
 onebot → (无内部依赖)
 cache → (无内部依赖)
 llm → (无内部依赖)
@@ -505,8 +505,8 @@ good-review-master/
 │   └── cache.go              # Per-group ring buffer (zero-copy writes, O(1) dedup)
 ├── llm/
 │   └── llm.go                # LLM client (go-openai SDK, connection pooling, typed)
-├── safego/
-│   └── safego.go             # Safe goroutine manager (errgroup + auto ctx + panic recover)
+├── async/
+│   └── async.go             # Safe goroutine manager (errgroup + auto ctx + panic recover)
 ├── logutil/
 │   └── logger.go             # Logging (zap + lumberjack, 20MB rotation, 30-day retention)
 ├── onebot/

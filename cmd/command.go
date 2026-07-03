@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	"good-review-master/async"
 	"good-review-master/config"
 	"good-review-master/llm"
 	"good-review-master/onebot"
-	"good-review-master/safego"
 )
 
 // HandlerFunc 指令处理函数类型
@@ -77,7 +77,7 @@ type Router struct {
 	obClient   *onebot.Client
 	promptCfg  *config.PromptConfig
 	appCfg     *config.Config
-	starter    *safego.Group
+	starter    *async.Group
 }
 
 // NewRouter 创建路由器并初始化所有内部指令
@@ -87,7 +87,7 @@ func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient 
 		obClient:  obClient,
 		promptCfg: promptCfg,
 		appCfg:    appCfg,
-		starter:   safego.New(shutdownCtx),
+		starter:   async.New(shutdownCtx),
 	}
 	r.handlerMap = map[string]HandlerFunc{
 		"chat_review": r.chatReview,
@@ -173,12 +173,12 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	route.Handler(event, groupID, enrichedPrompt)
 }
 
-// Go 安全启动 goroutine（代理 safego.Group）
+// Go 安全启动 goroutine（代理 async.Group）
 func (r *Router) Go(fn func(context.Context) error) {
 	r.starter.Go(fn)
 }
 
-// Wait 等待所有 goroutine 完成（代理 safego.Group）
+// Wait 等待所有 goroutine 完成（代理 async.Group）
 func (r *Router) Wait() error {
 	return r.starter.Wait()
 }

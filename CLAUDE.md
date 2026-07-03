@@ -21,7 +21,6 @@ No tests.
 | `go.uber.org/zap` | Structured logging |
 | `gopkg.in/natefinch/lumberjack.v2` | Log rotation (size-based, 30-day retention, gzip compression) |
 | `gopkg.in/yaml.v3` | Config YAML parsing |
-| `golang.org/x/sync` | `errgroup` for goroutine lifecycle management |
 
 ## Architecture
 
@@ -32,10 +31,11 @@ QQ ←→ NapCatQQ (local HTTP API) ←→ Go bot (polling) ←→ LLM API (Open
 ### Package graph
 
 ```
-main → config, llm, logutil, bot, onebot, safego
+main → config, llm, logutil, bot, onebot, async
 bot → config, cache, onebot, cmd
-cmd → config, cache, llm, onebot, safego
-safego → logutil (wraps errgroup + panic recover)
+cmd → config, cache, llm, onebot, async
+async → logutil, pool
+pool → (仅标准库 sync)
 onebot → (no internal deps)
 cache → (no internal deps)
 llm → (no internal deps)
@@ -44,7 +44,7 @@ logutil → apppath
 apppath → (no internal deps)
 ```
 
-`bot` is the orchestrator; `cmd` handles command routing with a prefix trie; `safego` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`bot` is the orchestrator; `cmd` handles command routing with a prefix trie; `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
 
 ### Key design: explicit dependency injection, no init() side effects
 
@@ -96,7 +96,7 @@ type Router struct {
     obClient   *onebot.Client
     promptCfg  *config.PromptConfig
     appCfg     *config.Config
-    starter    *safego.Group     // goroutine 生命周期管理
+    starter    *async.Group     // goroutine 生命周期管理
 }
 func NewRouter(appCfg, promptCfg, llmClient, obClient, shutdownCtx) *Router
 func (r *Router) RouteMessage(content, event, groupID)
@@ -198,16 +198,31 @@ type GroupMsgCache struct {
 
 Single-writer architecture (only the polling goroutine calls `Add`) — no lock contention in practice.
 
-## Safe goroutine management (`safego/`)
+## Safe goroutine management (`async/` + `pool/`)
+
+`async` 基于自定义协程池（`pool`）提供安全 goroutine 管理，不再依赖 `golang.org/x/sync/errgroup`。
+
+### Pool (`pool/pool.go`) — 通用协程池
 
 ```go
-type Group struct { /* wraps errgroup.Group + context */ }
+type Pool struct { /* chan + sync.WaitGroup */ }
+func New(size int) *Pool          // size<=0 时默认 runtime.NumCPU()*2
+func (p *Pool) Submit(task func()) bool  // 非阻塞提交，队列满返回 false
+func (p *Pool) Shutdown()                // 优雅关闭：停止接收，排空队列
+```
+
+纯工具包，仅依赖标准库 `sync`。Worker 固定数量，有界任务队列。`Submit` 非阻塞，背压由上层 `async` 处理。
+
+### async (`async/async.go`) — 安全执行层
+
+```go
+type Group struct { /* pool + ctx + cancel */ }
 func New(ctx context.Context) *Group
 func (g *Group) Go(fn func(context.Context) error)  // auto ctx + panic recover
 func (g *Group) Wait() error
 ```
 
-Wraps `golang.org/x/sync/errgroup` with automatic context propagation and panic recovery. `Router` holds a `*safego.Group` and exposes `Go(fn)` / `Wait()` proxy methods. Handlers fire async work with `r.Go(func(ctx) ...)` — ctx is automatically derived from the shutdown context, so Ctrl+C cancels in-flight LLM calls.
+基于 `pool` 封装，提供：context 自动传递、panic recover + 日志、阻塞式任务提交（队列满时等待或取消）。`Router` 持有 `*async.Group` 并暴露 `Go(fn)` / `Wait()` 代理方法。Handler 通过 `r.Go(func(ctx) ...)` 提交异步任务 —— ctx 自动从 shutdown context 派生，Ctrl+C 可取消进行中的 LLM 调用。
 
 ## Logging (`logutil/`)
 
