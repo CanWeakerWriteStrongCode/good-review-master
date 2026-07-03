@@ -1,12 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"good-review-master/logutil"
 	"os"
 	"strings"
 	"time"
-
-	"good-review-master/apppath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -70,14 +69,7 @@ type configFile struct {
 func LoadConfig(cfgPath string) (*Config, error) {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		// config.yaml 不存在，从内置模板创建
-		destPath := apppath.WritePath("config.yaml")
-		if writeErr := os.WriteFile(destPath, configExampleTemplate, 0644); writeErr != nil {
-			logutil.Error("无法创建 config.yaml", "path", destPath, "err", writeErr)
-			os.Exit(1)
-		}
-		logutil.Info("已从内置模板创建 config.yaml，请编辑后重新运行", "path", destPath)
-		os.Exit(0)
+		return nil, fmt.Errorf("config.yaml 不存在，请先运行一次程序生成默认配置: %w", err)
 	}
 	var cfgFile configFile
 	if err := yaml.Unmarshal(raw, &cfgFile); err != nil {

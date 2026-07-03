@@ -53,10 +53,10 @@ func (pc *PromptConfig) load() {
 		destPath := apppath.WritePath("prompt_system.yaml")
 		if writeErr := writePromptSystem(destPath); writeErr != nil {
 			logutil.Warn("无法创建 prompt_system.yaml，以空指令集启动", "err", writeErr)
-		} else {
-			logutil.Info("已创建 prompt_system.yaml", "path", destPath)
+			return
 		}
-		return
+		logutil.Info("已创建 prompt_system.yaml", "path", destPath)
+		raw = promptSystemExampleTemplate // 使用内嵌模板字节，落入下方解析逻辑
 	}
 	var cfg promptFile
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {

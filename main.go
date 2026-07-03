@@ -21,14 +21,20 @@ import (
 func main() {
 	logutil.SetupLogger()
 
-	// 1. 加载主配置
+	// 1. 首次运行初始化：批量创建所有模板配置文件
+	if config.InitDefaultFiles() {
+		logutil.Info("已从内置模板创建配置文件，请编辑 config.yaml 后重新运行")
+		os.Exit(0)
+	}
+
+	// 2. 加载主配置
 	cfg, err := config.LoadConfig(apppath.ResolvePath("config.yaml"))
 	if err != nil {
 		logutil.Error("加载配置失败", "err", err)
 		os.Exit(1)
 	}
 
-	// 2. 加载提示词配置
+	// 3. 加载提示词配置
 	systemPromptPath := apppath.ResolvePath("prompt_system.yaml")
 	customPromptPath := config.CustomPromptPath(systemPromptPath)
 	promptCfg, err := config.LoadPromptConfig(systemPromptPath, customPromptPath)
@@ -37,7 +43,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 3. 创建大模型客户端
+	// 4. 创建大模型客户端
 	var llmClient llm.Client
 	switch cfg.LLMConfig.Provider {
 	case "openai":
@@ -53,15 +59,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 4. 创建 OneBot HTTP 客户端
+	// 5. 创建 OneBot HTTP 客户端
 	obClient := onebot.NewClient(cfg.NapCatHTTPAPI, cfg.NapCatAccessToken)
 
-	// 5. 创建指令路由器（传入 shutdown context，goroutine 通过 errgroup 自动继承）
+	// 6. 创建指令路由器（传入 shutdown context，goroutine 通过 errgroup 自动继承）
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	router := cmd.NewRouter(cfg, promptCfg, llmClient, obClient, shutdownCtx)
 
-	// 6. 获取机器人昵称
+	// 7. 获取机器人昵称
 	if info, err := obClient.GetLoginInfo(); err != nil {
 		logutil.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
 	} else {
@@ -74,11 +80,11 @@ func main() {
 	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
 	logutil.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
 
-	// 7. 创建机器人并启动轮询（支持优雅退出）
+	// 8. 创建机器人并启动轮询（支持优雅退出）
 	botInstance := bot.NewBot(cfg, obClient, router)
 	go botInstance.RunPollingLoop(shutdownCtx)
 
-	// 8. 启动 Web 管理面板（web_port > 0 时启用）
+	// 9. 启动 Web 管理面板（web_port > 0 时启用）
 	var webSrv *webserver.Server
 	if cfg.WebPort > 0 {
 		webSrv = webserver.New(cfg, obClient)
@@ -93,7 +99,7 @@ func main() {
 	<-shutdownCtx.Done()
 	logutil.Info("收到退出信号，正在关闭...")
 
-	// 9. 关闭 Web 管理面板
+	// 10. 关闭 Web 管理面板
 	if webSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
