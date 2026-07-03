@@ -3,8 +3,9 @@ package server
 import (
 	"context"
 	"fmt"
-	"io/fs"
+	"mime"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,25 +70,24 @@ func frontendFilePath(requestPath string) string {
 func (s *Server) serveFrontend(c *gin.Context) {
 	filePath := frontendFilePath(c.Request.URL.Path)
 
-	// 尝试读取请求的静态文件
-	f, err := frontendFS.Open(filePath)
-	if err == nil {
-		f.Close()
-		c.FileFromFS(filePath, http.FS(frontendFS))
+	data, err := frontendFS.ReadFile(filePath)
+	if err != nil {
+		// 文件不存在，fallback 到 index.html（SPA 路由）
+		data, err = frontendFS.ReadFile("static/frontend/index.html")
+		if err != nil {
+			c.String(http.StatusOK, "前端资源未构建。开发模式请启动 Vite dev server，访问 http://localhost:8080/api/status 查看 API。")
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
 		return
 	}
 
-	// 文件不存在则 fallback 到 index.html（SPA 路由）
-	indexPath := "static/frontend/index.html"
-	indexFile, indexErr := frontendFS.Open(indexPath)
-	if indexErr != nil {
-		// 前端未构建，返回提示
-		c.String(http.StatusOK, "前端资源未构建。开发模式请启动 Vite dev server，访问 http://localhost:8080/api/status 查看 API。")
-		return
+	// 根据实际文件扩展名检测 MIME 类型
+	contentType := mime.TypeByExtension(filepath.Ext(filePath))
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
-	indexFile.Close()
-
-	c.FileFromFS(indexPath, http.FS(frontendFS))
+	c.Data(http.StatusOK, contentType, data)
 }
 
 // Start 启动 Web 服务（阻塞执行）
@@ -106,6 +106,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // HasFrontend 检查前端构建产物是否已嵌入
 func (s *Server) HasFrontend() bool {
-	_, err := fs.Stat(frontendFS, "static/frontend/index.html")
+	_, err := frontendFS.ReadFile("static/frontend/index.html")
 	return err == nil
 }
