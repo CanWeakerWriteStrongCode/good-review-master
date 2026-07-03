@@ -52,12 +52,12 @@
 </template>
 
 <script setup lang="ts">
-import { onShow } from '@dcloudio/uni-app'
+import { onLoad } from '@dcloudio/uni-app'
 import { useGroupsStore } from '@/stores/groups'
 
 const store = useGroupsStore()
 
-onShow(() => {
+onLoad(() => {
   store.loadGroups()
 })
 
