@@ -11,6 +11,7 @@ import (
 
 	"good-review-master/config"
 	"good-review-master/logutil"
+	"good-review-master/onebot"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,10 +21,12 @@ type Server struct {
 	cfg        *config.Config
 	httpServer *http.Server
 	tokens     *TokenStore
+	obClient   *onebot.Client
+	groupNames map[string]string // groupID → groupName 缓存
 }
 
 // New 创建 Web 服务器实例
-func New(cfg *config.Config) *Server {
+func New(cfg *config.Config, obClient *onebot.Client) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 
@@ -33,7 +36,7 @@ func New(cfg *config.Config) *Server {
 	engine.Use(CORSMiddleware())
 
 	tokens := NewTokenStore()
-	s := &Server{cfg: cfg, tokens: tokens}
+	s := &Server{cfg: cfg, tokens: tokens, obClient: obClient, groupNames: make(map[string]string)}
 
 	// API 路由
 	apiGroup := engine.Group("/api")
@@ -41,8 +44,8 @@ func New(cfg *config.Config) *Server {
 	apiGroup.Use(AuthMiddleware(cfg.WebPassword, tokens))
 	{
 		apiGroup.GET("/status", handleAPIStatus(cfg))
-		apiGroup.GET("/groups", handleAPIGroups(cfg))
-		apiGroup.GET("/groups/:id", handleAPIMessages(cfg))
+		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames))
+		apiGroup.GET("/groups/:id", handleAPIMessages(cfg, obClient, s.groupNames))
 		apiGroup.POST("/logout", handleLogout(tokens))
 	}
 

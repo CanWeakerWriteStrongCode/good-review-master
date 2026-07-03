@@ -36,6 +36,7 @@ export interface GroupsData {
 
 export interface MessagesData {
   group_id: string
+  group_name: string
   messages: Message[]
   empty: boolean
 }

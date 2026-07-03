@@ -12,6 +12,7 @@ type Message struct {
 	GroupID string `json:"group_id"`
 	UserID  string `json:"user_id"`
 	Nick    string `json:"nick"`
+	Card    string `json:"card"`
 	Content string `json:"content"`
 	Time    int64  `json:"time"`
 }

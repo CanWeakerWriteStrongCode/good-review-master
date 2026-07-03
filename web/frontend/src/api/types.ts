@@ -1,5 +1,6 @@
 export interface GroupInfo {
   group_id: string
+  group_name: string
   message_count: number
   last_activity: string
   cached: boolean
@@ -17,6 +18,7 @@ export interface Message {
   group_id: string
   user_id: string
   nick: string
+  card: string
   content: string
   time: number
 }

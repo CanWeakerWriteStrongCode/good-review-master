@@ -6,6 +6,7 @@ import (
 
 	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/onebot"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,6 +20,7 @@ type APIResponse struct {
 // GroupInfo 群信息
 type GroupInfo struct {
 	GroupID      string `json:"group_id"`
+	GroupName    string `json:"group_name"`
 	MessageCount int    `json:"message_count"`
 	LastActivity string `json:"last_activity"`
 	Cached       bool   `json:"cached"`
@@ -32,7 +34,7 @@ type BotStatus struct {
 	GroupCount  int    `json:"group_count"`
 }
 
-func handleAPIGroups(cfg *config.Config) gin.HandlerFunc {
+func handleAPIGroups(cfg *config.Config, obClient *onebot.Client, groupNames map[string]string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cachedIDs := cache.ListGroupIDs()
 		cachedSet := make(map[string]struct{}, len(cachedIDs))
@@ -46,6 +48,16 @@ func handleAPIGroups(cfg *config.Config) gin.HandlerFunc {
 				GroupID: groupID,
 				Cached:  false,
 			}
+			// 获取群名称（优先用缓存，否则调 NapCat API）
+			name, ok := groupNames[groupID]
+			if !ok && obClient != nil {
+				gi, err := obClient.GetGroupInfo(groupID)
+				if err == nil && gi.GroupName != "" {
+					name = gi.GroupName
+					groupNames[groupID] = name
+				}
+			}
+			info.GroupName = name
 			if _, ok := cachedSet[groupID]; ok {
 				info.Cached = true
 				gc := cache.GetCache(groupID)
@@ -78,18 +90,20 @@ func handleAPIGroups(cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-func handleAPIMessages(cfg *config.Config) gin.HandlerFunc {
+func handleAPIMessages(cfg *config.Config, obClient *onebot.Client, groupNames map[string]string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID := c.Param("id")
+		groupName := groupNames[groupID]
 
 		gc := cache.GetCache(groupID)
 		if gc == nil {
 			c.JSON(http.StatusOK, APIResponse{
 				Code: 200,
 				Data: gin.H{
-					"group_id": groupID,
-					"messages": []cache.Message{},
-					"empty":    true,
+					"group_id":   groupID,
+					"group_name": groupName,
+					"messages":   []cache.Message{},
+					"empty":      true,
 				},
 			})
 			return
@@ -98,9 +112,10 @@ func handleAPIMessages(cfg *config.Config) gin.HandlerFunc {
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: gin.H{
-				"group_id": groupID,
-				"messages": gc.GetAll(),
-				"empty":    gc.Len() == 0,
+				"group_id":   groupID,
+				"group_name": groupName,
+				"messages":   gc.GetAll(),
+				"empty":      gc.Len() == 0,
 			},
 		})
 	}

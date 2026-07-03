@@ -19,7 +19,10 @@
         @click="goMessages(group.group_id)"
       >
         <view class="group-card-header">
-          <text class="group-id">{{ group.group_id }}</text>
+          <view class="group-title">
+            <text class="group-name">{{ group.group_name || group.group_id }}</text>
+            <text class="group-id-sub">{{ group.group_id }}</text>
+          </view>
           <view class="group-badge" :class="group.cached ? 'badge-active' : 'badge-empty'">
             {{ group.cached ? '已缓存' : '无数据' }}
           </view>
@@ -132,10 +135,18 @@ function goMessages(groupId: string) {
   align-items: center;
   margin-bottom: 10px;
 }
-.group-id {
+.group-title {
+  display: flex;
+  flex-direction: column;
+}
+.group-name {
   font-size: 16px;
   font-weight: 600;
   color: #1a1a2e;
+}
+.group-id-sub {
+  font-size: 12px;
+  color: #999;
 }
 .group-badge {
   font-size: 12px;

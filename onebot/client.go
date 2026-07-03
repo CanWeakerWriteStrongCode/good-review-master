@@ -55,6 +55,26 @@ func (ob *Client) GetLoginInfo() (*LoginInfo, error) {
 	return &result.Data, nil
 }
 
+// GetGroupInfo 获取群信息（群名称等）
+func (ob *Client) GetGroupInfo(groupID string) (*GroupInfo, error) {
+	logutil.Debug("调用 NapCat API", "action", "get_group_info", "group", groupID)
+	var result struct {
+		Status string    `json:"status"`
+		Data   GroupInfo `json:"data"`
+	}
+	resp, err := ob.restyClient.R().
+		SetBody(map[string]any{"group_id": groupID}).
+		SetResult(&result).
+		Post("/get_group_info")
+	if err != nil {
+		return nil, fmt.Errorf("get_group_info 请求失败: %w", err)
+	}
+	if resp.StatusCode() != 200 {
+		return nil, fmt.Errorf("get_group_info HTTP %d: %s", resp.StatusCode(), resp.Body())
+	}
+	return &result.Data, nil
+}
+
 // SendGroupMessage 发送群消息
 func (ob *Client) SendGroupMessage(groupID, content string) {
 	logutil.Debug("调用 NapCat API", "action", "send_group_msg", "group", groupID)

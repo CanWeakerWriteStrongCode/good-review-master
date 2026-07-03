@@ -81,7 +81,7 @@ func main() {
 	// 8. 启动 Web 管理面板（web_port > 0 时启用）
 	var webSrv *webserver.Server
 	if cfg.WebPort > 0 {
-		webSrv = webserver.New(cfg)
+		webSrv = webserver.New(cfg, obClient)
 		go func() {
 			if err := webSrv.Start(); err != nil {
 				logutil.Error("Web 服务异常退出", "err", err)

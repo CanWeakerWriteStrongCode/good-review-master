@@ -34,6 +34,7 @@ func (b *Bot) RunPollingLoop(ctx context.Context) {
 				GroupID: onebot.FormatGroupID(msg.GroupID),
 				UserID:  strconv.FormatInt(msg.UserID, 10),
 				Nick:    msg.Sender.Nickname,
+				Card:    msg.Sender.Card,
 				Content: content,
 				Time:    msg.Time,
 			})

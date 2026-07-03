@@ -42,6 +42,7 @@ func (b *Bot) ProcessMessage(event onebot.Event) {
 		GroupID: groupID,
 		UserID:  event.UserID,
 		Nick:    event.Nickname,
+		Card:    event.Card,
 		Content: content,
 		Time:    time.Now().Unix(),
 	}

@@ -2,7 +2,7 @@
   <view class="page">
     <!-- 群信息头 -->
     <view class="msg-header">
-      <text class="header-group-id">群 {{ store.groupId }}</text>
+      <text class="header-group-id">{{ store.groupName || '群' }}（{{ store.groupId }}）</text>
       <text class="header-count" v-if="!store.empty">{{ store.messages.length }} 条消息</text>
     </view>
 
@@ -10,7 +10,13 @@
     <view class="msg-list" v-if="!store.empty">
       <view class="msg-item" v-for="msg in store.messages" :key="msg.msg_id">
         <view class="msg-meta">
-          <text class="msg-sender">{{ msg.nick }}</text>
+          <view class="msg-sender-col">
+            <view class="msg-sender-line">
+              <text class="msg-sender">{{ msg.card || msg.nick }}</text>
+              <text class="msg-user-id">{{ msg.user_id }}</text>
+            </view>
+            <text class="msg-card" v-if="msg.card && msg.card !== msg.nick">{{ msg.nick }}</text>
+          </view>
           <text class="msg-time">{{ store.formatTime(msg.time) }}</text>
         </view>
         <text class="msg-content">{{ msg.content }}</text>
@@ -98,10 +104,28 @@ onMounted(() => {
   align-items: center;
   margin-bottom: 8px;
 }
+.msg-sender-col {
+  display: flex;
+  flex-direction: column;
+}
+.msg-sender-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
 .msg-sender {
   font-size: 14px;
   font-weight: 600;
   color: #1a1a2e;
+}
+.msg-card {
+  font-size: 12px;
+  color: #aaa;
+  margin-top: 1px;
+}
+.msg-user-id {
+  font-size: 12px;
+  color: #bbb;
 }
 .msg-time {
   font-size: 12px;

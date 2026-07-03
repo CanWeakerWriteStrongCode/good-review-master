@@ -49,6 +49,7 @@ export const useGroupsStore = defineStore('groups', () => {
 export const useMessagesStore = defineStore('messages', () => {
   const messages = ref<Message[]>([])
   const groupId = ref('')
+  const groupName = ref('')
   const loading = ref(false)
   const empty = ref(true)
 
@@ -59,6 +60,7 @@ export const useMessagesStore = defineStore('messages', () => {
       const data = await fetchMessages(id)
       messages.value = data.messages
       empty.value = data.empty
+      groupName.value = data.group_name || ''
     } catch (e) {
       console.error('加载消息失败', e)
     } finally {
@@ -70,12 +72,13 @@ export const useMessagesStore = defineStore('messages', () => {
     if (!ts) return '-'
     const d = new Date(ts * 1000)
     const pad = (n: number) => String(n).padStart(2, '0')
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   }
 
   return {
     messages,
     groupId,
+    groupName,
     loading,
     empty,
     loadMessages,
