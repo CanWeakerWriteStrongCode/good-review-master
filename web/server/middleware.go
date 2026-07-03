@@ -35,3 +35,18 @@ func RecoveryMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// CORSMiddleware 跨域中间件（开发环境用，生产也可保留用于多端访问）
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	}
+}

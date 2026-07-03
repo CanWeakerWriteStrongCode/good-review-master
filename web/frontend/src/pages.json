@@ -1,0 +1,26 @@
+{
+  "pages": [
+    {
+      "path": "pages/groups/index",
+      "style": {
+        "navigationBarTitleText": "群列表",
+        "navigationBarBackgroundColor": "#1a1a2e",
+        "navigationBarTextStyle": "white"
+      }
+    },
+    {
+      "path": "pages/messages/index",
+      "style": {
+        "navigationBarTitleText": "消息详情",
+        "navigationBarBackgroundColor": "#1a1a2e",
+        "navigationBarTextStyle": "white"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarBackgroundColor": "#1a1a2e",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "不是好评大师",
+    "backgroundColor": "#f0f2f5"
+  }
+}

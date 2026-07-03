@@ -10,38 +10,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// groupInfo 群信息展示结构
-type groupInfo struct {
-	GroupID      string
-	MessageCount int
-	LastActivity string
-	Cached       bool
+// APIResponse 统一 API 响应格式
+type APIResponse struct {
+	Code int         `json:"code"`
+	Data interface{} `json:"data"`
 }
 
-// groupsPageData 群列表页数据
-type groupsPageData struct {
-	Title       string
-	BotNickname string
-	BotQQ       string
-	APIKey      string
-	Groups      []groupInfo
+// GroupInfo 群信息
+type GroupInfo struct {
+	GroupID      string `json:"group_id"`
+	MessageCount int    `json:"message_count"`
+	LastActivity string `json:"last_activity"`
+	Cached       bool   `json:"cached"`
 }
 
-// messagesPageData 消息详情页数据
-type messagesPageData struct {
-	Title       string
-	BotNickname string
-	BotQQ       string
-	APIKey      string
-	GroupID     string
-	Messages    []cache.Message
+// BotStatus Bot 运行时状态
+type BotStatus struct {
+	BotQQ       string `json:"bot_qq"`
+	BotNickname string `json:"bot_nickname"`
+	APIKey      string `json:"api_key"`
+	GroupCount  int    `json:"group_count"`
 }
 
-func handleIndex(c *gin.Context) {
-	c.Redirect(http.StatusFound, "/groups")
-}
-
-func makeHandleGroups(cfg *config.Config) gin.HandlerFunc {
+func handleAPIGroups(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cachedIDs := cache.ListGroupIDs()
 		cachedSet := make(map[string]struct{}, len(cachedIDs))
@@ -49,9 +40,9 @@ func makeHandleGroups(cfg *config.Config) gin.HandlerFunc {
 			cachedSet[id] = struct{}{}
 		}
 
-		groups := make([]groupInfo, 0, len(cfg.AllowGroups))
+		groups := make([]GroupInfo, 0, len(cfg.AllowGroups))
 		for _, groupID := range cfg.AllowGroups {
-			info := groupInfo{
+			info := GroupInfo{
 				GroupID: groupID,
 				Cached:  false,
 			}
@@ -72,40 +63,59 @@ func makeHandleGroups(cfg *config.Config) gin.HandlerFunc {
 			groups = append(groups, info)
 		}
 
-		c.HTML(http.StatusOK, "groups.html", groupsPageData{
-			Title:       "不是好评大师 - 群列表",
-			BotNickname: cfg.BotNickname,
-			BotQQ:       cfg.BotQQ,
-			APIKey:      cfg.MaskedAPIKey(),
-			Groups:      groups,
+		c.JSON(http.StatusOK, APIResponse{
+			Code: 200,
+			Data: gin.H{
+				"groups": groups,
+				"bot_info": BotStatus{
+					BotQQ:       cfg.BotQQ,
+					BotNickname: cfg.BotNickname,
+					APIKey:      cfg.MaskedAPIKey(),
+					GroupCount:  len(cfg.AllowGroups),
+				},
+			},
 		})
 	}
 }
 
-func makeHandleMessages(cfg *config.Config) gin.HandlerFunc {
+func handleAPIMessages(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID := c.Param("id")
 
 		gc := cache.GetCache(groupID)
 		if gc == nil {
-			c.HTML(http.StatusNotFound, "messages.html", messagesPageData{
-				Title:       "不是好评大师 - 消息详情",
-				BotNickname: cfg.BotNickname,
-				BotQQ:       cfg.BotQQ,
-				APIKey:      cfg.MaskedAPIKey(),
-				GroupID:     groupID,
-				Messages:    nil,
+			c.JSON(http.StatusOK, APIResponse{
+				Code: 200,
+				Data: gin.H{
+					"group_id": groupID,
+					"messages": []cache.Message{},
+					"empty":    true,
+				},
 			})
 			return
 		}
 
-		c.HTML(http.StatusOK, "messages.html", messagesPageData{
-			Title:       "不是好评大师 - 消息详情",
-			BotNickname: cfg.BotNickname,
-			BotQQ:       cfg.BotQQ,
-			APIKey:      cfg.MaskedAPIKey(),
-			GroupID:     groupID,
-			Messages:    gc.GetAll(),
+		c.JSON(http.StatusOK, APIResponse{
+			Code: 200,
+			Data: gin.H{
+				"group_id": groupID,
+				"messages": gc.GetAll(),
+				"empty":    gc.Len() == 0,
+			},
+		})
+	}
+}
+
+func handleAPIStatus(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, APIResponse{
+			Code: 200,
+			Data: BotStatus{
+				BotQQ:       cfg.BotQQ,
+				BotNickname: cfg.BotNickname,
+				APIKey:      cfg.MaskedAPIKey(),
+				GroupCount:  len(cfg.AllowGroups),
+			},
 		})
 	}
 }

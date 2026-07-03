@@ -1,0 +1,20 @@
+{
+  "name": "不是好评大师",
+  "appid": "__UNI__GOOD_REVIEW",
+  "description": "群聊机器人监控面板",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "h5": {
+    "router": {
+      "mode": "hash"
+    },
+    "title": "不是好评大师"
+  },
+  "mp-weixin": {
+    "appid": "",
+    "setting": {
+      "urlCheck": false
+    }
+  }
+}
