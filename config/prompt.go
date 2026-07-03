@@ -266,8 +266,7 @@ func writePromptCustom(path string, cfg *promptFile) error {
 	return os.WriteFile(path, []byte(buf.String()), 0644)
 }
 
-// writePromptSystem 写入空 prompt_system.yaml（首次启动自动创建）
+// writePromptSystem 写入 prompt_system.yaml（首次启动从内嵌模板自动创建）
 func writePromptSystem(path string) error {
-	content := "# ===== 指令提示词配置 （群内指令无法修改） =====\n# 扩展新功能：在对应指令下新增 keyword + prompt 即可，无需改代码\n# 格式参考 README 中的配置说明\n"
-	return os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, promptSystemExampleTemplate, 0644)
 }

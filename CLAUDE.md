@@ -12,12 +12,31 @@ go build -o good-review-master.exe .  # build binary
 
 No tests.
 
+## Build scripts
+
+The frontend **must** be compiled before the Go binary — Go's `embed` resolves files at compile time. All build scripts follow this 3-step process:
+
+| Script | Step 3 | Platform |
+| --- | --- | --- |
+| `build_exe.bat` | `go build -o good-review-master.exe .` | Windows |
+| `build_linux.sh` | `go build -o good-review-master .` | Linux |
+| `start_main.bat` | `go run main.go` | Windows |
+| `start_main.sh` | `go run main.go` | Linux |
+
+1. `npm run build:h5` (in `web/frontend/`) — builds uni-app H5 frontend
+2. Copy `dist/build/h5` → `web/server/static/frontend/`
+3. `go build` or `go run`
+
+**npm scripts** (in `web/frontend/`): `dev:h5`, `build:h5`, `dev:mp-weixin`, `build:mp-weixin`.
+
 ## Dependencies
 
 | Library | Purpose |
 | --- | --- |
 | `github.com/sashabaranov/go-openai` | OpenAI-compatible LLM client (typed structs, connection pooling, error propagation) |
 | `github.com/go-resty/resty/v2` | HTTP client for NapCat API (auto-marshal, retry, auth auto-attach) |
+| `github.com/gin-gonic/gin` | HTTP framework for web management panel (routing, middleware, JSON binding) |
+| `github.com/golang-jwt/jwt/v5` | JWT token signing (HS256) and validation for web auth |
 | `go.uber.org/zap` | Structured logging |
 | `gopkg.in/natefinch/lumberjack.v2` | Log rotation (size-based, 30-day retention, gzip compression) |
 | `gopkg.in/yaml.v3` | Config YAML parsing |
@@ -26,14 +45,17 @@ No tests.
 
 ```
 QQ ←→ NapCatQQ (local HTTP API) ←→ Go bot (polling) ←→ LLM API (OpenAI-compatible)
+Browser / MiniProgram ←→ Gin web server (:web_port) ←→ OneBot + Cache (read-only)
 ```
 
 ### Package graph
 
 ```
 main → config, llm, logutil, bot, onebot, async
+main → web/server
 bot → config, cache, onebot, cmd
 cmd → config, cache, llm, onebot, async
+web/server → config, logutil, onebot, cache
 async → logutil, pool
 pool → (仅标准库 sync)
 onebot → (no internal deps)
@@ -44,7 +66,7 @@ logutil → apppath
 apppath → (no internal deps)
 ```
 
-`bot` is the orchestrator; `cmd` handles command routing with a prefix trie; `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`bot` is the orchestrator; `cmd` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
 
 ### Key design: explicit dependency injection, no init() side effects
 
@@ -60,8 +82,10 @@ All components are constructed explicitly in `main()`. There are **zero** `init(
 6. `signal.NotifyContext` → `cmd.NewRouter(cfg, promptCfg, llmClient, obClient, shutdownCtx)` — router receives shutdown context for goroutine lifecycle
 7. `obClient.GetLoginInfo()` — fetches bot nickname
 8. `go botInstance.RunPollingLoop(shutdownCtx)` — starts polling in background
-9. `<-shutdownCtx.Done()` — blocks until SIGINT/SIGTERM
-10. `router.Wait()` — waits for in-flight goroutines to finish
+9. `webserver.New(cfg, obClient)` + `go webSrv.Start()` — starts web server (conditional, `cfg.WebPort > 0`)
+10. `<-shutdownCtx.Done()` — blocks until SIGINT/SIGTERM
+11. `webSrv.Shutdown(ctx)` — graceful web shutdown with 10s timeout (conditional)
+12. `router.Wait()` — waits for in-flight goroutines to finish
 
 ## Config files
 
@@ -70,6 +94,8 @@ All components are constructed explicitly in `main()`. There are **zero** `init(
 | `config.yaml` | `config.LoadConfig()` | No |
 | `prompt_system.yaml` | `config.LoadPromptConfig()` | Yes (`PromptConfig.Reload()`) |
 | `prompt_custom.yaml` | merged into `PromptConfig` at startup | Yes (`PromptConfig.Reload()`) |
+
+All three YAML files are auto-created from embedded templates on first run if missing. `config.yaml` and `prompt_system.yaml` use templates under `config/`; `prompt_custom.yaml` is created empty on first keyword addition.
 
 `config.yaml` has four sections: `napcat`, `bot`, `runtime`, `llm`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
 
@@ -174,11 +200,46 @@ type Client interface {
 type Client struct { /* unexported: httpAPI, accessToken, restyClient */ }
 func NewClient(httpAPI, accessToken string) *Client
 func (ob *Client) GetLoginInfo() (*LoginInfo, error)
+func (ob *Client) GetGroupInfo(groupID string) (*GroupInfo, error)
 func (ob *Client) SendGroupMessage(groupID, content string)
 func (ob *Client) FetchGroupMsgHistory(groupID string, count int) ([]HistoryMsg, error)
 ```
 
 Uses `resty` — Base URL, auth token, and Content-Type set once in `NewClient()`. All methods use `SetBody()` + `SetResult()` for automatic JSON marshal/unmarshal. Built-in retry (2 attempts). No repeated boilerplate per endpoint. No dependency on `config` package.
+
+## Web Management Panel (`web/server/` + `web/frontend/`)
+
+Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go:embed`.
+
+### Backend (`web/server/`)
+
+| File | Role |
+| --- | --- |
+| `server.go` | Gin engine, route registration, SPA fallback, graceful shutdown |
+| `handlers.go` | API handlers: login, logout, status, groups list, group messages |
+| `auth.go` | JWT generation (HS256, 24h expiry) and parsing |
+| `middleware.go` | Logger, Recovery (panic guard), CORS, JWT auth guard |
+| `embed.go` | `//go:embed static/frontend` |
+
+**API endpoints:**
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| POST | `/api/login` | No | Returns JWT token (or `need_password: false` if password empty) |
+| GET | `/api/status` | JWT | BotQQ, Nickname, MaskedAPIKey, GroupCount |
+| GET | `/api/groups` | JWT | Per-group info with activity stats |
+| GET | `/api/groups/:id` | JWT | Cached messages for one group |
+| POST | `/api/logout` | JWT | No-op (stateless token) |
+
+Key details: Gin runs in ReleaseMode; CORS allows all origins; empty `web_password` bypasses auth entirely; `groupNames` map caches GetGroupInfo results to avoid repeated NapCat calls.
+
+### Frontend (`web/frontend/`)
+
+uni-app Vue 3 project — targets H5 web and WeChat MiniProgram. 3 pages: Login, Groups List, Message Detail. Pinia stores with token in `localStorage["good_review_token"]`. Hash routing for SPA compatibility.
+
+**Build requirement:** Frontend must be built before the Go binary. Running `go build` without a pre-built frontend produces a working bot but the web panel returns "前端资源未构建".
+
+**Vite plugin `go-embed-fix`:** Go's `embed` skips files starting with `_` or `.`. uni-app H5 plugin generates chunk files with `_` prefix; this custom plugin renames them to `chunk-` prefix so they pass Go's embed filter.
 
 ## Ring buffer cache (`cache/`)
 
@@ -197,6 +258,16 @@ type GroupMsgCache struct {
 `Add()`: writes at `writeAt`, overwrites oldest if full, advances pointer — never copies the buffer. `GetAll()`: reorders `[writeAt, end)` + `[0, writeAt)` into time-ordered copy. `HasMsgID()`: O(1) map lookup. For n≈20 messages, the two-segment copy in GetAll is negligible.
 
 Single-writer architecture (only the polling goroutine calls `Add`) — no lock contention in practice.
+
+**Global functions used by the web API:**
+
+```go
+func ListGroupIDs() []string                         // all cached group IDs
+func GetCache(groupID string) *GroupMsgCache         // nil if not cached
+func GetGroupCache(groupID, maxSize int) *GroupMsgCache  // get or create
+func BuildChatLog(msgs []Message) string             // format as chat context text
+func (gc *GroupMsgCache) Len() int                   // current message count
+```
 
 ## Safe goroutine management (`async/` + `pool/`)
 
@@ -232,9 +303,14 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 
 ## Config notes
 
-- `config.yaml` and `prompt_system.yaml` contain real credentials/prompts — NOT committed
-- `prompt_custom.yaml` is created automatically, also NOT committed
-- `config_example.yaml` is the committed template
+- `config.yaml` and `prompt_custom.yaml` contain real credentials/user data — NOT committed
+- `prompt_system.yaml` also NOT committed (auto-created from embedded `config/prompt_system_example.yaml` on first run, like config.yaml)
+- `config_example.yaml` is the committed template, embedded via `//go:embed` and auto-copied to `config.yaml` on first run
+- On first run, `config.yaml` is created from the embedded template and the program exits — edit it and re-run
+- `prompt_system.yaml` is also auto-created with a comment header if missing
+- `runtime.web_port` — web panel port, <=0 disables the web server
+- `runtime.web_username` / `runtime.web_password` — login credentials (empty password = no auth required)
+- `Config.MaskedAPIKey()` — returns API key with only first 4 and last 4 chars visible (e.g., `sk-9a****d8`), used by web API
 - `apppath.ResolvePath(filename)` searches `./` then `exeDir/`
 - `config.CustomPromptPath(systemPath)` gives `prompt_custom.yaml` path in the same directory as `prompt_system.yaml`
 
