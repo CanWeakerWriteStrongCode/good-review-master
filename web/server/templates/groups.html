@@ -1,0 +1,45 @@
+{{define "groups.html"}}
+{{template "header" .}}
+<div class="card">
+    <h2>已连接群组</h2>
+    {{if .Groups}}
+    <table class="group-table">
+        <thead>
+            <tr>
+                <th>群号</th>
+                <th>缓存消息数</th>
+                <th>最近活动</th>
+                <th>状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Groups}}
+            <tr>
+                <td>{{.GroupID}}</td>
+                <td>{{if .Cached}}{{.MessageCount}}{{else}}-{{end}}</td>
+                <td>{{if .LastActivity}}{{.LastActivity}}{{else}}-{{end}}</td>
+                <td>
+                    {{if .Cached}}
+                    <span class="status-online">已缓存</span>
+                    {{else}}
+                    <span class="status-offline">无数据</span>
+                    {{end}}
+                </td>
+                <td>
+                    {{if .Cached}}
+                    <a href="/groups/{{.GroupID}}" class="action-link">查看消息</a>
+                    {{else}}
+                    <span class="action-disabled">暂无数据</span>
+                    {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <p class="empty">暂未配置群组，请在 config.yaml 中设置 allow_groups</p>
+    {{end}}
+</div>
+{{template "footer" .}}
+{{end}}

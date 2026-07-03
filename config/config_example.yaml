@@ -22,6 +22,8 @@ runtime:
   max_msg_rune: 200
   # HTTP 轮询间隔（秒）
   poll_interval_sec: 3
+  # Web 管理面板端口（<=0 禁用）
+  web_port: 8080
 
 # ===== 大模型配置 =====
 llm:

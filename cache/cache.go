@@ -98,6 +98,34 @@ func (gc *GroupMsgCache) HasMsgID(msgID int64) bool {
 	return ok
 }
 
+// ListGroupIDs 返回所有已缓存的群号
+func ListGroupIDs() []string {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	ids := make([]string, 0, len(cacheMap))
+	for id := range cacheMap {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// GetCache 返回指定群的缓存引用，不存在返回 nil
+func GetCache(groupID string) *GroupMsgCache {
+	cacheMu.RLock()
+	defer cacheMu.RUnlock()
+	return cacheMap[groupID]
+}
+
+// Len 返回缓存中的消息数量
+func (gc *GroupMsgCache) Len() int {
+	gc.mu.RLock()
+	defer gc.mu.RUnlock()
+	if gc.filled {
+		return len(gc.buf)
+	}
+	return gc.writeAt
+}
+
 // BuildChatLog 将消息列表组装为群聊上下文文本
 func BuildChatLog(msgs []Message) string {
 	var buf strings.Builder

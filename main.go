@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"good-review-master/apppath"
 	"good-review-master/bot"
@@ -13,6 +15,7 @@ import (
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
+	webserver "good-review-master/web/server"
 )
 
 func main() {
@@ -75,8 +78,30 @@ func main() {
 	botInstance := bot.NewBot(cfg, obClient, router)
 	go botInstance.RunPollingLoop(shutdownCtx)
 
+	// 8. 启动 Web 管理面板（web_port > 0 时启用）
+	var webSrv *webserver.Server
+	if cfg.WebPort > 0 {
+		webSrv = webserver.New(cfg)
+		go func() {
+			if err := webSrv.Start(); err != nil {
+				logutil.Error("Web 服务异常退出", "err", err)
+			}
+		}()
+		logutil.Info("Web 管理面板已启动", "addr", fmt.Sprintf("http://localhost:%d", cfg.WebPort))
+	}
+
 	<-shutdownCtx.Done()
 	logutil.Info("收到退出信号，正在关闭...")
+
+	// 9. 关闭 Web 管理面板
+	if webSrv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := webSrv.Shutdown(ctx); err != nil {
+			logutil.Error("Web 服务关闭失败", "err", err)
+		}
+	}
+
 	if err := router.Wait(); err != nil {
 		logutil.Error("等待 goroutine 退出失败", "err", err)
 	}

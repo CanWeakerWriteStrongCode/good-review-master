@@ -22,6 +22,7 @@ type Config struct {
 	LLMTimeout        time.Duration
 	MaxMsgRune        int
 	PollInterval      time.Duration
+	WebPort           int // Web 管理面板端口，<=0 禁用
 	LLMConfig         LLMConf
 }
 
@@ -49,6 +50,7 @@ type configFile struct {
 		LLMTimeoutSec   int `yaml:"llm_timeout_sec"`
 		MaxMsgRune      int `yaml:"max_msg_rune"`
 		PollIntervalSec int `yaml:"poll_interval_sec"`
+		WebPort         int `yaml:"web_port"`
 	} `yaml:"runtime"`
 	LLM struct {
 		Provider    string  `yaml:"provider"`
@@ -90,6 +92,7 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		LLMTimeout:        time.Duration(cfgFile.Runtime.LLMTimeoutSec) * time.Second,
 		MaxMsgRune:        cfgFile.Runtime.MaxMsgRune,
 		PollInterval:      time.Duration(cfgFile.Runtime.PollIntervalSec) * time.Second,
+		WebPort:           cfgFile.Runtime.WebPort,
 		LLMConfig: LLMConf{
 			Provider:    cfgFile.LLM.Provider,
 			APIKey:      cfgFile.LLM.APIKey,
@@ -126,4 +129,13 @@ func (cfg *Config) HasGroup(groupID string) bool {
 // AllowGroupsStr 返回逗号分隔的群号字符串（用于日志输出）
 func (cfg *Config) AllowGroupsStr() string {
 	return strings.Join(cfg.AllowGroups, ",")
+}
+
+// MaskedAPIKey 返回脱敏后的 API Key（仅显示前4位和后4位）
+func (cfg *Config) MaskedAPIKey() string {
+	key := cfg.LLMConfig.APIKey
+	if len(key) <= 8 {
+		return strings.Repeat("*", len(key))
+	}
+	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
 }
