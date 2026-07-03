@@ -40,12 +40,6 @@ func New(cfg *config.Config) *Server {
 	engine.GET("/groups", makeHandleGroups(cfg))
 	engine.GET("/groups/:id", makeHandleMessages(cfg))
 
-	apiGroup := engine.Group("/api")
-	{
-		apiGroup.GET("/groups", makeHandleAPIGroups())
-		apiGroup.GET("/groups/:id", makeHandleAPIMessages())
-	}
-
 	addr := fmt.Sprintf(":%d", cfg.WebPort)
 	s.httpServer = &http.Server{
 		Addr:         addr,

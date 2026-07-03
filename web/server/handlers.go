@@ -114,38 +114,3 @@ func makeHandleMessages(cfg *config.Config) gin.HandlerFunc {
 func formatTimestamp(ts int64) string {
 	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
 }
-
-func makeHandleAPIGroups() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		cachedIDs := cache.ListGroupIDs()
-		groups := make([]gin.H, 0, len(cachedIDs))
-		for _, id := range cachedIDs {
-			entry := gin.H{"group_id": id}
-			gc := cache.GetCache(id)
-			if gc != nil {
-				entry["message_count"] = gc.Len()
-				msgs := gc.GetAll()
-				if len(msgs) > 0 {
-					entry["messages"] = msgs
-				}
-			}
-			groups = append(groups, entry)
-		}
-		c.JSON(http.StatusOK, gin.H{"groups": groups})
-	}
-}
-
-func makeHandleAPIMessages() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		groupID := c.Param("id")
-		gc := cache.GetCache(groupID)
-		if gc == nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"group_id": groupID,
-			"messages": gc.GetAll(),
-		})
-	}
-}
