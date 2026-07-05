@@ -50,7 +50,7 @@ func (pc *PromptConfig) load() {
 	cfgPath := pc.systemPath
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
-		destPath := apppath.WritePath("prompt_system.yaml")
+		destPath := apppath.GetWorkPath("prompt_system.yaml")
 		if writeErr := writePromptSystem(destPath); writeErr != nil {
 			logutil.Warn("无法创建 prompt_system.yaml，以空指令集启动", "err", writeErr)
 			return

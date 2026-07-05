@@ -27,8 +27,8 @@ func ResolvePath(filename string) string {
 	return filename
 }
 
-// WritePath 返回写文件的路径：ExeDir 目录存在则写入其下，否则回退到当前目录
-func WritePath(filename string) string {
+// GetWorkPath 返回写文件的路径：ExeDir 目录存在则写入其下，否则回退到当前目录
+func GetWorkPath(filename string) string {
 	dir := ExeDir()
 	if _, err := os.Stat(dir); err != nil {
 		return filename
