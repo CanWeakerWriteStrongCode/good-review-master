@@ -64,21 +64,10 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 ### 代码启动
 
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/your-username/good-review-master.git
-cd good-review-master
-
-# 2. 复制 config_example.yaml 为 config.yaml，填入你的配置
-cp ./config/config_example.yaml config.yaml
-
-# 3. 编辑 config.yaml（详见下方配置说明），编辑 prompt_system.yaml 可修改提示词
-
-# 4. 运行
 # Windows：双击 start_main.bat
 # Linux/macOS：./start_main.sh
-
-# 或者直接 go run
-go run .
+# 首次运行会自动创建 config.yaml 并退出
+# 编辑 config.yaml 填入你的配置，重新运行 exe 即可
 ```
 
 ### 打包为可执行文件启动
@@ -86,7 +75,7 @@ go run .
 ```bash
 # Windows：双击 build_exe.bat
 # Linux：./build_linux.sh
-# 将生成的 exe 放到空目录，首次运行会自动创建 config.yaml 并退出
+# 将生成的 good-review-master.exe 双击运行，首次运行会自动创建 config.yaml 并退出
 # 编辑 config.yaml 填入你的配置，重新运行 exe 即可
 ```
 
@@ -319,21 +308,10 @@ Polling loop (bot/polling.go)
 ### Run from source
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/your-username/good-review-master.git
-cd good-review-master
-
-# 2. Copy the config template and fill in your settings
-cp ./config/config_example.yaml config.yaml
-
-# 3. Edit config.yaml (see Configuration below) and prompt_system.yaml for prompts
-
-# 4. Run
 # Windows: double-click start_main.bat
 # Linux/macOS: ./start_main.sh
-
-# Or run directly with go
-go run .
+# First run auto-creates config.yaml.
+# Edit config.yaml with your settings, then run again.
 ```
 
 ### Run compiled exe
@@ -345,7 +323,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 ```bash
 # Windows: double-click build_exe.bat
 # Linux: ./build_linux.sh
-# Place the exe in an empty directory. First run auto-creates config.yaml.
+# Run the exe. First run auto-creates config.yaml.
 # Edit config.yaml with your settings, then run again.
 ```
 
