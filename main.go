@@ -21,11 +21,8 @@ import (
 func main() {
 	logutil.SetupLogger()
 
-	// 1. 首次运行初始化：批量创建所有模板配置文件
-	if config.InitDefaultFiles() {
-		logutil.Info("已从内置模板创建配置文件，请编辑 config.yaml 后重新运行")
-		os.Exit(0)
-	}
+	// 1. 检测并补全缺失的模板配置文件
+	config.InitDefaultFiles()
 
 	// 2. 加载主配置
 	cfg, err := config.LoadConfig(apppath.ResolvePath("config.yaml"))

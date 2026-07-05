@@ -6,33 +6,28 @@ import (
 	"os"
 )
 
-// InitDefaultFiles 首次运行初始化所有模板配置文件。
-// 以 config.yaml 是否存在为判断依据：不存在则视为首次运行，批量创建所有模板文件。
-// 返回 true 表示创建了文件（首次运行），调用方应提示用户并退出。
-func InitDefaultFiles() bool {
+// InitDefaultFiles 每次运行检测并补全缺失的模板配置文件。
+// 独立检测 config.yaml 和 prompt_system.yaml，缺失则从内置模板创建。
+func InitDefaultFiles() {
+	// 检测并创建 config.yaml
 	configPath := apppath.GetWorkPath("config.yaml")
-	if _, err := os.Stat(configPath); err == nil {
-		return false
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		logutil.Info("未找到 config.yaml，正在从内置模板创建...")
+		if err := os.WriteFile(configPath, configExampleTemplate, 0644); err != nil {
+			logutil.Error("无法创建 config.yaml", "path", configPath, "err", err)
+			os.Exit(1)
+		}
+		logutil.Info("已创建 config.yaml", "path", configPath)
 	}
 
-	logutil.Info("检测到首次运行，正在创建默认配置文件...")
-
-	// 创建 config.yaml
-	if err := os.WriteFile(configPath, configExampleTemplate, 0644); err != nil {
-		logutil.Error("无法创建 config.yaml", "path", configPath, "err", err)
-		os.Exit(1)
-	}
-	logutil.Info("已创建 config.yaml", "path", configPath)
-
-	// 创建 prompt_system.yaml
+	// 检测并创建 prompt_system.yaml
 	promptPath := apppath.GetWorkPath("prompt_system.yaml")
 	if _, err := os.Stat(promptPath); os.IsNotExist(err) {
+		logutil.Info("未找到 prompt_system.yaml，正在从内置模板创建...")
 		if err := os.WriteFile(promptPath, promptSystemExampleTemplate, 0644); err != nil {
 			logutil.Warn("无法创建 prompt_system.yaml", "path", promptPath, "err", err)
 		} else {
 			logutil.Info("已创建 prompt_system.yaml", "path", promptPath)
 		}
 	}
-
-	return true
 }
