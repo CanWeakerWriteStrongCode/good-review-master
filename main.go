@@ -22,7 +22,11 @@ func main() {
 	logutil.SetupLogger()
 
 	// 1. 检测并补全缺失的模板配置文件
-	config.InitDefaultFiles()
+	if config.InitDefaultFiles() {
+		fmt.Println("已创建 config.yaml 文件，请配置 config.yaml 后再次启动程序，按回车键退出...")
+		fmt.Scanln()
+		os.Exit(0)
+	}
 
 	// 2. 加载主配置
 	cfg, err := config.LoadConfig(apppath.ResolvePath("config.yaml"))
