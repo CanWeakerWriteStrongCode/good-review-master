@@ -22,7 +22,7 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 		var chatLogMsgs []cache.Message
 		anchor := cache.GetLLMAnchor(groupID)
 		if anchor != nil {
-			startIdx := cache.FindMsgIndex(msgs, anchor.AnchorMsgID)
+			startIdx := cache.FindMsgIndex(msgs, int64(*anchor))
 			if startIdx >= 0 {
 				chatLogMsgs = msgs[startIdx:]
 				logutil.Debug("缓存扩展", "group", groupID, "窗口", len(chatLogMsgs))
@@ -57,9 +57,7 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 		r.obClient.SendGroupMessage(groupID, reply)
 
 		// 保存锚点（窗口第一条消息的 MsgID）
-		cache.SetLLMAnchor(groupID, &cache.LLMAnchor{
-			AnchorMsgID: chatLogMsgs[0].MsgID,
-		})
+		cache.SetLLMAnchor(groupID, cache.LLMAnchor(chatLogMsgs[0].MsgID))
 		return nil
 	})
 }

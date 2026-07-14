@@ -18,29 +18,21 @@ type HandlerFunc func(onebot.Event, string, string, string, string, string)
 // Command 指令定义
 type Command struct {
 	Keyword     string
-	Help        string
-	Category    string // "chat_review" | "direct_ask" | "internal"
+	Help        string // 仅内部指令使用
+	Prompt      string // 仅用户指令使用（从 YAML 加载）
 	SharedRules string
-	Handler     HandlerFunc
-}
-
-// Route 路由条目
-type Route struct {
-	Keyword     string
-	Prompt      string
-	SharedRules string
-	Category    string
+	Category    string // "chat_review" | "internal"
 	Handler     HandlerFunc
 }
 
 // trieNode 前缀树节点
 type trieNode struct {
 	children map[rune]*trieNode
-	route    *Route // 到达该节点时的匹配路由（nil 表示非终点）
+	route    *Command // 到达该节点时的匹配路由（nil 表示非终点）
 }
 
 // trieInsert 向前缀树中插入路由
-func trieInsert(root *trieNode, keyword string, rt *Route) {
+func trieInsert(root *trieNode, keyword string, rt *Command) {
 	node := root
 	for _, ch := range keyword {
 		if node.children[ch] == nil {
@@ -52,9 +44,9 @@ func trieInsert(root *trieNode, keyword string, rt *Route) {
 }
 
 // trieMatch 前缀匹配，返回最长匹配路由（O(k)，与路由总数无关）
-func trieMatch(root *trieNode, text string) *Route {
+func trieMatch(root *trieNode, text string) *Command {
 	node := root
-	var lastMatch *Route
+	var lastMatch *Command
 	for _, ch := range text {
 		next, ok := node.children[ch]
 		if !ok {
@@ -71,8 +63,7 @@ func trieMatch(root *trieNode, text string) *Route {
 // Router 指令路由器
 type Router struct {
 	routeTrie  *trieNode
-	routes     []Route // 用于帮助列表遍历
-	registry   []Command
+	routes     []Command // 全部指令（内部 + 用户），内部指令 Category="internal"
 	handlerMap map[string]HandlerFunc
 	llmClient  llm.Client
 	obClient   *onebot.Client
@@ -99,14 +90,14 @@ func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient 
 }
 
 // register 注册内部/系统指令
-func (r *Router) register(cmd Command) {
-	r.registry = append(r.registry, cmd)
+func (r *Router) register(rt Command) {
+	r.routes = append(r.routes, rt)
 }
 
 // isInternalKeyword 检查关键字是否为内部/系统指令
 func (r *Router) isInternalKeyword(keyword string) bool {
-	for _, cmd := range r.registry {
-		if cmd.Keyword == keyword {
+	for _, cmd := range r.routes {
+		if cmd.Category == "internal" && cmd.Keyword == keyword {
 			return true
 		}
 	}
@@ -115,20 +106,22 @@ func (r *Router) isInternalKeyword(keyword string) bool {
 
 // rebuild 重建路由表（前缀树匹配 + 列表展示）
 func (r *Router) rebuild() {
+	// 保存内部指令（Category="internal"），重建后重新插入
+	var internal []Command
+	for _, rt := range r.routes {
+		if rt.Category == "internal" {
+			internal = append(internal, rt)
+		}
+	}
+
 	r.routes = nil
 	r.routeTrie = &trieNode{children: make(map[rune]*trieNode)}
 
-	// 系统路由（从 registry）
-	for _, cmd := range r.registry {
-		rt := Route{
-			Keyword:     cmd.Keyword,
-			Prompt:      "",
-			SharedRules: cmd.SharedRules,
-			Category:    cmd.Category,
-			Handler:     cmd.Handler,
-		}
-		r.routes = append(r.routes, rt)
-		trieInsert(r.routeTrie, cmd.Keyword, &rt)
+	// 系统路由（内部指令）
+	for i := range internal {
+		rt := &internal[i]
+		r.routes = append(r.routes, *rt)
+		trieInsert(r.routeTrie, rt.Keyword, rt)
 	}
 
 	// 用户路由（从 CmdConfigs 生成）
@@ -139,7 +132,7 @@ func (r *Router) rebuild() {
 		}
 		sharedRules := r.promptCfg.SharedRules[cmdName]
 		for _, entry := range entries {
-			rt := Route{
+			rt := Command{
 				Keyword:     entry.Keyword,
 				Prompt:      entry.Prompt,
 				SharedRules: sharedRules,

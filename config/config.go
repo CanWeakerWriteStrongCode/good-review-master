@@ -17,11 +17,9 @@ type Config struct {
 	BotQQ             string
 	BotNickname       string // 运行时由 main 设置（GetLoginInfo 结果）
 	AllowGroups       []string
-	MaxCacheMsg       int     // 自动推导 = llmSendCount + maxExtendNewCount
-	LLMSendCount      int     // 每次发送 LLM 的消息条数
-	CacheHitCost      float64 // 缓存命中单价（相对值）
-	CacheMissCost     float64 // 缓存未命中单价（相对值）
-	MaxExtendNewCount int     // 自动计算：盈亏平衡点（新增 < 此值 → 扩展）
+	MaxCacheMsg       int // 自动推导 = llmSendCount + maxExtendNewCount
+	LLMSendCount      int // 每次发送 LLM 的消息条数
+	MaxExtendNewCount int // 自动计算：盈亏平衡点（新增 < 此值 → 扩展）
 	LLMTimeout        time.Duration
 	MaxMsgRune        int
 	PollInterval      time.Duration
@@ -33,12 +31,14 @@ type Config struct {
 
 // LLMConf 大模型配置
 type LLMConf struct {
-	Provider    string
-	APIKey      string
-	APIBase     string
-	ModelName   string
-	Temperature float64
-	TopP        float64
+	Provider      string
+	APIKey        string
+	APIBase       string
+	ModelName     string
+	CacheHitCost  float64 // 缓存命中单价（相对值）
+	CacheMissCost float64 // 缓存未命中单价（相对值）
+	Temperature   float64
+	TopP          float64
 }
 
 type configFile struct {
@@ -110,8 +110,6 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		AllowGroups:       allowGroups,
 		MaxCacheMsg:       maxCacheMsg,
 		LLMSendCount:      llmSendCount,
-		CacheHitCost:      cacheHitCost,
-		CacheMissCost:     cacheMissCost,
 		MaxExtendNewCount: maxExtendNewCount,
 		LLMTimeout:        time.Duration(cfgFile.Runtime.LLMTimeoutSec) * time.Second,
 		MaxMsgRune:        cfgFile.Runtime.MaxMsgRune,
@@ -120,12 +118,14 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		WebUsername:       cfgFile.Runtime.WebUsername,
 		WebPassword:       cfgFile.Runtime.WebPassword,
 		LLMConfig: LLMConf{
-			Provider:    cfgFile.LLM.Provider,
-			APIKey:      cfgFile.LLM.APIKey,
-			APIBase:     cfgFile.LLM.APIBase,
-			ModelName:   cfgFile.LLM.ModelName,
-			Temperature: cfgFile.LLM.Temperature,
-			TopP:        cfgFile.LLM.TopP,
+			Provider:      cfgFile.LLM.Provider,
+			APIKey:        cfgFile.LLM.APIKey,
+			APIBase:       cfgFile.LLM.APIBase,
+			ModelName:     cfgFile.LLM.ModelName,
+			CacheHitCost:  cacheHitCost,
+			CacheMissCost: cacheMissCost,
+			Temperature:   cfgFile.LLM.Temperature,
+			TopP:          cfgFile.LLM.TopP,
 		},
 	}, nil
 }

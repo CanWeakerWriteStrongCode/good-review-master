@@ -27,9 +27,7 @@ type GroupMsgCache struct {
 }
 
 // LLMAnchor 缓存扩展窗口锚点（per-group，同 category 下所有关键词共享）
-type LLMAnchor struct {
-	AnchorMsgID int64 // 窗口第一条消息的 MsgID
-}
+type LLMAnchor int64
 
 var (
 	cacheMap    = make(map[string]*GroupMsgCache)
@@ -154,10 +152,11 @@ func GetLLMAnchor(groupID string) *LLMAnchor {
 }
 
 // SetLLMAnchor 设置群的缓存扩展锚点
-func SetLLMAnchor(groupID string, anchor *LLMAnchor) {
+func SetLLMAnchor(groupID string, anchor LLMAnchor) {
 	anchorMapMu.Lock()
 	defer anchorMapMu.Unlock()
-	anchorMap[groupID] = anchor
+	a := anchor
+	anchorMap[groupID] = &a
 }
 
 // FindMsgIndex 在消息列表中查找指定 MsgID 的索引，未找到返回 -1

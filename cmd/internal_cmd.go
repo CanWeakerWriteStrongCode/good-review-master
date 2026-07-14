@@ -165,8 +165,8 @@ func (r *Router) handleListCommands(event onebot.Event, groupID string, _ string
 	buf.WriteString("【指令帮助】\n\n")
 	buf.WriteString("使用方式：@机器人 + 关键词\n\n")
 	buf.WriteString("▎管理指令：\n")
-	for _, cmd := range r.registry {
-		if cmd.Help == "" {
+	for _, cmd := range r.routes {
+		if cmd.Category != "internal" || cmd.Help == "" {
 			continue
 		}
 		buf.WriteString("→ " + cmd.Keyword + "\n")
@@ -176,20 +176,11 @@ func (r *Router) handleListCommands(event onebot.Event, groupID string, _ string
 		}
 	}
 	buf.WriteString("\n▎功能指令：\n")
-	for _, route := range r.routes {
-		if route.Keyword == "" {
+	for _, cmd := range r.routes {
+		if cmd.Category == "internal" || cmd.Keyword == "" {
 			continue
 		}
-		isSystem := false
-		for _, cmd := range r.registry {
-			if cmd.Keyword == route.Keyword {
-				isSystem = true
-				break
-			}
-		}
-		if !isSystem {
-			buf.WriteString("  " + route.Keyword + " [" + route.Category + "]\n")
-		}
+		buf.WriteString("  " + cmd.Keyword + " [" + cmd.Category + "]\n")
 	}
 	r.obClient.SendGroupMessage(groupID, buf.String())
 }

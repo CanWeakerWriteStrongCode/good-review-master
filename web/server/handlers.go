@@ -17,8 +17,8 @@ type APIResponse struct {
 	Data interface{} `json:"data"`
 }
 
-// GroupInfo 群信息
-type GroupInfo struct {
+// GroupDetail 群信息
+type GroupDetail struct {
 	GroupID      string `json:"group_id"`
 	GroupName    string `json:"group_name"`
 	MessageCount int    `json:"message_count"`
@@ -42,9 +42,9 @@ func handleAPIGroups(cfg *config.Config, obClient *onebot.Client, groupNames map
 			cachedSet[id] = struct{}{}
 		}
 
-		groups := make([]GroupInfo, 0, len(cfg.AllowGroups))
+		groups := make([]GroupDetail, 0, len(cfg.AllowGroups))
 		for _, groupID := range cfg.AllowGroups {
-			info := GroupInfo{
+			info := GroupDetail{
 				GroupID: groupID,
 				Cached:  false,
 			}
