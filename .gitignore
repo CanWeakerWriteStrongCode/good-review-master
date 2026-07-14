@@ -4,8 +4,7 @@
 /.claude/
 
 # 编译产物
-*.exe
-good-review-master
+/dist/
 
 # 配置文件（含真实配置，不提交；*_example.yaml 作为模板会提交）
 /config.yaml
