@@ -317,7 +317,6 @@ r.handlerMap = map[string]HandlerFunc{
 ## 🌐 部署说明
 
 - 本机或云服务器均可，无需公网 IP
-- NapCatQQ 和 Go Bot 部署在同一台机器上，纯内网 HTTP 通信
 - 编译为单二进制文件（前端页面一并嵌入），丢上去就跑
 - **首次启动自动创建配置文件**：exe 运行时若同目录没有 `config.yaml` 和 `prompt_system.yaml`，自动从内置模板生成，编辑后重新运行即可
 - 推荐使用 `systemd`（Linux）或任务计划程序（Windows）设为开机自启
@@ -655,7 +654,6 @@ Logs are written to the `log/` directory under the working directory. Uses `zap`
 ## Deployment
 
 - Local machine or cloud server — no public IP needed
-- NapCatQQ and Go Bot run on the same machine, communicate via local HTTP
 - Compile to a single binary (frontend SPA embedded), no runtime dependencies
 - **Auto-create config on first launch**: If `config.yaml` and `prompt_system.yaml` are missing, the exe auto-generates them from built-in templates. Edit and restart.
 - Use `systemd` (Linux) or Task Scheduler (Windows) for auto-start on boot
