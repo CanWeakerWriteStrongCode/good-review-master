@@ -14,12 +14,12 @@ bot:
 
 # ===== 运行时参数 =====
 runtime:
-  # 缓存最大消息数
-  max_cache_msg: 20
+  # 每次尽量发送给 LLM 的消息条数，如果能用利用缓存命中则会多发，但不会超出重新发送设置数量的成本
+  llm_send_count: 20
   # 调用大模型超时（秒）
   llm_timeout_sec: 20
   # 单条消息最大字符数（超出截断）
-  max_msg_rune: 200
+  max_msg_rune: 400
   # HTTP 轮询间隔（秒）
   poll_interval_sec: 3
   # Web 管理面板端口（<=0 禁用）
@@ -38,6 +38,10 @@ llm:
   api_base: "https://api.deepseek.com"
   # 模型名
   model_name: "deepseek-v4-flash"
+  # 缓存命中单价（相对值，用于自动计算扩展阈值）
+  cache_hit_cost: 0.02
+  # 缓存未命中单价（相对值）
+  cache_miss_cost: 1.0
   # 锐评风格：1.0=发散 0.5=集中
   temperature: 1.2
   # 核采样参数：越小输出越集中

@@ -17,8 +17,8 @@ type Config struct {
 	BotQQ             string
 	BotNickname       string // 运行时由 main 设置（GetLoginInfo 结果）
 	AllowGroups       []string
-	MaxCacheMsg       int
-	LLMSendCount      int     // 每次发送 LLM 的消息条数，默认 = MaxCacheMsg
+	MaxCacheMsg       int     // 自动推导 = llmSendCount + maxExtendNewCount
+	LLMSendCount      int     // 每次发送 LLM 的消息条数
 	CacheHitCost      float64 // 缓存命中单价（相对值）
 	CacheMissCost     float64 // 缓存未命中单价（相对值）
 	MaxExtendNewCount int     // 自动计算：盈亏平衡点（新增 < 此值 → 扩展）
@@ -51,24 +51,23 @@ type configFile struct {
 		AllowGroups string `yaml:"allow_groups"`
 	} `yaml:"bot"`
 	Runtime struct {
-		MaxCacheMsg     int     `yaml:"max_cache_msg"`
-		LLMSendCount    int     `yaml:"llm_send_count"`
-		CacheHitCost    float64 `yaml:"cache_hit_cost"`
-		CacheMissCost   float64 `yaml:"cache_miss_cost"`
-		LLMTimeoutSec   int     `yaml:"llm_timeout_sec"`
-		MaxMsgRune      int     `yaml:"max_msg_rune"`
-		PollIntervalSec int     `yaml:"poll_interval_sec"`
-		WebPort         int     `yaml:"web_port"`
-		WebUsername     string  `yaml:"web_username"`
-		WebPassword     string  `yaml:"web_password"`
+		LLMSendCount    int    `yaml:"llm_send_count"`
+		LLMTimeoutSec   int    `yaml:"llm_timeout_sec"`
+		MaxMsgRune      int    `yaml:"max_msg_rune"`
+		PollIntervalSec int    `yaml:"poll_interval_sec"`
+		WebPort         int    `yaml:"web_port"`
+		WebUsername     string `yaml:"web_username"`
+		WebPassword     string `yaml:"web_password"`
 	} `yaml:"runtime"`
 	LLM struct {
-		Provider    string  `yaml:"provider"`
-		APIKey      string  `yaml:"api_key"`
-		APIBase     string  `yaml:"api_base"`
-		ModelName   string  `yaml:"model_name"`
-		Temperature float64 `yaml:"temperature"`
-		TopP        float64 `yaml:"top_p"`
+		Provider      string  `yaml:"provider"`
+		APIKey        string  `yaml:"api_key"`
+		APIBase       string  `yaml:"api_base"`
+		ModelName     string  `yaml:"model_name"`
+		CacheHitCost  float64 `yaml:"cache_hit_cost"`
+		CacheMissCost float64 `yaml:"cache_miss_cost"`
+		Temperature   float64 `yaml:"temperature"`
+		TopP          float64 `yaml:"top_p"`
 	} `yaml:"llm"`
 }
 
@@ -89,24 +88,20 @@ func LoadConfig(cfgPath string) (*Config, error) {
 	// 缓存扩展配置：默认值 + 自动推导
 	llmSendCount := cfgFile.Runtime.LLMSendCount
 	if llmSendCount <= 0 {
-		llmSendCount = cfgFile.Runtime.MaxCacheMsg // 兼容旧配置
+		llmSendCount = 20
 	}
-	cacheHitCost := cfgFile.Runtime.CacheHitCost
+	cacheHitCost := cfgFile.LLM.CacheHitCost
 	if cacheHitCost <= 0 {
 		cacheHitCost = 0.02
 	}
-	cacheMissCost := cfgFile.Runtime.CacheMissCost
+	cacheMissCost := cfgFile.LLM.CacheMissCost
 	if cacheMissCost <= 0 {
 		cacheMissCost = 1.0
 	}
 	// maxExtendNewCount = floor(llmSendCount × (1 - cacheHitCost / cacheMissCost))
 	maxExtendNewCount := int(float64(llmSendCount) * (1 - cacheHitCost/cacheMissCost))
-	// 缓冲区自动扩到能容纳扩展窗口
-	maxCacheMsg := cfgFile.Runtime.MaxCacheMsg
-	derivedCacheMsg := llmSendCount + maxExtendNewCount
-	if derivedCacheMsg > maxCacheMsg {
-		maxCacheMsg = derivedCacheMsg
-	}
+	// 缓冲区大小完全由公式推导
+	maxCacheMsg := llmSendCount + maxExtendNewCount
 
 	return &Config{
 		NapCatHTTPAPI:     cfgFile.NapCat.HTTPAPI,
