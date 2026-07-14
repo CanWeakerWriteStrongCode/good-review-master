@@ -10,6 +10,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go" alt="Go version">
+  <img src="https://img.shields.io/badge/Node.js-18+-339933?style=flat&logo=nodedotjs" alt="Node.js">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/QQ-NapCatQQ-12B7F5?style=flat" alt="NapCatQQ">
 </p>
@@ -58,10 +59,13 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 ### 前置条件
 
 - Go 1.25+
+- Node.js 18+
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 已安装并登录（HTTP 服务已开启）
 - 一个 OpenAI 兼容的大模型 API Key（DeepSeek、豆包、通义千问等均可）
 
 ### 代码启动
+
+> 请先安装 [Go](https://go.dev/dl/) 1.25+ 和 [Node.js](https://nodejs.org/) 18+。
 
 ```bash
 # Windows：双击 start_main.bat
@@ -302,10 +306,13 @@ Polling loop (bot/polling.go)
 ### Prerequisites
 
 - Go 1.25+
+- Node.js 18+
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ) installed and logged in (HTTP service enabled)
 - An OpenAI-compatible LLM API key (DeepSeek, Doubao, Tongyi Qianwen, etc.)
 
 ### Run from source
+
+> Install [Go](https://go.dev/dl/) 1.25+ and [Node.js](https://nodejs.org/) 18+ first.
 
 ```bash
 # Windows: double-click start_main.bat
