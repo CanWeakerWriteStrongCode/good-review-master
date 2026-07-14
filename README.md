@@ -60,6 +60,7 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 
 - Go 1.25+
 - Node.js 18+
+- [Git](https://git-scm.com/)（打包时自动提取版本号）
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 已安装并登录（HTTP 服务已开启）
 - 一个 OpenAI 兼容的大模型 API Key（DeepSeek、豆包、通义千问等均可）
 
@@ -78,9 +79,14 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 
 ```bash
 # Windows：双击 build_exe.bat
-# Linux：./build_linux.sh
-# 将生成的 good-review-master.exe 双击运行，首次运行会自动创建 config.yaml 并退出
-# 编辑 config.yaml 填入你的配置，重新运行 exe 即可
+# Linux/macOS：./build_linux.sh
+# 脚本会自动交叉编译，在 dist/ 下生成 4 个平台的可执行文件：
+#   good-review-master-windows-amd64.exe
+#   good-review-master-linux-amd64
+#   good-review-master-darwin-amd64     (Intel Mac)
+#   good-review-master-darwin-arm64     (Apple Silicon)
+# 将对应平台的文件复制到任意目录运行，首次运行会自动创建 config.yaml 并退出
+# 编辑 config.yaml 填入你的配置，重新运行即可
 ```
 
 ## ⚙ 配置说明
@@ -307,6 +313,7 @@ Polling loop (bot/polling.go)
 
 - Go 1.25+
 - Node.js 18+
+- [Git](https://git-scm.com/) (auto-extracts version tag during build)
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ) installed and logged in (HTTP service enabled)
 - An OpenAI-compatible LLM API key (DeepSeek, Doubao, Tongyi Qianwen, etc.)
 
@@ -329,8 +336,14 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 
 ```bash
 # Windows: double-click build_exe.bat
-# Linux: ./build_linux.sh
-# Run the exe. First run auto-creates config.yaml.
+# Linux/macOS: ./build_linux.sh
+# Cross-compiles to 4 targets under dist/:
+#   good-review-master-windows-amd64.exe
+#   good-review-master-linux-amd64
+#   good-review-master-darwin-amd64     (Intel Mac)
+#   good-review-master-darwin-arm64     (Apple Silicon)
+# Copy the matching binary to any directory and run it.
+# First run auto-creates config.yaml.
 # Edit config.yaml with your settings, then run again.
 ```
 

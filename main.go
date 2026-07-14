@@ -15,11 +15,13 @@ import (
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
+	"good-review-master/version"
 	webserver "good-review-master/web/server"
 )
 
 func main() {
 	logutil.SetupLogger()
+	logutil.Info("版本：" + version.String())
 
 	// 1. 检测并补全缺失的模板配置文件
 	if config.InitDefaultFiles() {
