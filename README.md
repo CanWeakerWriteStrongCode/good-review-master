@@ -58,9 +58,6 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 
 ### 前置条件
 
-- Go 1.25+
-- Node.js 18+
-- [Git](https://git-scm.com/)（打包时自动提取版本号）
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 已安装并登录（HTTP 服务已开启）
 - 一个 OpenAI 兼容的大模型 API Key（DeepSeek、豆包、通义千问等均可）
 
@@ -71,20 +68,36 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 ```bash
 # Windows：双击 start_main.bat
 # Linux/macOS：./start_main.sh
+# 脚本会自动完成 3 步：
+#   1. 安装前端依赖 + 构建前端
+#   2. 拷贝到嵌入目录
+#   3. go run main.go 启动服务
 # 首次运行会自动创建 config.yaml 并退出
-# 编辑 config.yaml 填入你的配置，重新运行 exe 即可
+# 编辑 config.yaml 填入你的配置，重新运行即可
 ```
 
 ### 打包为可执行文件启动
 
+> 打包还需要 [Git](https://git-scm.com/)，用于自动提取版本号。
+
 ```bash
 # Windows：双击 build_exe.bat
 # Linux/macOS：./build_linux.sh
-# 脚本会自动交叉编译，在 dist/ 下生成 4 个平台的可执行文件：
-#   good-review-master-windows-amd64.exe
-#   good-review-master-linux-amd64
-#   good-review-master-darwin-amd64     (Intel Mac)
-#   good-review-master-darwin-arm64     (Apple Silicon)
+# 脚本会自动完成 3 步：
+#   1. 安装前端依赖 + 构建前端
+#   2. 拷贝到嵌入目录
+#   3. 交叉编译 4 个平台的可执行文件到 dist/ 目录
+#
+# 版本号自动从 git tag 提取，无需手动维护：
+#   打了 tag v1.0.0 → 文件名带 v1.0.0
+#   没打 tag  → 文件名带 abc1234（commit hash）
+#   有未提交修改 → 文件名带 abc1234-dirty
+#
+# 输出示例：
+#   dist/good-review-master-windows-amd64-v1.0.0.exe
+#   dist/good-review-master-linux-amd64-v1.0.0
+#   dist/good-review-master-darwin-amd64-v1.0.0     (Intel Mac)
+#   dist/good-review-master-darwin-arm64-v1.0.0     (Apple Silicon)
 # 将对应平台的文件复制到任意目录运行，首次运行会自动创建 config.yaml 并退出
 # 编辑 config.yaml 填入你的配置，重新运行即可
 ```
@@ -107,6 +120,23 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 | `runtime.llm_timeout_sec`   | 大模型超时（秒）                     | `20`                       |
 | `runtime.max_msg_rune`      | 单条消息最大字符数                    | `200`                      |
 | `runtime.poll_interval_sec` | 轮询间隔（秒）                      | `3`                        |
+| `runtime.web_port`          | Web 管理面板端口（<=0 禁用）           | `8080`                     |
+| `runtime.web_username`      | Web 面板登录用户名                   | `admin`                    |
+| `runtime.web_password`      | Web 面板登录密码（为空则免登录）           | `""`                       |
+
+### Web 管理面板
+
+Gin + JWT + 内嵌 Vue SPA，提供群消息监控页面。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | `/api/login` | 否 | 返回 JWT token（密码为空时返回 `need_password: false`） |
+| GET | `/api/status` | JWT | BotQQ、昵称、脱敏 API Key、群数量 |
+| GET | `/api/groups` | JWT | 各群信息 + 活跃状态 |
+| GET | `/api/groups/:id` | JWT | 单群缓存消息 |
+| POST | `/api/logout` | JWT | 登出（无状态 token，占位） |
+
+密码为空时前端跳过登录页直接进入。`web_port` 设为 0 或负数可以完全禁用 Web 面板。
 
 ### 指令提示词配置
 
@@ -159,19 +189,27 @@ good-review-master/
 ├── config.yaml               # 运行时配置（gitignore）
 ├── prompt_system.yaml        # 系统提示词配置（gitignore）
 ├── prompt_custom.yaml        # 动态添加的提示词（gitignore，程序自动创建）
-├── start_main.bat / .sh      # 开发启动脚本
-├── build_exe.bat / .sh       # 编译打包脚本
+├── start_main.bat / .sh      # 开发启动脚本（含前端构建）
+├── build_exe.bat / .sh       # 编译打包脚本（交叉编译 4 平台）
+├── version/
+│   └── version.go            # 版本号注入（编译时由 -ldflags 写入）
+├── apppath/
+│   └── apppath.go            # 可执行文件同目录路径解析
+├── pool/
+│   └── pool.go               # 通用协程池（固定 worker，有界队列）
 ├── config/
 │   ├── config.go             # 运行时配置加载（config.yaml → struct）
 │   ├── config_example.yaml   # 内置配置模板（编译时嵌入 exe）
+│   ├── prompt_system_example.yaml  # 内置提示词模板（编译时嵌入 exe）
 │   ├── embed.go              # //go:embed 模板嵌入
+│   ├── init.go               # 首次运行自动创建配置文件
 │   └── prompt.go             # 提示词配置加载+热重载+增删改
 ├── cache/
 │   └── cache.go              # 环形缓冲区（零拷贝写入，O(1) 去重）
 ├── llm/
 │   └── llm.go                # 大模型客户端（go-openai SDK，连接池，类型安全）
 ├── async/
-│   └── async.go             # 安全 goroutine 管理器（errgroup + ctx 自动传播 + panic recover）
+│   └── async.go              # 安全 goroutine 管理器（基于 pool + ctx 自动传播 + panic recover）
 ├── logutil/
 │   └── logger.go             # 日志（zap + lumberjack，20MB 切割，30 天保留）
 ├── onebot/
@@ -180,25 +218,51 @@ good-review-master/
 ├── bot/
 │   ├── polling.go            # 轮询拉取消息 + 去重（context 支持优雅退出）
 │   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
-└── cmd/
-    ├── command.go            # Router + 前缀树(trie)路由匹配 + 安全 goroutine 启动
-    ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、帮助）
-    └── chat_review.go         # chat_review 异步处理函数
+├── cmd/
+│   ├── command.go            # Router + 前缀树(trie)路由匹配 + 安全 goroutine 启动
+│   ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、帮助）
+│   └── chat_review.go         # chat_review 异步处理函数
+└── web/
+    ├── server/                # Gin Web 管理面板后端
+    │   ├── server.go          # Gin 引擎、API 路由、SPA 回退、优雅关闭
+    │   ├── handlers.go        # API 处理函数（login/status/groups/messages）
+    │   ├── auth.go            # JWT 签发与校验（HS256，24h 过期）
+    │   ├── middleware.go       # 中间件（日志、panic 恢复、CORS、JWT 鉴权）
+    │   └── embed.go           # //go:embed static/frontend
+    └── frontend/              # uni-app Vue 3 SPA
+        └── src/               # 页面：登录、群列表、消息详情
 ```
 
 ### 包依赖关系
 
 ```
-main → config, llm, logutil, bot, onebot, async
+main → config, llm, logutil, bot, onebot, async, apppath, version, web/server
 bot → config, cache, onebot, cmd
 cmd → config, cache, llm, onebot, async
-async → logutil
+web/server → config, logutil, onebot, cache
+async → logutil, pool
+pool → (无内部依赖：仅标准库 sync)
 onebot → (无内部依赖)
 cache → (无内部依赖)
 llm → (无内部依赖)
-config → apppath
+config → apppath, logutil
 logutil → apppath
 apppath → (无内部依赖)
+version → (无内部依赖)
+```
+
+### 消息处理流程
+
+```
+Polling loop (bot/polling.go)
+  → 从 NapCat 拉取历史消息 (onebot, resty)
+  → 去重：O(1) msgID 集合
+  → ProcessMessage (bot/handler.go)
+     → 白名单检查
+     → 截断到最大长度
+     → 存入环形缓冲区（零拷贝写入）
+     → @机器人检测（QQ号 + 昵称）
+     → 前缀树匹配 → 指令处理
 ```
 
 ## ➕ 扩展新指令
@@ -254,8 +318,8 @@ r.handlerMap = map[string]HandlerFunc{
 
 - 本机或云服务器均可，无需公网 IP
 - NapCatQQ 和 Go Bot 部署在同一台机器上，纯内网 HTTP 通信
-- 编译为单二进制文件，无运行时依赖，丢上去就跑
-- **首次启动自动创建 config.yaml**：exe 运行时若同目录没有 `config.yaml`，自动从内置模板生成一份，编辑后重新运行即可。无需手动准备 `config_example.yaml`
+- 编译为单二进制文件（前端页面一并嵌入），丢上去就跑
+- **首次启动自动创建配置文件**：exe 运行时若同目录没有 `config.yaml` 和 `prompt_system.yaml`，自动从内置模板生成，编辑后重新运行即可
 - 推荐使用 `systemd`（Linux）或任务计划程序（Windows）设为开机自启
 
 ---
@@ -311,9 +375,6 @@ Polling loop (bot/polling.go)
 
 ### Prerequisites
 
-- Go 1.25+
-- Node.js 18+
-- [Git](https://git-scm.com/) (auto-extracts version tag during build)
 - [NapCatQQ](https://github.com/NapNeko/NapCatQQ) installed and logged in (HTTP service enabled)
 - An OpenAI-compatible LLM API key (DeepSeek, Doubao, Tongyi Qianwen, etc.)
 
@@ -324,6 +385,10 @@ Polling loop (bot/polling.go)
 ```bash
 # Windows: double-click start_main.bat
 # Linux/macOS: ./start_main.sh
+# The script runs 3 steps automatically:
+#   1. Install frontend deps + build frontend
+#   2. Copy to embed directory
+#   3. go run main.go
 # First run auto-creates config.yaml.
 # Edit config.yaml with your settings, then run again.
 ```
@@ -334,14 +399,26 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 
 ### Build executable
 
+> Building also requires [Git](https://git-scm.com/) for automatic version extraction.
+
 ```bash
 # Windows: double-click build_exe.bat
 # Linux/macOS: ./build_linux.sh
-# Cross-compiles to 4 targets under dist/:
-#   good-review-master-windows-amd64.exe
-#   good-review-master-linux-amd64
-#   good-review-master-darwin-amd64     (Intel Mac)
-#   good-review-master-darwin-arm64     (Apple Silicon)
+# The script runs 3 steps automatically:
+#   1. Install frontend deps + build frontend
+#   2. Copy to embed directory
+#   3. Cross-compile 4 platform binaries into dist/
+#
+# Version is auto-extracted from git tags — no manual versioning:
+#   Tagged v1.0.0  → filename ends with v1.0.0
+#   No tag         → filename ends with abc1234 (commit hash)
+#   Uncommitted changes → filename ends with abc1234-dirty
+#
+# Output:
+#   dist/good-review-master-windows-amd64-v1.0.0.exe
+#   dist/good-review-master-linux-amd64-v1.0.0
+#   dist/good-review-master-darwin-amd64-v1.0.0     (Intel Mac)
+#   dist/good-review-master-darwin-arm64-v1.0.0     (Apple Silicon)
 # Copy the matching binary to any directory and run it.
 # First run auto-creates config.yaml.
 # Edit config.yaml with your settings, then run again.
@@ -367,6 +444,23 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `runtime.llm_timeout_sec` | LLM timeout (seconds) | `20` |
 | `runtime.max_msg_rune` | Max characters per message | `200` |
 | `runtime.poll_interval_sec` | Poll interval (seconds) | `3` |
+| `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
+| `runtime.web_username` | Web panel login username | `admin` |
+| `runtime.web_password` | Web panel login password (empty = no auth) | `""` |
+
+### Web Management Panel
+
+Gin + JWT + embedded Vue SPA for group message monitoring.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/login` | No | Returns JWT token (or `need_password: false` if password empty) |
+| GET | `/api/status` | JWT | BotQQ, Nickname, Masked API Key, group count |
+| GET | `/api/groups` | JWT | Per-group info with activity stats |
+| GET | `/api/groups/:id` | JWT | Cached messages for one group |
+| POST | `/api/logout` | JWT | No-op (stateless token) |
+
+If password is empty, the login page is skipped entirely. Set `web_port` to 0 or negative to disable the web panel.
 
 ### prompt_system.yaml
 
@@ -492,19 +586,27 @@ good-review-master/
 ├── config.yaml               # Live config (gitignored)
 ├── prompt_system.yaml        # System prompts (gitignored)
 ├── prompt_custom.yaml        # Dynamic prompts (gitignored, auto-created)
-├── start_main.bat / .sh      # Dev launcher scripts
-├── build_exe.bat / .sh       # Build & package scripts
+├── start_main.bat / .sh      # Dev launcher scripts (includes frontend build)
+├── build_exe.bat / .sh       # Build & package scripts (cross-compile 4 targets)
+├── version/
+│   └── version.go            # Version injection (via -ldflags at build time)
+├── apppath/
+│   └── apppath.go            # Resolve paths relative to executable
+├── pool/
+│   └── pool.go               # Generic goroutine pool (fixed workers, bounded queue)
 ├── config/
 │   ├── config.go             # Runtime config (config.yaml → struct)
 │   ├── config_example.yaml   # Built-in config template (embedded at build time)
+│   ├── prompt_system_example.yaml  # Built-in prompt template (embedded at build time)
 │   ├── embed.go              # //go:embed template embedding
+│   ├── init.go               # Auto-create config files on first run
 │   └── prompt.go             # Prompt config loading + hot-reload + CRUD
 ├── cache/
 │   └── cache.go              # Per-group ring buffer (zero-copy writes, O(1) dedup)
 ├── llm/
 │   └── llm.go                # LLM client (go-openai SDK, connection pooling, typed)
 ├── async/
-│   └── async.go             # Safe goroutine manager (errgroup + auto ctx + panic recover)
+│   └── async.go              # Safe goroutine manager (pool-based + auto ctx + panic recover)
 ├── logutil/
 │   └── logger.go             # Logging (zap + lumberjack, 20MB rotation, 30-day retention)
 ├── onebot/
@@ -513,10 +615,37 @@ good-review-master/
 ├── bot/
 │   ├── polling.go            # HTTP poll loop + history fetching (context-aware)
 │   └── handler.go            # Message processing: whitelist → @detection → routing
-└── cmd/
-    ├── command.go            # Router + prefix trie matching + safe goroutine launch
-    ├── internal_cmd.go       # Internal commands (add/delete keyword, help)
-    └── chat_review.go        # Async chat_review handler
+├── cmd/
+│   ├── command.go            # Router + prefix trie matching + safe goroutine launch
+│   ├── internal_cmd.go       # Internal commands (add/delete keyword, help)
+│   └── chat_review.go        # Async chat_review handler
+└── web/
+    ├── server/                # Gin web management panel backend
+    │   ├── server.go          # Gin engine, API routes, SPA fallback, graceful shutdown
+    │   ├── handlers.go        # API handlers (login/status/groups/messages)
+    │   ├── auth.go            # JWT signing & validation (HS256, 24h expiry)
+    │   ├── middleware.go       # Middleware (logging, panic recovery, CORS, JWT auth)
+    │   └── embed.go           # //go:embed static/frontend
+    └── frontend/              # uni-app Vue 3 SPA
+        └── src/               # Pages: login, groups list, message detail
+```
+
+### Package Dependency Graph
+
+```
+main → config, llm, logutil, bot, onebot, async, apppath, version, web/server
+bot → config, cache, onebot, cmd
+cmd → config, cache, llm, onebot, async
+web/server → config, logutil, onebot, cache
+async → logutil, pool
+pool → (no internal deps: stdlib sync only)
+onebot → (no internal deps)
+cache → (no internal deps)
+llm → (no internal deps)
+config → apppath, logutil
+logutil → apppath
+apppath → (no internal deps)
+version → (no internal deps)
 ```
 
 ## Logging
@@ -527,6 +656,6 @@ Logs are written to the `log/` directory under the working directory. Uses `zap`
 
 - Local machine or cloud server — no public IP needed
 - NapCatQQ and Go Bot run on the same machine, communicate via local HTTP
-- Compile to a single binary, no runtime dependencies
-- **Auto-create config on first launch**: If `config.yaml` is missing, the exe auto-generates one from its built-in template. Edit it and restart. No need to manually prepare `config_example.yaml`.
+- Compile to a single binary (frontend SPA embedded), no runtime dependencies
+- **Auto-create config on first launch**: If `config.yaml` and `prompt_system.yaml` are missing, the exe auto-generates them from built-in templates. Edit and restart.
 - Use `systemd` (Linux) or Task Scheduler (Windows) for auto-start on boot

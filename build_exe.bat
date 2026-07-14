@@ -32,22 +32,22 @@ set LDFLAGS=-s -w -X good-review-master/version.Version=%VERSION% -X good-review
 
 set GOOS=windows
 set GOARCH=amd64
-go build -ldflags "%LDFLAGS%" -o dist\good-review-master-windows-amd64.exe .
+go build -ldflags "%LDFLAGS%" -o dist\good-review-master-windows-amd64-%VERSION%.exe .
 if %errorlevel% neq 0 goto :build_fail
 
 set GOOS=linux
 set GOARCH=amd64
-go build -ldflags "%LDFLAGS%" -o dist\good-review-master-linux-amd64 .
+go build -ldflags "%LDFLAGS%" -o dist\good-review-master-linux-amd64-%VERSION% .
 if %errorlevel% neq 0 goto :build_fail
 
 set GOOS=darwin
 set GOARCH=amd64
-go build -ldflags "%LDFLAGS%" -o dist\good-review-master-darwin-amd64 .
+go build -ldflags "%LDFLAGS%" -o dist\good-review-master-darwin-amd64-%VERSION% .
 if %errorlevel% neq 0 goto :build_fail
 
 set GOOS=darwin
 set GOARCH=arm64
-go build -ldflags "%LDFLAGS%" -o dist\good-review-master-darwin-arm64 .
+go build -ldflags "%LDFLAGS%" -o dist\good-review-master-darwin-arm64-%VERSION% .
 if %errorlevel% neq 0 goto :build_fail
 
 echo Build success:

@@ -20,10 +20,10 @@ COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS="-s -w -X good-review-master/version.Version=${VERSION} -X good-review-master/version.Commit=${COMMIT} -X good-review-master/version.BuildTime=${BUILD_TIME}"
 
-GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-windows-amd64.exe .
-GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-linux-amd64 .
-GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-amd64 .
-GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-arm64 .
+GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-windows-amd64-${VERSION}.exe .
+GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-linux-amd64-${VERSION} .
+GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-amd64-${VERSION} .
+GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-arm64-${VERSION} .
 
 echo "Build success:"
 ls -lh dist/
