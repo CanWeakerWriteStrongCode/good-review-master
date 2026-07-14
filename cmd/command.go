@@ -12,7 +12,8 @@ import (
 )
 
 // HandlerFunc 指令处理函数类型
-type HandlerFunc func(onebot.Event, string, string)
+// (event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)
+type HandlerFunc func(onebot.Event, string, string, string, string, string)
 
 // Command 指令定义
 type Command struct {
@@ -164,13 +165,9 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	}
 
 	extra := strings.TrimSpace(text[len(route.Keyword):])
-	finalPrompt := route.Prompt + route.SharedRules
-	if extra != "" {
-		finalPrompt += "\n用户补充,优先级很高:" + extra
-	}
-	enrichedPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。当前@你的是群友 %s。\n%s",
-		r.appCfg.BotQQ, r.appCfg.BotNickname, event.Nickname, finalPrompt)
-	route.Handler(event, groupID, enrichedPrompt)
+	systemPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s",
+		r.appCfg.BotQQ, r.appCfg.BotNickname, route.SharedRules)
+	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
 }
 
 // Go 安全启动 goroutine（代理 async.Group）

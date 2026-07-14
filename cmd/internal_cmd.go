@@ -43,7 +43,7 @@ func (r *Router) registerInternalCommands() {
 	r.register(Command{Keyword: "帮助", Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
 }
 
-func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 4 {
@@ -80,7 +80,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string) 
 	r.obClient.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
 }
 
-func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
 	content := event.RawMessage
 	matches := delCmdRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
@@ -103,7 +103,7 @@ func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, _ strin
 	r.obClient.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
 }
 
-func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
 	content := event.RawMessage
 	matches := addRuleRe.FindStringSubmatch(content)
 	if len(matches) != 3 {
@@ -138,7 +138,7 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string) {
 	r.obClient.SendGroupMessage(groupID, "✅ 规则已添加: "+category)
 }
 
-func (r *Router) handleDeleteRule(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleDeleteRule(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
 	content := event.RawMessage
 	matches := delRuleRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
@@ -160,7 +160,7 @@ func (r *Router) handleDeleteRule(event onebot.Event, groupID string, _ string) 
 	r.obClient.SendGroupMessage(groupID, "✅ 规则已删除: "+category)
 }
 
-func (r *Router) handleListCommands(event onebot.Event, groupID string, _ string) {
+func (r *Router) handleListCommands(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
 	var buf strings.Builder
 	buf.WriteString("【指令帮助】\n\n")
 	buf.WriteString("使用方式：@机器人 + 关键词\n\n")

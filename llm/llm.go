@@ -42,7 +42,7 @@ func (adapter *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt 
 		Model: adapter.model,
 		Messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
-			{Role: openai.ChatMessageRoleUser, Content: "以下是群聊记录：\n" + chatLog + "\n请回复"},
+			{Role: openai.ChatMessageRoleUser, Content: chatLog},
 		},
 		Temperature: adapter.temp,
 		TopP:        adapter.topP,
