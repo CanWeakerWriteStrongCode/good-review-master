@@ -1,6 +1,12 @@
 @echo off
 cd /d "%~dp0web\frontend"
 echo [1/3] Building frontend...
+call npm install
+if %errorlevel% neq 0 (
+    echo npm install failed
+    pause
+    exit /b 1
+)
 call npm run build:h5
 if %errorlevel% neq 0 (
     echo Frontend build failed
