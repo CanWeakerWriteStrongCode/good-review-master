@@ -17,7 +17,26 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 			r.obClient.SendGroupMessage(groupID, "暂无群聊记录，无法锐评~")
 			return nil
 		}
-		chatLog := cache.BuildChatLog(msgs)
+
+		// Phase 2: 缓存扩展窗口（同 category 下所有关键词共享锚点）
+		var chatLogMsgs []cache.Message
+		anchor := cache.GetLLMAnchor(groupID)
+		if anchor != nil {
+			startIdx := cache.FindMsgIndex(msgs, anchor.AnchorMsgID)
+			if startIdx >= 0 {
+				chatLogMsgs = msgs[startIdx:]
+				logutil.Debug("缓存扩展", "group", groupID, "窗口", len(chatLogMsgs))
+			}
+		}
+		if len(chatLogMsgs) == 0 {
+			startIdx := len(msgs) - r.appCfg.LLMSendCount
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			chatLogMsgs = msgs[startIdx:]
+		}
+
+		chatLog := cache.BuildChatLog(chatLogMsgs)
 		ctx, cancel := context.WithTimeout(ctx, r.appCfg.LLMTimeout)
 		defer cancel()
 
@@ -36,6 +55,11 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 			return nil
 		}
 		r.obClient.SendGroupMessage(groupID, reply)
+
+		// 保存锚点（窗口第一条消息的 MsgID）
+		cache.SetLLMAnchor(groupID, &cache.LLMAnchor{
+			AnchorMsgID: chatLogMsgs[0].MsgID,
+		})
 		return nil
 	})
 }

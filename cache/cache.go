@@ -26,9 +26,16 @@ type GroupMsgCache struct {
 	mu       sync.RWMutex
 }
 
+// LLMAnchor 缓存扩展窗口锚点（per-group，同 category 下所有关键词共享）
+type LLMAnchor struct {
+	AnchorMsgID int64 // 窗口第一条消息的 MsgID
+}
+
 var (
-	cacheMap = make(map[string]*GroupMsgCache)
-	cacheMu  sync.RWMutex
+	cacheMap    = make(map[string]*GroupMsgCache)
+	cacheMu     sync.RWMutex
+	anchorMap   = make(map[string]*LLMAnchor)
+	anchorMapMu sync.RWMutex
 )
 
 // GetGroupCache 获取或创建群消息缓存
@@ -137,4 +144,28 @@ func BuildChatLog(msgs []Message) string {
 		buf.WriteString(fmt.Sprintf("%s：%s\n", msg.Nick, msg.Content))
 	}
 	return buf.String()
+}
+
+// GetLLMAnchor 获取群的缓存扩展锚点
+func GetLLMAnchor(groupID string) *LLMAnchor {
+	anchorMapMu.RLock()
+	defer anchorMapMu.RUnlock()
+	return anchorMap[groupID]
+}
+
+// SetLLMAnchor 设置群的缓存扩展锚点
+func SetLLMAnchor(groupID string, anchor *LLMAnchor) {
+	anchorMapMu.Lock()
+	defer anchorMapMu.Unlock()
+	anchorMap[groupID] = anchor
+}
+
+// FindMsgIndex 在消息列表中查找指定 MsgID 的索引，未找到返回 -1
+func FindMsgIndex(msgs []Message, msgID int64) int {
+	for i, msg := range msgs {
+		if msg.MsgID == msgID {
+			return i
+		}
+	}
+	return -1
 }
