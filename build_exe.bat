@@ -19,6 +19,13 @@ if exist "%~dp0web\server\static\frontend" rmdir /s /q "%~dp0web\server\static\f
 xcopy /e /i dist\build\h5 "%~dp0web\server\static\frontend" >nul
 cd /d "%~dp0"
 echo [3/3] Building Go binaries (cross-compile)...
+echo Downloading Go dependencies (first run may take a while)...
+go mod download
+if %errorlevel% neq 0 (
+    echo Go module download failed
+    pause
+    exit /b 1
+)
 if not exist dist mkdir dist
 
 for /f "tokens=*" %%i in ('git describe --tags --always --dirty 2^>nul') do set VERSION=%%i

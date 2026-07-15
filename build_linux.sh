@@ -13,7 +13,9 @@ mkdir -p "$SCRIPT_DIR/web/server/static"
 cp -r dist/build/h5 "$SCRIPT_DIR/web/server/static/frontend"
 
 echo "[3/3] Building Go binaries (cross-compile)..."
+echo "Downloading Go dependencies (first run may take a while)..."
 cd "$SCRIPT_DIR"
+go mod download
 mkdir -p dist
 
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")

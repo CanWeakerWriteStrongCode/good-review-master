@@ -13,5 +13,7 @@ mkdir -p "$SCRIPT_DIR/web/server/static"
 cp -r dist/build/h5 "$SCRIPT_DIR/web/server/static/frontend"
 
 echo "[3/3] Starting server..."
+echo "Downloading Go dependencies (first run may take a while)..."
 cd "$SCRIPT_DIR"
+go mod download
 go run main.go
