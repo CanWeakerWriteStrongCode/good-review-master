@@ -4,7 +4,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "[1/3] Building frontend..."
 cd "$SCRIPT_DIR/web/frontend"
-npm install && npm run build:h5
+command -v pnpm &> /dev/null || npm install -g pnpm
+pnpm install --frozen-lockfile && pnpm run build:h5
 
 echo "[2/3] Copying to embed directory..."
 rm -rf "$SCRIPT_DIR/web/server/static/frontend"

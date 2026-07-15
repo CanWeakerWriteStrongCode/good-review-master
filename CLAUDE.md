@@ -23,11 +23,11 @@ The frontend **must** be compiled before the Go binary — Go's `embed` resolves
 | `start_main.bat` | `go run main.go` | Windows |
 | `start_main.sh` | `go run main.go` | Linux |
 
-1. `npm run build:h5` (in `web/frontend/`) — builds uni-app H5 frontend
+1. `pnpm run build:h5` (in `web/frontend/`) — builds uni-app H5 frontend
 2. Copy `dist/build/h5` → `web/server/static/frontend/`
 3. `go build` or `go run`
 
-**npm scripts** (in `web/frontend/`): `dev:h5`, `build:h5`, `dev:mp-weixin`, `build:mp-weixin`.
+**pnpm scripts** (in `web/frontend/`): `dev:h5`, `build:h5`, `dev:mp-weixin`, `build:mp-weixin`. Use `pnpm` for all package management; `npm` is blocked via a preinstall hook.
 
 ## Dependencies
 

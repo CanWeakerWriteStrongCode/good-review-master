@@ -16,5 +16,6 @@ good-review-master
 # 日志
 /log/
 /web/frontend/node_modules/
+/web/frontend/package-lock.json
 /web/frontend/dist/
 /web/server/static/frontend/

@@ -1,13 +1,14 @@
 @echo off
 cd /d "%~dp0web\frontend"
 echo [1/3] Building frontend...
-call npm install
+where pnpm >nul 2>&1 || npm install -g pnpm
+call pnpm install --frozen-lockfile
 if %errorlevel% neq 0 (
-    echo npm install failed
+    echo pnpm install failed
     pause
     exit /b 1
 )
-call npm run build:h5
+call pnpm run build:h5
 if %errorlevel% neq 0 (
     echo Frontend build failed
     pause

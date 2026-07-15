@@ -2,7 +2,12 @@
   "name": "good-review-dashboard",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@10.28.1",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
+    "preinstall": "npx only-allow pnpm",
     "dev:h5": "uni",
     "dev:mp-weixin": "uni -p mp-weixin",
     "build:h5": "uni build -p h5",
