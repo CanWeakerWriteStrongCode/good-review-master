@@ -28,5 +28,13 @@ GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-mas
 GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-amd64-${VERSION} .
 GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-arm64-${VERSION} .
 
-echo "Build success:"
-ls -lh dist/
+echo ""
+echo "构建成功！输出文件夹: $SCRIPT_DIR/dist"
+echo "Build success! Output folder: $SCRIPT_DIR/dist"
+echo ""
+ls -lh "$SCRIPT_DIR/dist/"
+echo ""
+echo "按任意键退出..."
+echo "Press any key to exit..."
+read -n 1 -s -r -p ""
+echo ""

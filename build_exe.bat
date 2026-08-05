@@ -58,9 +58,15 @@ set GOARCH=arm64
 go build -ldflags "%LDFLAGS%" -o dist\good-review-master-darwin-arm64-%VERSION% .
 if %errorlevel% neq 0 goto :build_fail
 
-echo Build success:
-dir dist /b
-pause
+echo.
+echo 构建成功！输出文件夹: %~dp0dist
+echo Build success! Output folder: %~dp0dist
+echo.
+dir "%~dp0dist" /b
+echo.
+echo 按任意键退出...
+echo Press any key to exit...
+pause >nul
 exit /b 0
 
 :build_fail
