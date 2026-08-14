@@ -57,7 +57,7 @@ max_cache_msg = llmSendCount + maxExtendNewCount
 
 ```yaml
 runtime:
-  llm_send_count: 20
+  llm_send_count: 200
   cache_hit_cost: 0.02
   cache_miss_cost: 1.0
 ```

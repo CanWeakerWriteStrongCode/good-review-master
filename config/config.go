@@ -92,7 +92,7 @@ func LoadConfig(cfgPath string) (*Config, error) {
 	}
 	cacheHitCost := cfgFile.LLM.CacheHitCost
 	if cacheHitCost <= 0 {
-		cacheHitCost = 0.02
+		cacheHitCost = 0.033
 	}
 	cacheMissCost := cfgFile.LLM.CacheMissCost
 	if cacheMissCost <= 0 {

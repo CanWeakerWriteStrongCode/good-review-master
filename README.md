@@ -118,7 +118,7 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 | `llm.top_p`                 | 核采样参数：越小输出越集中                | `0.95`                     |
 | `runtime.max_cache_msg`     | 缓存消息数                        | `20`                       |
 | `runtime.llm_timeout_sec`   | 大模型超时（秒）                     | `20`                       |
-| `runtime.max_msg_rune`      | 单条消息最大字符数                    | `200`                      |
+| `runtime.max_msg_rune`      | 单条消息最大字符数                    | `500`                      |
 | `runtime.poll_interval_sec` | 轮询间隔（秒）                      | `3`                        |
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）           | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                   | `admin`                    |
@@ -441,7 +441,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `llm.top_p` | Nucleus sampling (lower = more focused) | `0.95` |
 | `runtime.max_cache_msg` | Max cached messages per group | `20` |
 | `runtime.llm_timeout_sec` | LLM timeout (seconds) | `20` |
-| `runtime.max_msg_rune` | Max characters per message | `200` |
+| `runtime.max_msg_rune` | Max characters per message | `500` |
 | `runtime.poll_interval_sec` | Poll interval (seconds) | `3` |
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
