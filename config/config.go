@@ -17,9 +17,8 @@ type Config struct {
 	BotQQ             string
 	BotNickname       string // 运行时由 main 设置（GetLoginInfo 结果）
 	AllowGroups       []string
-	MaxCacheMsg       int // 自动推导 = llmSendCount + maxExtendNewCount
-	LLMSendCount      int // 每次发送 LLM 的消息条数
-	MaxExtendNewCount int // 自动计算：盈亏平衡点（新增 < 此值 → 扩展）
+	MaxCacheMsg       int // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
+	LLMSendCount      int // 每次发送 LLM 的消息条数（重置窗口）
 	LLMTimeout        time.Duration
 	MaxMsgRune        int
 	PollInterval      time.Duration
@@ -31,14 +30,15 @@ type Config struct {
 
 // LLMConf 大模型配置
 type LLMConf struct {
-	Provider      string
-	APIKey        string
-	APIBase       string
-	ModelName     string
-	CacheHitCost  float64 // 缓存命中单价（相对值）
-	CacheMissCost float64 // 缓存未命中单价（相对值）
-	Temperature   float64
-	TopP          float64
+	Provider         string
+	APIKey           string
+	APIBase          string
+	ModelName        string
+	CacheHitCost     float64 // 缓存命中单价（相对值）
+	CacheMissCost    float64 // 缓存未命中单价（相对值）
+	MaxContextTokens int     // 单次发送大模型的上下文 token 上限（护栏，超限强制重置）
+	Temperature      float64
+	TopP             float64
 }
 
 type configFile struct {
@@ -58,16 +58,18 @@ type configFile struct {
 		WebPort         int    `yaml:"web_port"`
 		WebUsername     string `yaml:"web_username"`
 		WebPassword     string `yaml:"web_password"`
+		MaxCacheMsg     int    `yaml:"max_cache_msg"`
 	} `yaml:"runtime"`
 	LLM struct {
-		Provider      string  `yaml:"provider"`
-		APIKey        string  `yaml:"api_key"`
-		APIBase       string  `yaml:"api_base"`
-		ModelName     string  `yaml:"model_name"`
-		CacheHitCost  float64 `yaml:"cache_hit_cost"`
-		CacheMissCost float64 `yaml:"cache_miss_cost"`
-		Temperature   float64 `yaml:"temperature"`
-		TopP          float64 `yaml:"top_p"`
+		Provider         string  `yaml:"provider"`
+		APIKey           string  `yaml:"api_key"`
+		APIBase          string  `yaml:"api_base"`
+		ModelName        string  `yaml:"model_name"`
+		CacheHitCost     float64 `yaml:"cache_hit_cost"`
+		CacheMissCost    float64 `yaml:"cache_miss_cost"`
+		MaxContextTokens int     `yaml:"max_context_tokens"`
+		Temperature      float64 `yaml:"temperature"`
+		TopP             float64 `yaml:"top_p"`
 	} `yaml:"llm"`
 }
 
@@ -85,7 +87,7 @@ func LoadConfig(cfgPath string) (*Config, error) {
 
 	allowGroups := parseAllowGroups(cfgFile.Bot.AllowGroups)
 
-	// 缓存扩展配置：默认值 + 自动推导
+	// 缓存扩展配置：默认值 + 手动缓冲上限
 	llmSendCount := cfgFile.Runtime.LLMSendCount
 	if llmSendCount <= 0 {
 		llmSendCount = 20
@@ -98,10 +100,16 @@ func LoadConfig(cfgPath string) (*Config, error) {
 	if cacheMissCost <= 0 {
 		cacheMissCost = 1.0
 	}
-	// maxExtendNewCount = floor(llmSendCount × (1 - cacheHitCost / cacheMissCost))
-	maxExtendNewCount := int(float64(llmSendCount) * (1 - cacheHitCost/cacheMissCost))
-	// 缓冲区大小完全由公式推导
-	maxCacheMsg := llmSendCount + maxExtendNewCount
+	// 环形缓冲条数上限：手动配置，缺省按 ~31×llmSendCount（给扩展窗口留到盈亏平衡点）
+	maxCacheMsg := cfgFile.Runtime.MaxCacheMsg
+	if maxCacheMsg <= 0 {
+		maxCacheMsg = 31 * llmSendCount
+	}
+	// 单次发送大模型的上下文 token 上限（护栏），超限强制重置
+	maxContextTokens := cfgFile.LLM.MaxContextTokens
+	if maxContextTokens <= 0 {
+		maxContextTokens = 50000
+	}
 
 	return &Config{
 		NapCatHTTPAPI:     cfgFile.NapCat.HTTPAPI,
@@ -110,7 +118,6 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		AllowGroups:       allowGroups,
 		MaxCacheMsg:       maxCacheMsg,
 		LLMSendCount:      llmSendCount,
-		MaxExtendNewCount: maxExtendNewCount,
 		LLMTimeout:        time.Duration(cfgFile.Runtime.LLMTimeoutSec) * time.Second,
 		MaxMsgRune:        cfgFile.Runtime.MaxMsgRune,
 		PollInterval:      time.Duration(cfgFile.Runtime.PollIntervalSec) * time.Second,
@@ -118,14 +125,15 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		WebUsername:       cfgFile.Runtime.WebUsername,
 		WebPassword:       cfgFile.Runtime.WebPassword,
 		LLMConfig: LLMConf{
-			Provider:      cfgFile.LLM.Provider,
-			APIKey:        cfgFile.LLM.APIKey,
-			APIBase:       cfgFile.LLM.APIBase,
-			ModelName:     cfgFile.LLM.ModelName,
-			CacheHitCost:  cacheHitCost,
-			CacheMissCost: cacheMissCost,
-			Temperature:   cfgFile.LLM.Temperature,
-			TopP:          cfgFile.LLM.TopP,
+			Provider:         cfgFile.LLM.Provider,
+			APIKey:           cfgFile.LLM.APIKey,
+			APIBase:          cfgFile.LLM.APIBase,
+			ModelName:        cfgFile.LLM.ModelName,
+			CacheHitCost:     cacheHitCost,
+			CacheMissCost:    cacheMissCost,
+			MaxContextTokens: maxContextTokens,
+			Temperature:      cfgFile.LLM.Temperature,
+			TopP:             cfgFile.LLM.TopP,
 		},
 	}, nil
 }

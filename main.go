@@ -87,9 +87,13 @@ func main() {
 	botInstance := bot.NewBot(cfg, obClient, router)
 	go botInstance.RunPollingLoop(shutdownCtx)
 
-	// 9. 启动 Web 管理面板（web_port > 0 时启用）
+	// 9. 启动 Web 管理面板（web_port > 0 时启用；账号密码必填，无免密模式）
 	var webSrv *webserver.Server
 	if cfg.WebPort > 0 {
+		if cfg.WebUsername == "" || cfg.WebPassword == "" {
+			logutil.Error("Web 管理面板已启用（web_port>0）但未设置 web_username/web_password，请在 config.yaml 中配置登录账号和密码")
+			os.Exit(1)
+		}
 		webSrv = webserver.New(cfg, obClient)
 		go func() {
 			if err := webSrv.Start(); err != nil {

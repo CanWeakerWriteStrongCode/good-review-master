@@ -4,7 +4,7 @@
       <text class="title">不是好评大师</text>
       <text class="subtitle">监控面板</text>
 
-      <view class="form" v-if="needPassword">
+      <view class="form">
         <input
           class="input"
           v-model="username"
@@ -23,12 +23,6 @@
         </view>
         <text class="error" v-if="errMsg">{{ errMsg }}</text>
       </view>
-
-      <view class="form" v-else>
-        <view class="btn" @click="enterApp">
-          <text class="btn-text">进入面板</text>
-        </view>
-      </view>
     </view>
   </view>
 </template>
@@ -43,20 +37,6 @@ const username = ref('')
 const password = ref('')
 const loading = ref(false)
 const errMsg = ref('')
-const needPassword = ref(true)
-
-// 先尝试无密码访问
-async function checkNeedPassword() {
-  try {
-    const res = await login('', '')
-    if (res.need_password === false) {
-      needPassword.value = false
-      store.setNeedPassword(false)
-    }
-  } catch (_) {
-    needPassword.value = true
-  }
-}
 
 async function doLogin() {
   if (!username.value) {
@@ -73,7 +53,6 @@ async function doLogin() {
     const res = await login(username.value, password.value)
     if (res.token) {
       store.setToken(res.token)
-      store.setNeedPassword(true)
       uni.reLaunch({ url: '/pages/groups/index' })
     }
   } catch (e: any) {
@@ -82,12 +61,6 @@ async function doLogin() {
     loading.value = false
   }
 }
-
-function enterApp() {
-  uni.reLaunch({ url: '/pages/groups/index' })
-}
-
-checkNeedPassword()
 </script>
 
 <style scoped>

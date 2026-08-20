@@ -51,13 +51,9 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
-// AuthMiddleware JWT 校验中间件。若未配置密码则直接放行。
+// AuthMiddleware JWT 校验中间件（web_password 必填，无免鉴权通道）
 func AuthMiddleware(password, secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if password == "" {
-			c.Next()
-			return
-		}
 		token := c.GetHeader("Authorization")
 		if len(token) > 7 && token[:7] == "Bearer " {
 			token = token[7:]

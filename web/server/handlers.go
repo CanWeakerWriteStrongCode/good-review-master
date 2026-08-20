@@ -140,13 +140,9 @@ func formatTimestamp(ts int64) string {
 	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
 }
 
-// handleLogin 登录校验，成功返回 token
+// handleLogin 登录校验，成功返回 token（web_password 必填，无免密通道）
 func handleLogin(username, password string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if password == "" {
-			c.JSON(200, APIResponse{Code: 200, Data: gin.H{"need_password": false}})
-			return
-		}
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`

@@ -26,8 +26,12 @@ type GroupMsgCache struct {
 	mu       sync.RWMutex
 }
 
-// LLMAnchor 缓存扩展窗口锚点（per-group，同 category 下所有关键词共享）
-type LLMAnchor int64
+// LLMAnchor 缓存扩展窗口锚点（per-group）：记录上次发送窗口的首尾消息 MsgID。
+// Start 是窗口第一条消息（缓存命中前缀的起点），LastSent 是窗口最后一条消息（区分新增内容）。
+type LLMAnchor struct {
+	Start    int64 // 上次发送窗口首条消息 MsgID
+	LastSent int64 // 上次发送窗口末条消息 MsgID
+}
 
 var (
 	cacheMap    = make(map[string]*GroupMsgCache)

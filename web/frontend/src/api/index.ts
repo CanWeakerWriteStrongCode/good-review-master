@@ -43,7 +43,6 @@ export interface MessagesData {
 
 export interface LoginResult {
   token?: string
-  need_password?: boolean
 }
 
 export function fetchStatus(): Promise<BotStatus> {

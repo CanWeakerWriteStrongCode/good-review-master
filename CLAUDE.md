@@ -225,13 +225,13 @@ Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/api/login` | No | Returns JWT token (or `need_password: false` if password empty) |
+| POST | `/api/login` | No | Returns JWT token (validates username/password) |
 | GET | `/api/status` | JWT | BotQQ, Nickname, MaskedAPIKey, GroupCount |
 | GET | `/api/groups` | JWT | Per-group info with activity stats |
 | GET | `/api/groups/:id` | JWT | Cached messages for one group |
 | POST | `/api/logout` | JWT | No-op (stateless token) |
 
-Key details: Gin runs in ReleaseMode; CORS allows all origins; empty `web_password` bypasses auth entirely; `groupNames` map caches GetGroupInfo results to avoid repeated NapCat calls.
+Key details: Gin runs in ReleaseMode; CORS allows all origins; `web_password` is required (no password-less mode — the bot exits at startup if web is enabled without a password); `groupNames` map caches GetGroupInfo results to avoid repeated NapCat calls.
 
 ### Frontend (`web/frontend/`)
 
@@ -309,11 +309,11 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 - On first run, `config.yaml` is created from the embedded template and the program exits — edit it and re-run
 - `prompt_system.yaml` is also auto-created with a comment header if missing
 - `runtime.web_port` — web panel port, <=0 disables the web server
-- `runtime.web_username` / `runtime.web_password` — login credentials (empty password = no auth required)
+- `runtime.web_username` / `runtime.web_password` — login credentials (both required when the web panel is enabled)
 - `Config.MaskedAPIKey()` — returns API key with only first 4 and last 4 chars visible (e.g., `sk-9a****d8`), used by web API
 - `apppath.ResolvePath(filename)` searches `./` then `exeDir/`
 - `config.CustomPromptPath(systemPath)` gives `prompt_custom.yaml` path in the same directory as `prompt_system.yaml`
 
 ## Code conventions
 
-- **Variable naming**: 变量名尽量是要有场景区分度的多单词组合，禁止单字母或缩写。接收者命名用类型名的有意义简写。
+- **Variable naming**: 变量名不要简化，要完整让人方便看懂。
