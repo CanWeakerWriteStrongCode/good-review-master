@@ -1,0 +1,4 @@
+# Windows 批处理必须 CRLF：cmd.exe 解析 LF 行尾的 .bat 会出错（goto/for/括号块）
+*.bat text eol=crlf
+# Shell 脚本保持 LF（在 Linux/macOS 上运行）
+*.sh text eol=lf

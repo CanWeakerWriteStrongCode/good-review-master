@@ -34,7 +34,7 @@ if "%VERSION%"=="" set VERSION=dev
 for /f "tokens=*" %%i in ('git rev-parse --short HEAD 2^>nul') do set COMMIT=%%i
 if "%COMMIT%"=="" set COMMIT=unknown
 
-for /f "tokens=*" %%i in ('powershell -NoProfile -Command "Get-Date -Format ''yyyy-MM-ddTHH:mm:ssZ'' -AsUTC"') do set BUILD_TIME=%%i
+for /f "tokens=*" %%i in ('powershell -NoProfile -Command "[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')"') do set BUILD_TIME=%%i
 
 set LDFLAGS=-s -w -X good-review-master/version.Version=%VERSION% -X good-review-master/version.Commit=%COMMIT% -X good-review-master/version.BuildTime=%BUILD_TIME%
 
