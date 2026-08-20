@@ -36,6 +36,9 @@
 - **白名单机制**：只响应指定群号，安全可控
 - **纯内网通信**：Go 后端通过 HTTP 轮询 NapCatQQ 本地 API，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
+- **人格系统**：每条指令可配 5 维人格（身份/性格/关系/情绪/系统指令），回复有性格但有边界
+- **@机器人直接问答**：@机器人但没匹配到指令时，直接把消息发给大模型回答（不带人格）
+- **成本优化缓存命中**：无状态请求 + 前缀缓存，按 token 成本自动扩展/重置窗口，省钱省算力
 
 ## 🏗 架构
 
@@ -151,13 +154,17 @@ Gin + JWT + 内嵌 Vue SPA，提供群消息监控页面。
 ```yaml
 cmd:
   chat_review:            # 形式：发送最近群聊记录给大模型
-    - keyword: "锐评下"
-      prompt: |
-        你是群聊毒舌锐评机器人。
-        规则：...
     - keyword: "猫娘"
       prompt: |
-        你是一只可爱的猫娘...
+        你是一只可爱的猫娘，在群聊里撒娇。基于群聊记录，选出你觉得最可爱的一位群友，用符合猫娘气质的语气夸夸TA、撒个娇。
+      persona:            # 可选：5 维人格（配了就全必填）
+        identity: |-
+          一只软萌的猫娘，粘人爱撒娇，最喜欢被夸，看到可爱的人会忍不住想贴贴。
+        personality: '["爱撒娇粘人","单纯容易开心","被夸会炸毛","护短但不记仇"]'
+        relationship: '{"角色":"群里的团宠猫娘","对待方式":"对谁都软乎乎地撒娇"}'
+        system_prompt: |-
+          撒娇自然、不过度堆砌语气词；选出最可爱的一位群友夸夸TA。
+        emotion: '{"情绪底色":"愉悦","情绪反应性":"高","情绪外显度":"外放","恢复速度":"快","表达方式":"撒娇卖萌"}'
 
 rules:
   chat_review: |          # 共享规则：追加到每条 chat_review 指令的 prompt 末尾
@@ -167,7 +174,7 @@ rules:
     4. 重点关注最近 10 条消息
 ```
 
-新增同类型变体只需在对应列表下加一项，无需改 Go 代码。
+新增同类型变体只需在对应列表下加一项，无需改 Go 代码。`persona` 5 字段全必填，渲染在发给大模型的 user 消息末尾（详见[核心机制](#-核心机制)）。
 
 ### 群内动态添加指令
 
@@ -225,9 +232,11 @@ good-review-master/
 │   ├── polling.go            # 轮询拉取消息 + 去重（context 支持优雅退出）
 │   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
 ├── cmd/
-│   ├── command.go            # Router + 前缀树(trie)路由匹配 + 安全 goroutine 启动
-│   ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、帮助）
-│   └── chat_review.go         # chat_review 异步处理函数
+│   ├── command.go            # Router + 前缀树(trie)路由匹配 + 未匹配兜底 + 安全 goroutine
+│   ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、添加/删除指令规则、帮助）
+│   ├── chat_review.go         # chat_review 异步处理函数（缓存窗口 + 组装消息）
+│   ├── chat_window.go         # 缓存窗口决策：扩展 vs 重置（纯函数，可单测穷举）
+│   └── persona_render.go      # 人格渲染（5 维 → user 消息末尾片段）
 └── web/
     ├── server/                # Gin Web 管理面板后端
     │   ├── server.go          # Gin 引擎、API 路由、SPA 回退、优雅关闭
@@ -268,7 +277,8 @@ Polling loop (bot/polling.go)
      → 截断到最大长度
      → 存入环形缓冲区（零拷贝写入）
      → @机器人检测（QQ号 + 昵称）
-     → 前缀树匹配 → 指令处理
+     → 前缀树匹配 → 命中指令：调用该指令 handler（带该指令人格）
+     → 未命中：兜底直接发大模型回答（不带人格）
 ```
 
 ## ➕ 扩展新指令
@@ -298,13 +308,17 @@ cmd:
       prompt: "你是天气助手..."
 ```
 
-**2. 在 `cmd/` 下新建 handler 文件**（如 `weather.go`），handler 为 Router 的方法：
+**2. 在 `cmd/` 下新建 handler 文件**（如 `weather.go`），handler 为 Router 的方法，签名固定为 `(event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)`：
 
 ```go
-func (r *Router) weatherHandler(event onebot.Event, groupID string, prompt string) {
+func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona string) {
     r.Go(func(ctx context.Context) error {
-        // 异步安全启动：ctx 自动继承 shutdown 信号
-        reply, err := r.llmClient.Review(ctx, chatLog, prompt)
+        // 异步安全启动：ctx 自动继承 shutdown 信号（Ctrl+C 可取消进行中的 LLM 调用）
+        // systemPrompt  = 机器人身份（QQ+昵称）+ 该指令共享规则
+        // keywordPrompt = 该指令的 prompt；persona = 5 维人格渲染（未配则空串）
+        // 组装 user 消息：聊天记录 + @者信息 + 关键词 prompt + 人格
+        userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra, persona)
+        reply, err := r.llmClient.Review(ctx, userMsg, systemPrompt)
         ...
         return nil
     })
@@ -371,6 +385,34 @@ cd tests/e2e && pnpm test
 - **重置窗口**：最近 `llm_send_count` 条，成本 = `全部 × cache_miss_cost`。
 
 三者全满足才扩展（锚点可用 + 扩展更便宜 + 未超 `max_context_tokens` 护栏），否则重置；重置窗口超护栏时从旧到新逐条截断。token 用启发式估算（`cache/token.go`：CJK 每字 1 token，ASCII 每 4 字符 1 token），不建字符串、不分配。
+
+### 无状态请求 + 前缀缓存命中
+
+- **无状态请求**：每次调用大模型（`llm.Review`）都是全新的 `system + user` 单次请求，不维护任何服务端会话。"对话连续感"由机器人把该群聊天记录拼进 user 消息实现——请求无状态，但前缀连续。
+- **前缀缓存命中**：DeepSeek 对"从第 0 个 token 完全一致"的请求前缀自动做磁盘缓存（内容寻址、每用户独立、best-effort），命中部分按 `cache_hit_cost` 计费并复用计算。扩展窗口时本次请求头部与上次完全一致 → 命中前面一大段，只对新增消息计未命中。
+- **按群隔离**：环形缓存与扩展锚点都按 `groupID` 键控，每个群独立维护聊天记录与窗口——不同群前缀各异、各占各的缓存单元，互不挤占（内容寻址，非"一条缓存被覆盖"）。
+- **不破坏命中的关键**：人格渲染放 user 消息**末尾**（见下），让 `system + 以下是群聊记录 + 聊天记录前缀` 在换指令/换人格时保持稳定；只有单群自己前缀变化（被迫重置、长期沉默缓存被清）才会丢命中。
+
+### 人格系统（Persona）
+
+每条指令可配 5 维人格（`config/prompt.go` 的 `Persona`），字段全必填：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `identity` | 文本 | 身份背景（名字/年龄/职业/经历，具体可信） |
+| `personality` | JSON 数组 | 性格特质（行为化描述） |
+| `relationship` | JSON 对象 | 与群友的关系（角色 / 对待方式） |
+| `system_prompt` | 文本 | 人格级系统指令（行为边界 / 输出要求） |
+| `emotion` | JSON 对象 | 情绪维度（维度 → 取值，人格核心） |
+
+**渲染位置**：`RenderPersona`（`cmd/persona_render.go`）把人格渲染成 user 消息**末尾**的片段——不进 system prompt，从而不破坏上方"前缀缓存命中"的稳定前缀。
+
+**内置两条通用规则**（`personaDirective`）：
+
+- **情绪缓和**：用户情绪过于强烈（无论愤怒、悲伤，还是过度兴奋、狂喜）时，情绪反应符合人格但以缓解对方情绪为先，不升级冲突、不火上浇油。
+- **表达多样性**：回复要有变化，避免固定口头禅/收尾词，防止自我回音导致的输出趋同。
+
+**无状态机**：不维护人格状态，对话窗口即隐式状态，LLM 是维度变化与回答的最终解释者。
 
 ### 数据结构机制
 

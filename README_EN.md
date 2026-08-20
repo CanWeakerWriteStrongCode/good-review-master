@@ -17,6 +17,9 @@
 - **Whitelist**: Only responds in configured group IDs
 - **Local network only**: Go backend polls NapCatQQ's local HTTP API — no public IP required
 - **Single binary deployment**: Compile to one executable, drop it on a server, and run
+- **Persona system**: each command can carry a 5-dimension persona (identity/personality/relationship/emotion/system prompt) — replies have character but stay bounded
+- **Direct Q&A on unknown commands**: when @mentioned but no keyword matches, the message is sent straight to the LLM for a plain reply (no persona)
+- **Cost-optimized cache hits**: stateless requests + prefix caching, with an automatic extend/reset window decision based on token cost
 
 ## Architecture
 
@@ -48,7 +51,8 @@ Polling loop (bot/polling.go)
      → Truncate to max length
      → Store in ring buffer (zero-copy write)
      → @bot detection (QQ number + nickname)
-     → Prefix trie match → command handler
+     → Prefix trie match → matched: dispatch to that command's handler (with its persona)
+     → No match: fall back to a plain LLM reply (no persona)
 ```
 
 ## Quick Start
@@ -153,13 +157,17 @@ Commands are defined in list format. One command type can have multiple keyword 
 ```yaml
 cmd:
   chat_review:            # Sends recent chat log to LLM
-    - keyword: "锐评下"
-      prompt: |
-        You are a sharp-tongued group chat review bot.
-        Based on the chat records, make a witty summary.
     - keyword: "猫娘"
       prompt: |
         You are a cute catgirl. Pick the cutest group member and compliment them.
+      persona:            # optional: 5-dimension persona (all required once present)
+        identity: |-
+          A soft and clingy catgirl who loves being praised and nuzzles up to cute people.
+        personality: '["clingy and affectionate","naively cheerful","melts when praised","protective but never holds a grudge"]'
+        relationship: '{"role":"the group pet catgirl","approach":"sweet and cuddly with everyone"}'
+        system_prompt: |-
+          Be naturally affectionate without over-stuffing filler words; pick the cutest member and compliment them.
+        emotion: '{"baseline":"joyful","reactivity":"high","expressiveness":"outward","recovery":"fast","style":"cute and playful"}'
 
 rules:
   chat_review: |          # Shared rules appended to every chat_review prompt
@@ -169,7 +177,7 @@ rules:
     4. Pay more attention to the most recent 10 messages
 ```
 
-Add a new variant by adding an entry under the same list — no code changes needed.
+Add a new variant by adding an entry under the same list — no code changes needed. If a `persona` block is present, all 5 fields are required; it is rendered at the tail of the user message sent to the LLM (see [Core Mechanisms](#core-mechanisms)).
 
 ## Command System
 
@@ -178,7 +186,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 | Kind | Defined in | Examples |
 |---|---|---|
 | **Function commands** | `prompt_system.yaml` / `prompt_custom.yaml` | `锐评下`, `猫娘` |
-| **Internal commands** | Go code (`cmd/internal_cmd.go`) | `添加关键字`, `删除关键字`, `帮助` |
+| **Internal commands** | Go code (`cmd/internal_cmd.go`) | `添加关键字`, `删除关键字`, `添加指令规则`, `删除指令规则`, `帮助` |
 
 ### Triggering
 
@@ -190,7 +198,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 
 ### Dynamic commands (from group chat)
 
-Add a new keyword directly from the group — the LLM generates the prompt:
+Add a new keyword directly from the group — the LLM generates the prompt and a 5-field persona:
 
 ```
 @bot 添加关键字(meanie-review)指令(chat_review)大模型想提示词(foul-mouthed, roasts everyone, calls them old)
@@ -239,13 +247,17 @@ cmd:
       prompt: "You are a weather assistant..."
 ```
 
-**2. Create a new handler file in `cmd/`** (e.g. `weather.go`), handler must be a Router method:
+**2. Create a new handler file in `cmd/`** (e.g. `weather.go`), handler must be a Router method with the fixed signature `(event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)`:
 
 ```go
-func (r *Router) weatherHandler(event onebot.Event, groupID string, prompt string) {
+func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona string) {
     r.Go(func(ctx context.Context) error {
-        // Safe async: ctx auto-inherits shutdown signal
-        reply, err := r.llmClient.Review(ctx, chatLog, prompt)
+        // Safe async: ctx auto-inherits shutdown signal (Ctrl+C cancels in-flight LLM calls)
+        // systemPrompt  = bot identity (QQ + nickname) + shared rules for this command
+        // keywordPrompt = this command's prompt; persona = rendered 5-dim persona (empty if unset)
+        // Build the user message: chat log + mentioner info + keyword prompt + persona
+        userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra, persona)
+        reply, err := r.llmClient.Review(ctx, userMsg, systemPrompt)
         ...
         return nil
     })
@@ -300,9 +312,11 @@ good-review-master/
 │   ├── polling.go            # HTTP poll loop + history fetching (context-aware)
 │   └── handler.go            # Message processing: whitelist → @detection → routing
 ├── cmd/
-│   ├── command.go            # Router + prefix trie matching + safe goroutine launch
-│   ├── internal_cmd.go       # Internal commands (add/delete keyword, help)
-│   └── chat_review.go        # Async chat_review handler
+│   ├── command.go            # Router + prefix trie matching + unmatched fallback + safe goroutine
+│   ├── internal_cmd.go       # Internal commands (add/delete keyword, add/delete rule, help)
+│   ├── chat_review.go        # Async chat_review handler (cache window + message assembly)
+│   ├── chat_window.go        # Cache window decision: extend vs reset (pure function, unit-tested)
+│   └── persona_render.go     # Persona rendering (5 dims → tail of user message)
 └── web/
     ├── server/                # Gin web management panel backend
     │   ├── server.go          # Gin engine, API routes, SPA fallback, graceful shutdown
@@ -387,6 +401,34 @@ Before every LLM call, the window to send is chosen by token cost (`cmd/chat_win
 - **Reset**: the most recent `llm_send_count` messages; cost = `everything × cache_miss_cost`.
 
 Extend only when all three hold (anchor available + extend cheaper + within the `max_context_tokens` guardrail); otherwise reset. If the reset window exceeds the guardrail, messages are trimmed one by one from the oldest. Tokens are estimated heuristically (`cache/token.go`: CJK chars count 1 token each, ASCII 1 token per 4 chars) without building or allocating the string.
+
+### Stateless Requests + Prefix Cache Hits
+
+- **Stateless requests**: every LLM call (`llm.Review`) is a brand-new single `system + user` request — no server-side session is maintained. The "conversation feel" comes from the bot splicing that group's chat log into the user message; the request is stateless, but the prefix stays continuous.
+- **Prefix cache hits**: DeepSeek automatically disk-caches request prefixes that match exactly from token 0 (content-addressed, per-user, best-effort); the hit portion is billed at `cache_hit_cost` and reuses cached computation. When the window is extended, the head of the new request is byte-identical to the last one → hits, and only the appended messages are charged as a miss.
+- **Per-group isolation**: both the ring cache and the extend anchor are keyed by `groupID`; every group maintains its own chat log and window — different groups have different prefixes that occupy separate cache units without evicting each other (content-addressed, not "one cache slot overwritten by another").
+- **The key to not breaking hits**: the persona is rendered at the **tail** of the user message (below), keeping `system + chat-log prefix` stable when switching commands or personas. A group only loses hits when its own prefix changes (forced reset, or the cache is cleared after long inactivity).
+
+### Persona System
+
+Every command can carry a 5-dimension persona (`Persona` in `config/prompt.go`), all fields required:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `identity` | text | Background identity (name/age/job/history, concrete and believable) |
+| `personality` | JSON array | Personality traits (behavioral descriptions) |
+| `relationship` | JSON object | Relationship with group members (role / how to treat them) |
+| `system_prompt` | text | Persona-level system directive (behavior boundaries / output requirements) |
+| `emotion` | JSON object | Emotion dimensions (dimension → value, the core of the persona) |
+
+**Rendering position**: `RenderPersona` (`cmd/persona_render.go`) renders the persona as a segment at the **tail** of the user message — never into the system prompt — so it doesn't break the stable prefix relied on by the prefix cache above.
+
+**Two built-in generic rules** (`personaDirective`):
+
+- **Emotion de-escalation**: when the user's emotion is too intense (anger, sadness, or extreme excitement/elation alike), the emotional reaction should fit the persona but soothe the other person's mood first — don't escalate, don't provoke, don't add fuel.
+- **Response variety**: vary the replies — avoid a fixed catchphrase or the same closing word every time, to prevent output converging due to self-echo.
+
+**Stateless persona**: no persona state is maintained; the chat window is the implicit state, and the LLM is the final interpreter of both dimension changes and the answer.
 
 ### Data Structures
 
