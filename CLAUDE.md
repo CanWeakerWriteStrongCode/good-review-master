@@ -10,7 +10,16 @@ go build ./...        # verify all packages compile
 go build -o good-review-master.exe .  # build binary
 ```
 
-No tests.
+## Testing（API 层自测）
+
+Playwright 作为纯 API 测试运行器（`request` fixture，不启动浏览器），打真实测试二进制的 HTTP 接口。
+
+```bash
+cd tests/e2e && pnpm test
+```
+
+- 测试模式：`GOOD_REVIEW_TEST=1` 启动真实二进制 → 用 `FakeLLM` 替代真实大模型、NapCat 指向死地址（`internal/testutil/`），并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger，仅测试模式可达；生产模式下这些路径只会被 SPA fallback 回成页面 HTML）。
+- 详情见 `docs/testing.md`。
 
 ## Build scripts
 

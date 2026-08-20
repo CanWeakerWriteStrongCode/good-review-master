@@ -342,3 +342,15 @@ Logs are written to the `log/` directory under the working directory. Uses `zap`
 - Compile to a single binary (frontend SPA embedded), no runtime dependencies
 - **Auto-create config on first launch**: If `config.yaml` and `prompt_system.yaml` are missing, the exe auto-generates them from built-in templates. Edit and restart.
 - Use `systemd` (Linux) or Task Scheduler (Windows) for auto-start on boot
+
+## Testing
+
+Built-in **API-level self-testing** via Playwright (no browser — drives the real test binary's HTTP API with the `request` fixture):
+
+```bash
+cd tests/e2e && pnpm test
+```
+
+- Test mode `GOOD_REVIEW_TEST=1`: replaces the real LLM with `FakeLLM`, points NapCat at a dead address, and registers `/api/debug/*` self-test endpoints (inject/reset/state/trigger).
+- Covers: auth, group data, message data, and the full bot flow (inject → trigger review → assert reply).
+- See [docs/testing.md](docs/testing.md) for details.

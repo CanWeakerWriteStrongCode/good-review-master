@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"good-review-master/cache"
@@ -34,7 +35,7 @@ type BotStatus struct {
 	GroupCount  int    `json:"group_count"`
 }
 
-func handleAPIGroups(cfg *config.Config, obClient *onebot.Client, groupNames map[string]string) gin.HandlerFunc {
+func handleAPIGroups(cfg *config.Config, obClient *onebot.Client, groupNames map[string]string, groupNamesMu *sync.RWMutex) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cachedIDs := cache.ListGroupIDs()
 		cachedSet := make(map[string]struct{}, len(cachedIDs))
@@ -49,12 +50,16 @@ func handleAPIGroups(cfg *config.Config, obClient *onebot.Client, groupNames map
 				Cached:  false,
 			}
 			// 获取群名称（优先用缓存，否则调 NapCat API）
+			groupNamesMu.RLock()
 			name, ok := groupNames[groupID]
+			groupNamesMu.RUnlock()
 			if !ok && obClient != nil {
 				gi, err := obClient.GetGroupInfo(groupID)
 				if err == nil && gi.GroupName != "" {
 					name = gi.GroupName
+					groupNamesMu.Lock()
 					groupNames[groupID] = name
+					groupNamesMu.Unlock()
 				}
 			}
 			info.GroupName = name

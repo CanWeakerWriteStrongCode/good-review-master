@@ -1,0 +1,27 @@
+# 测试专用配置：GOOD_REVIEW_TEST=1 启动时使用
+# 注意：napcat.http_api 指向死地址，NapCat 调用失败仅 warn；数据由 /api/debug/inject 直接种入
+napcat:
+  http_api: "http://127.0.0.1:1"
+  access_token: ""
+bot:
+  qq: "123456"
+  allow_groups: "10001,10002"
+runtime:
+  llm_send_count: 200
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+  max_cache_msg: 6200
+  poll_interval_sec: 3600   # 轮询静默，避免干扰注入
+  web_port: 9090
+  web_username: "admin"
+  web_password: "123456"
+llm:
+  provider: "openai"        # 测试模式走 FakeLLM 分支，此值不被读取
+  api_key: "sk-test"
+  api_base: "http://fake"
+  model_name: "fake"
+  cache_hit_cost: 0.033
+  cache_miss_cost: 1.0
+  max_context_tokens: 50000
+  temperature: 1.2
+  top_p: 0.95

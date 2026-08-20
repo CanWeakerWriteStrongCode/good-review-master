@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"good-review-master/config"
@@ -18,10 +19,12 @@ import (
 
 // Server Web 管理面板服务器
 type Server struct {
-	cfg        *config.Config
-	httpServer *http.Server
-	obClient   *onebot.Client
-	groupNames map[string]string // groupID → groupName 缓存
+	cfg          *config.Config
+	engine       *gin.Engine
+	httpServer   *http.Server
+	obClient     *onebot.Client
+	groupNames   map[string]string // groupID → groupName 缓存
+	groupNamesMu sync.RWMutex
 }
 
 // New 创建 Web 服务器实例
@@ -34,7 +37,7 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 	engine.Use(LoggerMiddleware())
 	engine.Use(CORSMiddleware())
 
-	s := &Server{cfg: cfg, obClient: obClient, groupNames: make(map[string]string)}
+	s := &Server{cfg: cfg, engine: engine, obClient: obClient, groupNames: make(map[string]string)}
 
 	// API 路由
 	apiGroup := engine.Group("/api")
@@ -42,7 +45,7 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 	apiGroup.Use(AuthMiddleware(cfg.WebPassword, cfg.WebPassword))
 	{
 		apiGroup.GET("/status", handleAPIStatus(cfg))
-		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames))
+		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames, &s.groupNamesMu))
 		apiGroup.GET("/groups/:id", handleAPIMessages(cfg, obClient, s.groupNames))
 		apiGroup.POST("/logout", handleLogout())
 	}

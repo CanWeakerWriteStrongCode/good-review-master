@@ -24,6 +24,7 @@
 - [项目结构](#-项目结构)
 - [扩展新指令](#-扩展新指令)
 - [部署说明](#-部署说明)
+- [测试](#-测试)
 
 ## ✨ 特性
 
@@ -324,5 +325,17 @@ r.handlerMap = map[string]HandlerFunc{
 - 编译为单二进制文件（前端页面一并嵌入），丢上去就跑
 - **首次启动自动创建配置文件**：exe 运行时若同目录没有 `config.yaml` 和 `prompt_system.yaml`，自动从内置模板生成，编辑后重新运行即可
 - 推荐使用 `systemd`（Linux）或任务计划程序（Windows）设为开机自启
+
+## 🧪 测试
+
+内置 Playwright **API 层自测**（不启动浏览器，直打真实测试二进制的 HTTP 接口）：
+
+```bash
+cd tests/e2e && pnpm test
+```
+
+- 测试模式 `GOOD_REVIEW_TEST=1`：用 FakeLLM 替代真实大模型、NapCat 指向死地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）。
+- 覆盖：登录鉴权、群数据、消息数据、bot 全流程（注入→触发锐评→断言回复）。
+- 详情见 [docs/testing.md](docs/testing.md)。
 
 ---

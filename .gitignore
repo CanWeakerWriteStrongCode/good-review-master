@@ -19,3 +19,9 @@ good-review-master
 /web/frontend/package-lock.json
 /web/frontend/dist/
 /web/server/static/frontend/
+
+# E2E 测试产物
+/tests/e2e/node_modules/
+/tests/e2e/.workdir/
+/tests/e2e/playwright-report/
+/tests/e2e/test-results/

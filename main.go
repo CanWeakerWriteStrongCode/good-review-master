@@ -12,6 +12,7 @@ import (
 	"good-review-master/bot"
 	"good-review-master/cmd"
 	"good-review-master/config"
+	"good-review-master/internal/testutil"
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
@@ -46,20 +47,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 4. 创建大模型客户端
+	// 4. 创建大模型客户端（测试模式用 FakeLLM，不走真实 API）
+	testMode := os.Getenv("GOOD_REVIEW_TEST") == "1"
 	var llmClient llm.Client
-	switch cfg.LLMConfig.Provider {
-	case "openai":
-		llmClient = llm.NewOpenAIAdapter(
-			cfg.LLMConfig.APIKey,
-			cfg.LLMConfig.APIBase,
-			cfg.LLMConfig.ModelName,
-			cfg.LLMConfig.Temperature,
-			cfg.LLMConfig.TopP,
-		)
-	default:
-		logutil.Error("不支持的大模型提供商", "provider", cfg.LLMConfig.Provider)
-		os.Exit(1)
+	var fakeLLM *testutil.FakeLLM
+	if testMode {
+		fakeLLM = testutil.NewFakeLLM()
+		llmClient = fakeLLM
+		logutil.Warn("测试模式已启用：使用 FakeLLM，NapCat 指向死地址")
+	} else {
+		switch cfg.LLMConfig.Provider {
+		case "openai":
+			llmClient = llm.NewOpenAIAdapter(
+				cfg.LLMConfig.APIKey,
+				cfg.LLMConfig.APIBase,
+				cfg.LLMConfig.ModelName,
+				cfg.LLMConfig.Temperature,
+				cfg.LLMConfig.TopP,
+			)
+		default:
+			logutil.Error("不支持的大模型提供商", "provider", cfg.LLMConfig.Provider)
+			os.Exit(1)
+		}
 	}
 
 	// 5. 创建 OneBot HTTP 客户端
@@ -95,6 +104,9 @@ func main() {
 			os.Exit(1)
 		}
 		webSrv = webserver.New(cfg, obClient)
+		if testMode {
+			webSrv.EnableDebug(router, fakeLLM)
+		}
 		go func() {
 			if err := webSrv.Start(); err != nil {
 				logutil.Error("Web 服务异常退出", "err", err)

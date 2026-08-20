@@ -172,3 +172,25 @@ func FindMsgIndex(msgs []Message, msgID int64) int {
 	}
 	return -1
 }
+
+// ListAnchors 返回所有群的锚点副本（调试/测试用）
+func ListAnchors() map[string]LLMAnchor {
+	anchorMapMu.RLock()
+	defer anchorMapMu.RUnlock()
+	out := make(map[string]LLMAnchor, len(anchorMap))
+	for k, v := range anchorMap {
+		out[k] = *v
+	}
+	return out
+}
+
+// ResetAll 清空所有群缓存与锚点（仅测试/调试用）
+func ResetAll() {
+	cacheMu.Lock()
+	cacheMap = make(map[string]*GroupMsgCache)
+	cacheMu.Unlock()
+
+	anchorMapMu.Lock()
+	anchorMap = make(map[string]*LLMAnchor)
+	anchorMapMu.Unlock()
+}
