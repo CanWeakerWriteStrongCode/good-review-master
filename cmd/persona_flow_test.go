@@ -36,14 +36,10 @@ func TestPersonaReachesLLM(t *testing.T) {
         identity: |
           毒舌点评人
         personality: '["一针见血"]'
-        speech_style: '{"语气":"犀利"}'
         relationship: '{"角色":"点评员"}'
-        greeting: |
-          说吧
         system_prompt: |
           守住底线
         emotion: '{"情绪反应性":"高"}'
-        examples: '[{"用户":"嗨","你":"说"}]'
 rules:
   chat_review: |
     规则：禁止人身攻击
@@ -120,6 +116,12 @@ rules:
 	}
 	if !strings.Contains(chatLog, "推演每个维度应有的变化") {
 		t.Fatalf("chatLog 未包含授权指令:\n%s", chatLog)
+	}
+	if !strings.Contains(chatLog, "不要升级冲突") {
+		t.Fatalf("chatLog 未包含降冲突指令:\n%s", chatLog)
+	}
+	if !strings.Contains(chatLog, "缓解对方情绪") {
+		t.Fatalf("chatLog 未包含情绪缓和指令（过于强烈的喜怒哀乐时应缓解用户情绪）:\n%s", chatLog)
 	}
 	// 人格位于 user 消息末尾（聊天记录 + 关键词之后，保证聊天记录保持缓存前缀）
 	if strings.Index(chatLog, "【人格】") <= strings.Index(chatLog, "做犀利总结。") {

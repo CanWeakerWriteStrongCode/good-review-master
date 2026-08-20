@@ -9,41 +9,38 @@ import (
 	"good-review-master/config"
 )
 
-// addCommandGenPrompt 生成新指令时使用的提示词：要求 LLM 输出 prompt + persona（8 字段全补全）。
+// addCommandGenPrompt 生成新指令时使用的提示词：要求 LLM 输出 prompt + persona（5 字段全补全）。
 const addCommandGenPrompt = `你是一个提示词工程师兼人格设计师。根据用户的要求，输出一个 JSON 对象，包含：
 {
   "prompt": "指令的任务行为提示词（简洁有效）",
   "persona": {
-    "identity": "身份背景（名字/年龄/职业/经历等）",
+    "identity": "身份背景（名字/年龄/职业/经历等，写具体可信的人物，不要堆砌标签）",
     "personality": ["性格特质列表（行为化描述，不写抽象形容词）"],
-    "speech_style": {"语气": "...", "口癖": ["..."], "称呼": "...", "句式": "..."},
     "relationship": {"角色": "...", "对待方式": "..."},
-    "greeting": "开场白（一句话，带动作语气）",
     "system_prompt": "人格专属系统指令（行为边界/输出要求）",
-    "emotion": {"维度名": "取值", "情绪反应性": "高/中/低", "...": "..."},
-    "examples": [{"用户": "...", "你": "..."}]
+    "emotion": {"维度名": "取值", "情绪反应性": "高/中/低", "...": "..."}
   }
 }
 要求：persona 全部字段必须补全，不得缺省；只输出 JSON，不要多余解释。`
 
 // personaDirective 授权指令：要求 LLM 依据人格维度推演各维度变化后再回答。
 // 无状态机设计——对话窗口即隐式状态，LLM 是维度变化与回答的最终解释者。
-const personaDirective = `这是你的人格（emotion 字段即你的情绪维度）。回复时：依据你各维度的情绪状态，结合用户的问题内容，推演每个维度应有的变化——例如被夸奖时，按你的情绪反应性升高愉悦相关维度、按外显度决定是否表露、按恢复速度自然回落；然后把各维度的变化体现到你的回答里，用符合这些维度的语气和方式回应用户。每次回复都在当前维度状态的基础上继续，不要每次都从平静开始。`
+// 另含情绪缓和规则：用户情绪过于强烈（喜怒哀乐皆然）时情绪反应符合人格，但以缓解对方情绪为先、不升级冲突。
+const personaDirective = `这是你的人格（emotion 字段即你的情绪维度）。回复时：依据你各维度的情绪状态，结合用户的问题内容，推演每个维度应有的变化——例如被夸奖时，
+按你的情绪反应性升高愉悦相关维度、按外显度决定是否表露、按恢复速度自然回落；然后把各维度的变化体现到你的回答里，用符合这些维度的语气和方式回应用户。当用户情绪过于强烈（无论愤怒、悲伤，还是过度兴奋、狂喜）时，
+情绪反应要与人格特质相符，但以缓解对方情绪为先：不要升级冲突，不针锋相对、不火上浇油，用符合人格的方式安抚、缓和对方的情绪。每次回复都在当前维度状态的基础上继续，不要每次都从平静开始。`
 
-// RenderPersona 把人格渲染成 system prompt 片段（纯函数，供 RouteMessage 追加）。
-// 渲染顺序：身份 → 性格 → 说话风格 → 与群友关系 → 开场白 → 人格级系统指令 → 情绪维度 → 示例 → 授权指令。
-// 人格是每条指令的静态稳定前缀，计入 systemTokens，参与缓存扩展/重置成本决策。
+// RenderPersona 把人格渲染成 user 消息片段（纯函数，供 RouteMessage 追加到消息末尾）。
+// 渲染顺序：身份 → 性格 → 与群友的关系 → 人格级系统指令 → 情绪维度 → 授权指令。
+// 只保留 essence 字段；说话方式不预设，由 LLM 依据性格+情绪维度自然生成。
 func RenderPersona(p config.Persona) string {
 	var b strings.Builder
 	b.WriteString("【人格】\n")
 	b.WriteString("身份：" + p.Identity + "\n")
 	writeJSONLine(&b, "性格特质", p.Personality)
-	writeJSONLine(&b, "说话风格", p.SpeechStyle)
 	writeJSONLine(&b, "与群友的关系", p.Relationship)
-	b.WriteString("开场白：" + p.Greeting + "\n")
 	b.WriteString("人格级系统指令：" + p.SystemPrompt + "\n")
 	writeJSONLine(&b, "情绪维度", p.Emotion)
-	writeJSONLine(&b, "示例对话", p.Examples)
 	b.WriteString("\n" + personaDirective + "\n")
 	return b.String()
 }
@@ -83,7 +80,7 @@ type addCommandJSON struct {
 }
 
 // parseAddCommandOutput 解析 LLM 生成的 {prompt, persona} JSON（纯函数，供单测穷举）。
-// 校验：prompt 非空；persona 8 字段全非空；5 个 JSON 字段合法；emotion 为 JSON 对象。
+// 校验：prompt 非空；persona 5 字段全非空；3 个 JSON 字段合法；emotion 为 JSON 对象。
 func parseAddCommandOutput(output string) (string, *config.Persona, error) {
 	var parsed addCommandJSON
 	if err := json.Unmarshal([]byte(stripJSONFences(output)), &parsed); err != nil {
@@ -99,12 +96,11 @@ func parseAddCommandOutput(output string) (string, *config.Persona, error) {
 	return prompt, &parsed.Persona, nil
 }
 
-// validatePersona 校验 persona 8 字段全非空、5 个 JSON 字段合法、emotion 为 JSON 对象
+// validatePersona 校验 persona 5 字段全非空、3 个 JSON 字段合法、emotion 为 JSON 对象
 func validatePersona(p *config.Persona) error {
 	// 文本字段
 	for field, v := range map[string]string{
 		"identity":      p.Identity,
-		"greeting":      p.Greeting,
 		"system_prompt": p.SystemPrompt,
 	} {
 		if strings.TrimSpace(v) == "" {
@@ -114,10 +110,8 @@ func validatePersona(p *config.Persona) error {
 	// JSON 字段
 	for field, raw := range map[string][]byte{
 		"personality":  p.Personality,
-		"speech_style": p.SpeechStyle,
 		"relationship": p.Relationship,
 		"emotion":      p.Emotion,
-		"examples":     p.Examples,
 	} {
 		if len(raw) == 0 || !json.Valid(raw) {
 			return fmt.Errorf("persona.%s 缺失或非法 JSON", field)

@@ -40,17 +40,16 @@ func (r *RawJSON) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Persona 人格配置。有子字段的字段用 JSON（RawJSON）保存，LLM 自拟结构；
-// 纯叙述字段（Identity/Greeting/SystemPrompt）保持 YAML 文本。
+// Persona 人格配置（5 个 essence 字段，全必填，无特例）。有子字段的字段用 JSON（RawJSON）保存，
+// LLM 自拟结构；纯叙述字段（Identity/SystemPrompt）保持 YAML 文本。
+// 曾设 8 字段（含 greeting/speech_style/examples），因"表演脚本"式的预设（固定开场白、口癖词表、
+// few-shot 示例）导致回答过于固定、内容易流于刻板，已砍掉——说话方式完全交给 LLM 依据性格+情绪自然生成。
 type Persona struct {
-	Identity     string  `yaml:"identity" json:"identity"`             // 身份背景（必填，YAML 文本）
-	Personality  RawJSON `yaml:"personality" json:"personality"`       // 性格特质（必填，JSON 数组）
-	SpeechStyle  RawJSON `yaml:"speech_style" json:"speech_style"`     // 说话风格（必填，JSON 对象：语气/口癖/称呼）
-	Relationship RawJSON `yaml:"relationship" json:"relationship"`     // 与群友的关系（必填，JSON 对象：角色/对待）
-	Greeting     string  `yaml:"greeting" json:"greeting"`             // 开场白（必填，YAML 文本）
-	SystemPrompt string  `yaml:"system_prompt" json:"system_prompt"`   // 人格级系统指令（必填，YAML 文本）
-	Emotion      RawJSON `yaml:"emotion" json:"emotion"`               // 情绪维度（必填，JSON 对象：维度→取值，核心）
-	Examples     RawJSON `yaml:"examples" json:"examples"`             // 示例对话（必填，JSON 数组：多组 {用户,你}）
+	Identity     string  `yaml:"identity" json:"identity"`           // 身份背景（必填，YAML 文本）
+	Personality  RawJSON `yaml:"personality" json:"personality"`     // 性格特质（必填，JSON 数组，行为化描述）
+	Relationship RawJSON `yaml:"relationship" json:"relationship"`   // 与群友的关系（必填，JSON 对象：角色/对待）
+	SystemPrompt string  `yaml:"system_prompt" json:"system_prompt"` // 人格级系统指令（必填，YAML 文本）
+	Emotion      RawJSON `yaml:"emotion" json:"emotion"`             // 情绪维度（必填，JSON 对象：维度→取值，核心）
 }
 
 // PromptConfig 提示词配置（系统 + 自定义合并），支持热重载
@@ -298,12 +297,9 @@ func writePromptCustom(path string, cfg *promptFile) error {
 					buf.WriteString("      persona:\n")
 					writePromptYAMLBlock(&buf, "        ", "identity", entry.Persona.Identity)
 					writePromptJSONField(&buf, "        ", "personality", entry.Persona.Personality)
-					writePromptJSONField(&buf, "        ", "speech_style", entry.Persona.SpeechStyle)
 					writePromptJSONField(&buf, "        ", "relationship", entry.Persona.Relationship)
-					writePromptYAMLBlock(&buf, "        ", "greeting", entry.Persona.Greeting)
 					writePromptYAMLBlock(&buf, "        ", "system_prompt", entry.Persona.SystemPrompt)
 					writePromptJSONField(&buf, "        ", "emotion", entry.Persona.Emotion)
-					writePromptJSONField(&buf, "        ", "examples", entry.Persona.Examples)
 				}
 			}
 		}
