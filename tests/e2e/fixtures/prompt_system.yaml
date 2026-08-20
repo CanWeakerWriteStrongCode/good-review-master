@@ -1,5 +1,4 @@
-# ===== 指令提示词配置（群内指令无法修改） =====
-# 扩展新功能：在对应指令下新增 keyword + prompt + persona 即可，无需改代码
+# 测试专用 prompt_system.yaml：prep.mjs 拷贝进 .workdir，覆盖残留旧配置
 cmd:
   chat_review:
     - keyword: "锐评下"

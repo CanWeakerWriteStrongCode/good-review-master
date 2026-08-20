@@ -15,7 +15,6 @@ var delCmdRe = regexp.MustCompile(`删除关键字\((.+)\)`)
 var addRuleRe = regexp.MustCompile(`添加指令规则\((.+?)\)规则要点\((.+)\)`)
 var delRuleRe = regexp.MustCompile(`删除指令规则\((.+)\)`)
 
-const promptGenSystem = `你是一个提示词工程师。根据用户要求，生成一个简洁、有效的系统提示词。直接输出提示词，不要多余解释。`
 const ruleGenSystem = `你是一个提示词工程师。根据用户描述的规则要点，生成简洁、清晰的规则文本。每行一条，直接输出规则，不要多余解释。`
 
 const (
@@ -59,18 +58,23 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string, 
 		return
 	}
 
-	logutil.Info("使用 LLM 生成提示词", "category", category, "keyword", keyword)
+	logutil.Info("使用 LLM 生成提示词+人格", "category", category, "keyword", keyword)
 	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 	defer cancel()
-	generated, err := r.llmClient.Review(ctx, requirements, promptGenSystem)
+	generated, err := r.llmClient.Review(ctx, requirements, addCommandGenPrompt)
 	if err != nil {
 		logutil.Error("LLM 生成提示词失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 生成提示词失败: "+err.Error())
 		return
 	}
-	finalPrompt := strings.TrimSpace(generated)
+	finalPrompt, persona, err := parseAddCommandOutput(generated)
+	if err != nil {
+		logutil.Error("解析 LLM 输出失败（persona 缺失或不完整）", "err", err)
+		r.obClient.SendGroupMessage(groupID, "❌ 生成失败，请重试: "+err.Error())
+		return
+	}
 
-	if err := r.promptCfg.AddCommand(category, keyword, finalPrompt); err != nil {
+	if err := r.promptCfg.AddCommand(category, keyword, finalPrompt, persona); err != nil {
 		logutil.Error("添加指令失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 添加指令失败: "+err.Error())
 		return

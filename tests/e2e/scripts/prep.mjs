@@ -35,8 +35,9 @@ if (process.env.FORCE_FRONTEND_BUILD === '1' || !existsSync(path.join(embedDir, 
   copyDir(path.join(frontendDir, 'dist/build/h5'), embedDir)
 }
 
-// 2. 写入测试 config.yaml，覆盖任何残留旧配置
+// 2. 写入测试 config.yaml 与 prompt_system.yaml，覆盖任何残留旧配置
 copyFileSync(path.join(e2eDir, 'fixtures/config.yaml'), path.join(workdir, 'config.yaml'))
+copyFileSync(path.join(e2eDir, 'fixtures/prompt_system.yaml'), path.join(workdir, 'prompt_system.yaml'))
 
 // 3. 清理上次运行残留的 prompt_custom.yaml（避免脏关键字污染）
 rmSync(path.join(workdir, 'prompt_custom.yaml'), { force: true })

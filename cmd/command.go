@@ -21,8 +21,9 @@ type Command struct {
 	Help        string // 仅内部指令使用
 	Prompt      string // 仅用户指令使用（从 YAML 加载）
 	SharedRules string
-	Category    string // "chat_review" | "internal"
+	Category    string          // "chat_review" | "internal"
 	Handler     HandlerFunc
+	Persona     *config.Persona // 可选：该指令的人格（渲染进 system prompt）
 }
 
 // trieNode 前缀树节点
@@ -138,6 +139,7 @@ func (r *Router) rebuild() {
 				SharedRules: sharedRules,
 				Category:    cmdName,
 				Handler:     handler,
+				Persona:     entry.Persona,
 			}
 			r.routes = append(r.routes, rt)
 			trieInsert(r.routeTrie, entry.Keyword, &rt)
@@ -160,6 +162,11 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	extra := strings.TrimSpace(text[len(route.Keyword):])
 	systemPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s",
 		r.appCfg.BotQQ, r.appCfg.BotNickname, route.SharedRules)
+	// persona 是 systemPrompt 的静态前缀一部分：先组装（含 persona）再交给 handler，
+	// selectChatWindow 的 EstimateTokens(systemPrompt) 会自动计入 persona，成本模型零改动。
+	if route.Persona != nil {
+		systemPrompt += "\n\n" + RenderPersona(*route.Persona)
+	}
 	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
 }
 

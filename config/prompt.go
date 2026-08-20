@@ -13,10 +13,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CmdConf 指令配置（keyword + prompt）
+// CmdConf 指令配置（keyword + prompt + 可选人格）
 type CmdConf struct {
-	Keyword string `yaml:"keyword"`
-	Prompt  string `yaml:"prompt"`
+	Keyword string   `yaml:"keyword"`
+	Prompt  string   `yaml:"prompt"`
+	Persona *Persona `yaml:"persona"` // 人格（必填：新增指令与示例全带；加载缺失仅告警不致命）
+}
+
+// RawJSON 承载 JSON 字段：YAML 里是单引号 JSON 字符串，LLM 输出里是原生 JSON。
+// yaml.v3 不能直接把字符串解成 []byte，需要自定义解码。
+type RawJSON []byte
+
+// UnmarshalYAML 从单引号 JSON 字符串解码（写入端保证单引号包裹）
+func (r *RawJSON) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	*r = RawJSON(s)
+	return nil
+}
+
+// UnmarshalJSON 原生 JSON 解码（LLM 输出 {prompt, persona} 时使用）
+func (r *RawJSON) UnmarshalJSON(data []byte) error {
+	*r = append((*r)[:0], data...)
+	return nil
+}
+
+// Persona 人格配置。有子字段的字段用 JSON（RawJSON）保存，LLM 自拟结构；
+// 纯叙述字段（Identity/Greeting/SystemPrompt）保持 YAML 文本。
+type Persona struct {
+	Identity     string  `yaml:"identity" json:"identity"`             // 身份背景（必填，YAML 文本）
+	Personality  RawJSON `yaml:"personality" json:"personality"`       // 性格特质（必填，JSON 数组）
+	SpeechStyle  RawJSON `yaml:"speech_style" json:"speech_style"`     // 说话风格（必填，JSON 对象：语气/口癖/称呼）
+	Relationship RawJSON `yaml:"relationship" json:"relationship"`     // 与群友的关系（必填，JSON 对象：角色/对待）
+	Greeting     string  `yaml:"greeting" json:"greeting"`             // 开场白（必填，YAML 文本）
+	SystemPrompt string  `yaml:"system_prompt" json:"system_prompt"`   // 人格级系统指令（必填，YAML 文本）
+	Emotion      RawJSON `yaml:"emotion" json:"emotion"`               // 情绪维度（必填，JSON 对象：维度→取值，核心）
+	Examples     RawJSON `yaml:"examples" json:"examples"`             // 示例对话（必填，JSON 数组：多组 {用户,你}）
 }
 
 // PromptConfig 提示词配置（系统 + 自定义合并），支持热重载
@@ -91,6 +125,15 @@ func (pc *PromptConfig) load() {
 			pc.SharedRules[cat] = rule
 		}
 	}
+
+	// persona 必填（无特例）：旧配置可能缺失，告警但不致命（该指令不渲染人格块）
+	for name, entries := range pc.CmdConfigs {
+		for _, entry := range entries {
+			if entry.Persona == nil {
+				logutil.Warn("指令缺少 persona，将不渲染人格块", "keyword", entry.Keyword, "category", name)
+			}
+		}
+	}
 }
 
 // Reload 热重载提示词配置
@@ -145,7 +188,7 @@ func (pc *PromptConfig) DeleteCommand(keyword string) error {
 }
 
 // AddCommand 添加指令到 prompt_custom.yaml（全局 keyword 唯一，最后写入生效）
-func (pc *PromptConfig) AddCommand(category, keyword, promptText string) error {
+func (pc *PromptConfig) AddCommand(category, keyword, promptText string, persona *Persona) error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	var cfg promptFile
@@ -177,7 +220,7 @@ func (pc *PromptConfig) AddCommand(category, keyword, promptText string) error {
 		}
 	}
 
-	cfg.Cmd[category] = append(cfg.Cmd[category], CmdConf{Keyword: keyword, Prompt: promptText})
+	cfg.Cmd[category] = append(cfg.Cmd[category], CmdConf{Keyword: keyword, Prompt: promptText, Persona: persona})
 
 	if removedFrom != "" {
 		logutil.Info("关键字跨类别移动", "keyword", keyword, "from", removedFrom, "to", category)
@@ -251,6 +294,17 @@ func writePromptCustom(path string, cfg *promptFile) error {
 				for _, line := range strings.Split(entry.Prompt, "\n") {
 					buf.WriteString("        " + line + "\n")
 				}
+				if entry.Persona != nil {
+					buf.WriteString("      persona:\n")
+					writePromptYAMLBlock(&buf, "        ", "identity", entry.Persona.Identity)
+					writePromptJSONField(&buf, "        ", "personality", entry.Persona.Personality)
+					writePromptJSONField(&buf, "        ", "speech_style", entry.Persona.SpeechStyle)
+					writePromptJSONField(&buf, "        ", "relationship", entry.Persona.Relationship)
+					writePromptYAMLBlock(&buf, "        ", "greeting", entry.Persona.Greeting)
+					writePromptYAMLBlock(&buf, "        ", "system_prompt", entry.Persona.SystemPrompt)
+					writePromptJSONField(&buf, "        ", "emotion", entry.Persona.Emotion)
+					writePromptJSONField(&buf, "        ", "examples", entry.Persona.Examples)
+				}
 			}
 		}
 	}
@@ -264,6 +318,20 @@ func writePromptCustom(path string, cfg *promptFile) error {
 		}
 	}
 	return os.WriteFile(path, []byte(buf.String()), 0644)
+}
+
+// writePromptYAMLBlock 写 YAML 文本块（key: |- 去掉尾部换行，保证回读无拖尾 \n）
+func writePromptYAMLBlock(buf *strings.Builder, indent, key, text string) {
+	buf.WriteString(indent + key + ": |-\n")
+	for _, line := range strings.Split(text, "\n") {
+		buf.WriteString(indent + "  " + line + "\n")
+	}
+}
+
+// writePromptJSONField 写单引号 JSON 字符串字段（JSON 内部单引号按 YAML 规则转义为 ''）
+func writePromptJSONField(buf *strings.Builder, indent, key string, raw []byte) {
+	escaped := strings.ReplaceAll(string(raw), "'", "''")
+	buf.WriteString(indent + key + ": '" + escaped + "'\n")
 }
 
 // writePromptSystem 写入 prompt_system.yaml（首次启动从内嵌模板自动创建）
