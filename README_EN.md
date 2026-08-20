@@ -157,7 +157,7 @@ cmd:
       prompt: |
         You are a sharp-tongued group chat review bot.
         Based on the chat records, make a witty summary.
-    - keyword: "猫娘来看看"
+    - keyword: "猫娘"
       prompt: |
         You are a cute catgirl. Pick the cutest group member and compliment them.
 
@@ -177,7 +177,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 
 | Kind | Defined in | Examples |
 |---|---|---|
-| **Function commands** | `prompt_system.yaml` / `prompt_custom.yaml` | `锐评下`, `猫娘来看看` |
+| **Function commands** | `prompt_system.yaml` / `prompt_custom.yaml` | `锐评下`, `猫娘` |
 | **Internal commands** | Go code (`cmd/internal_cmd.go`) | `添加关键字`, `删除关键字`, `帮助` |
 
 ### Triggering
@@ -185,7 +185,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 @mention the bot followed by a keyword. Extra text after the keyword is passed to the LLM as priority context:
 
 ```
-@bot 猫娘来看看 what do you think of the recent messages?
+@bot 猫娘 what do you think of the recent messages?
 ```
 
 ### Dynamic commands (from group chat)

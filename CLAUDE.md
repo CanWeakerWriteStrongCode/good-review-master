@@ -119,7 +119,7 @@ All three YAML files are auto-created from embedded templates on first run if mi
 | Kind | Defined in | Examples |
 | --- | --- | --- |
 | Internal | `cmd/internal_cmd.go` via `Router.register()` | `添加关键字`, `删除关键字`, `帮助` |
-| User | `prompt_system.yaml` / `prompt_custom.yaml` YAML lists | `锐评下`, `猫娘来看看` |
+| User | `prompt_system.yaml` / `prompt_custom.yaml` YAML lists | `锐评下`, `猫娘` |
 
 ### Router struct (`cmd/command.go`)
 
