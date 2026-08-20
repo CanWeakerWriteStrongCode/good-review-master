@@ -144,7 +144,7 @@ Gin + JWT + embedded Vue SPA for group message monitoring.
 | GET | `/api/groups/:id` | JWT | Cached messages for one group |
 | POST | `/api/logout` | JWT | No-op (stateless token) |
 
-If password is empty, the login page is skipped entirely. Set `web_port` to 0 or negative to disable the web panel.
+`web_username` / `web_password` are required whenever the web panel is enabled — there is no password-less mode (the bot exits at startup if they're missing). Set `web_port` to 0 or negative to disable the web panel entirely.
 
 ### prompt_system.yaml
 
@@ -345,12 +345,57 @@ Logs are written to the `log/` directory under the working directory. Uses `zap`
 
 ## Testing
 
-Built-in **API-level self-testing** via Playwright (no browser — drives the real test binary's HTTP API with the `request` fixture):
+Three-layer testing:
+
+1. **Unit tests**: `cmd/chat_window_test.go` — table-driven coverage of every branch of the cache-window decision (extend vs reset); the decision function is a pure function with explicit inputs and no global state.
+2. **Test-mode infrastructure**: with `GOOD_REVIEW_TEST=1`, `FakeLLM` (fixed reply + records every call) replaces the real LLM, NapCat points at a dead address, and `/api/debug/*` self-test endpoints (inject/reset/state/trigger) are registered — reachable only in test mode; in production the SPA fallback serves page HTML for those paths.
+3. **E2E**: Playwright **API-level tests** (`request` fixture, no browser) driving the real test binary's HTTP API:
 
 ```bash
 cd tests/e2e && pnpm test
 ```
 
-- Test mode `GOOD_REVIEW_TEST=1`: replaces the real LLM with `FakeLLM`, points NapCat at a dead address, and registers `/api/debug/*` self-test endpoints (inject/reset/state/trigger).
 - Covers: auth, group data, message data, the full bot flow (inject → trigger review → assert reply), and cache-hit cost (extend vs reset window).
+- In-process cache/anchors are global, so tests run serially (`workers: 1`) and are isolated via `/api/debug/reset`; `trigger` blocks until the handler finishes (anchor updated) before returning, so async side effects never leak across tests.
 - See [docs/testing.md](docs/testing.md) for details.
+
+## Core Mechanisms
+
+The project is designed around three goals: **concurrency safety, graceful shutdown, and testability**.
+
+### Async & Concurrency Control
+
+- **Goroutine pool** (`pool/`): fixed workers (default `runtime.NumCPU()*2`) with a bounded task queue; `Submit` is non-blocking and returns `false` when the queue is full (backpressure handled by the caller); `Shutdown` drains the queue gracefully. Pure stdlib, no internal deps.
+- **Safe goroutine manager** (`async/`): `async.Group` wraps the pool and adds **automatic context propagation** (Ctrl+C cancels in-flight LLM calls) and **panic recovery** so a single panicking task can't take down the process; `Wait()` cancels first, then drains.
+- **Single-writer architecture**: the poll loop is the only goroutine that writes to the cache, backed by `RWMutex` — virtually no write contention.
+
+### Graceful Shutdown
+
+`main.go` uses `signal.NotifyContext` to catch SIGINT/SIGTERM; all three layers consume the same `shutdownCtx`:
+
+```
+signal → shutdownCtx → poll loop exits on select ctx.Done()
+                     → webSrv.Shutdown(ctx) (10s timeout to drain requests)
+                     → router.Wait() waits for in-flight goroutines (LLM calls cancellable)
+```
+
+### Cache Window Decision: Extend vs Reset (Cost Optimization)
+
+Before every LLM call, the window to send is chosen by token cost (`cmd/chat_window.go`):
+
+- **Extend** (cache hit): the `LLMAnchor{Start, LastSent}` anchor locates the last-sent window; cost = `hit prefix × cache_hit_cost + new messages × cache_miss_cost`;
+- **Reset**: the most recent `llm_send_count` messages; cost = `everything × cache_miss_cost`.
+
+Extend only when all three hold (anchor available + extend cheaper + within the `max_context_tokens` guardrail); otherwise reset. If the reset window exceeds the guardrail, messages are trimmed one by one from the oldest. Tokens are estimated heuristically (`cache/token.go`: CJK chars count 1 token each, ASCII 1 token per 4 chars) without building or allocating the string.
+
+### Data Structures
+
+- **Ring-buffer cache** (`cache/`): fixed-size array + write pointer, overwrites the oldest when full — **zero-copy writes**; `msgIDSet` gives O(1) dedup; `GetAll()` splices two segments to preserve time order.
+- **Prefix-trie routing** (`cmd/command.go`): `trieMatch` walks chars and returns the **longest matching prefix** ("锐评下" wins over "锐评"), O(k) regardless of route count; user commands are rebuilt dynamically from YAML, internal commands persist.
+
+### Engineering Robustness
+
+- **Explicit dependency injection, zero `init()` side effects**: all components are constructed top-down in `main()`.
+- **Defenses**: group whitelist, per-message rune truncation, dual @detection (QQ number + nickname), auto-generate missing config from embedded templates then exit.
+- **Observability**: zap + lumberjack dual output (console + 20MB-rotating file, 30-day retention, gzip).
+- **Web panel**: SPA embedded via `//go:embed`, JWT (HS256) auth, no password-less mode.

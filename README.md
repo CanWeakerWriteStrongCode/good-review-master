@@ -25,6 +25,7 @@
 - [扩展新指令](#-扩展新指令)
 - [部署说明](#-部署说明)
 - [测试](#-测试)
+- [核心机制](#-核心机制)
 
 ## ✨ 特性
 
@@ -328,14 +329,59 @@ r.handlerMap = map[string]HandlerFunc{
 
 ## 🧪 测试
 
-内置 Playwright **API 层自测**（不启动浏览器，直打真实测试二进制的 HTTP 接口）：
+三层测试体系：
+
+1. **单元测试**：`cmd/chat_window_test.go` 表格驱动穷举缓存窗口决策（扩展 vs 重置）各分支；决策函数为纯函数、显式传参、无全局依赖。
+2. **测试模式基建**：`GOOD_REVIEW_TEST=1` 启动时用 FakeLLM（固定回复并记录每次调用）替代真实大模型、NapCat 指向死地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）——仅测试模式可达，生产模式会被 SPA fallback 回成页面 HTML。
+3. **E2E**：Playwright **API 层自测**（`request` fixture，不启动浏览器），直打真实测试二进制的 HTTP 接口：
 
 ```bash
 cd tests/e2e && pnpm test
 ```
 
-- 测试模式 `GOOD_REVIEW_TEST=1`：用 FakeLLM 替代真实大模型、NapCat 指向死地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）。
 - 覆盖：登录鉴权、群数据、消息数据、bot 全流程（注入→触发锐评→断言回复）、缓存命中成本（扩展 vs 重置窗口）。
+- 进程内缓存/锚点是全局的，用例串行（`workers: 1`），靠 `/api/debug/reset` 隔离；`trigger` 同步等待 handler 收尾（锚点更新）再返回，异步副作用不跨用例泄漏。
 - 详情见 [docs/testing.md](docs/testing.md)。
+
+## 🛠 核心机制
+
+本项目围绕「并发安全 + 优雅退出 + 可测试性」设计了以下机制：
+
+### 异步与并发控制
+
+- **协程池**（`pool/`）：固定 worker（默认 `runtime.NumCPU()*2`）+ 有界任务队列；`Submit` 非阻塞，队列满返回 `false` 由上层处理背压；`Shutdown` 优雅排空。纯标准库，无内部依赖。
+- **安全 goroutine 管理器**（`async/`）：`async.Group` 封装协程池，**context 自动继承**（Ctrl+C 可取消进行中的 LLM 调用）、**panic recover** 防止单任务 panic 拖垮进程；`Wait()` 先取消再排空。
+- **单写者架构**：轮询是唯一写缓存的 goroutine，配合 `RWMutex`，写侧几乎无竞争。
+
+### 优雅停机
+
+`main.go` 用 `signal.NotifyContext` 捕获 SIGINT/SIGTERM，三层消费同一个 `shutdownCtx`：
+
+```
+信号 → shutdownCtx → 轮询循环 select ctx.Done() 正常退出
+                    → webSrv.Shutdown(ctx)（10s 超时排空请求）
+                    → router.Wait() 等所有 in-flight goroutine（LLM 调用可被取消）
+```
+
+### 缓存窗口决策：扩展 vs 重置（成本优化）
+
+每次发大模型前按 token 成本二选一（`cmd/chat_window.go`）：
+
+- **扩展窗口**（缓存命中）：锚点 `LLMAnchor{Start, LastSent}` 定位上次发送窗口，成本 = `命中前缀 × cache_hit_cost + 新增 × cache_miss_cost`；
+- **重置窗口**：最近 `llm_send_count` 条，成本 = `全部 × cache_miss_cost`。
+
+三者全满足才扩展（锚点可用 + 扩展更便宜 + 未超 `max_context_tokens` 护栏），否则重置；重置窗口超护栏时从旧到新逐条截断。token 用启发式估算（`cache/token.go`：CJK 每字 1 token，ASCII 每 4 字符 1 token），不建字符串、不分配。
+
+### 数据结构机制
+
+- **环形缓冲缓存**（`cache/`）：定长数组 + 写指针，满了循环覆盖，**零拷贝写入**；`msgIDSet` O(1) 去重；`GetAll()` 两段拼接保持时间序。
+- **前缀树指令路由**（`cmd/command.go`）：`trieMatch` 逐字符返回**最长匹配前缀**（「锐评下」优先于「锐评」），O(k) 与路由总数无关；用户指令从 YAML 动态 rebuild，内部指令持久保留。
+
+### 工程健壮性
+
+- **显式依赖注入，零 `init()` 副作用**：所有组件在 `main()` 自上而下构造。
+- **防御性**：白名单群、消息按 rune 截断、@检测 QQ号+昵称双校验、配置缺失自动从模板生成并退出。
+- **可观测性**：zap + lumberjack 双输出（控制台 + 文件 20MB 轮转、30 天保留、gzip）。
+- **Web 面板**：`//go:embed` 内嵌 SPA、JWT(HS256) 鉴权、无免密模式。
 
 ---
