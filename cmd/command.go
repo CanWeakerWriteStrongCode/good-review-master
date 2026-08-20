@@ -12,8 +12,8 @@ import (
 )
 
 // HandlerFunc 指令处理函数类型
-// (event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)
-type HandlerFunc func(onebot.Event, string, string, string, string, string)
+// (event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)
+type HandlerFunc func(onebot.Event, string, string, string, string, string, string)
 
 // Command 指令定义
 type Command struct {
@@ -162,12 +162,13 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	extra := strings.TrimSpace(text[len(route.Keyword):])
 	systemPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s",
 		r.appCfg.BotQQ, r.appCfg.BotNickname, route.SharedRules)
-	// persona 是 systemPrompt 的静态前缀一部分：先组装（含 persona）再交给 handler，
-	// selectChatWindow 的 EstimateTokens(systemPrompt) 会自动计入 persona，成本模型零改动。
+	// 人格不放 systemPrompt 前面（会破坏聊天记录扩展缓存命中）：
+	// 放到 user 消息最后，保证 [system + 聊天记录前缀] 跨指令稳定 → 换人格不失效扩展命中。
+	persona := ""
 	if route.Persona != nil {
-		systemPrompt += "\n\n" + RenderPersona(*route.Persona)
+		persona = RenderPersona(*route.Persona)
 	}
-	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
+	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra, persona)
 }
 
 // Go 安全启动 goroutine（代理 async.Group）

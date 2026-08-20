@@ -13,6 +13,7 @@ import (
 )
 
 var sugar *zap.SugaredLogger
+var lumberjackLogger *lumberjack.Logger
 
 // SetupLogger 初始化 zap 日志：控制台 + 文件（lumberjack 按大小切割，保留 30 天，压缩旧文件）
 func SetupLogger() {
@@ -21,13 +22,14 @@ func SetupLogger() {
 	os.MkdirAll(logDir, 0755)
 
 	// 文件输出：lumberjack 自动切割
-	fileWriter := zapcore.AddSync(&lumberjack.Logger{
+	lumberjackLogger = &lumberjack.Logger{
 		Filename:   filepath.Join(logDir, "bot.log"),
 		MaxSize:    20,   // MB
 		MaxBackups: 30,   // 最多保留 30 个旧文件
 		MaxAge:     30,   // 最多保留 30 天
 		Compress:   true, // 旧文件 gzip 压缩
-	})
+	}
+	fileWriter := zapcore.AddSync(lumberjackLogger)
 
 	// 控制台输出
 	consoleWriter := zapcore.AddSync(os.Stdout)
@@ -64,6 +66,16 @@ func SetupLogger() {
 	// AddCallerSkip(1) 跳过 logutil 包装函数帧，让 caller 指向真实调用位置
 	sugar = base.WithOptions(zap.AddCallerSkip(1)).Sugar()
 	zap.ReplaceGlobals(base)
+}
+
+// Close 刷新并关闭日志文件（释放句柄；测试收尾或优雅停机时调用）
+func Close() {
+	if sugar != nil {
+		_ = sugar.Sync()
+	}
+	if lumberjackLogger != nil {
+		_ = lumberjackLogger.Close()
+	}
 }
 
 // Info 输出 Info 级别日志

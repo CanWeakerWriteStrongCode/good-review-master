@@ -23,20 +23,25 @@ test('persona：触发指令时 system_prompt 携带人格维度与授权指令'
 
   const calls = await waitForLLMCalls(request, 1)
   const systemPrompt = calls[0].system_prompt
+  const chatLog = calls[0].chat_log
   expect(systemPrompt).toBeTruthy()
+  expect(chatLog).toBeTruthy()
 
-  // persona 全字段必须进 system prompt
-  expect(systemPrompt).toContain('【人格】')
-  expect(systemPrompt).toContain('身份：混迹网络社区多年的毒舌点评人')
-  expect(systemPrompt).toContain('性格特质：')
-  expect(systemPrompt).toContain('说话风格：')
-  expect(systemPrompt).toContain('与群友的关系：')
-  expect(systemPrompt).toContain('开场白：')
-  expect(systemPrompt).toContain('人格级系统指令：')
-  expect(systemPrompt).toContain('情绪维度：')
-  expect(systemPrompt).toContain('情绪反应性')
-  expect(systemPrompt).toContain('示例对话：')
+  // 人格放在 user 消息末尾（systemPrompt 保持稳定，跨指令前缀一致 → 缓存命中）
+  expect(systemPrompt).not.toContain('【人格】')
+
+  // persona 全字段必须进 user 消息
+  expect(chatLog).toContain('【人格】')
+  expect(chatLog).toContain('身份：混迹网络社区多年的毒舌点评人')
+  expect(chatLog).toContain('性格特质：')
+  expect(chatLog).toContain('说话风格：')
+  expect(chatLog).toContain('与群友的关系：')
+  expect(chatLog).toContain('开场白：')
+  expect(chatLog).toContain('人格级系统指令：')
+  expect(chatLog).toContain('情绪维度：')
+  expect(chatLog).toContain('情绪反应性')
+  expect(chatLog).toContain('示例对话：')
 
   // 授权指令（明确要求 LLM 推演各维度变化后再回答）
-  expect(systemPrompt).toContain('推演每个维度应有的变化')
+  expect(chatLog).toContain('推演每个维度应有的变化')
 })
