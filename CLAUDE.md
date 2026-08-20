@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 go vet ./...          # check all packages
 go build ./...        # verify all packages compile
+go test ./...         # run Go unit tests (cmd/chat_window_test.go — cache cost window selection)
 go build -o good-review-master.exe .  # build binary
 ```
 

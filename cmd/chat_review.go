@@ -46,59 +46,24 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 }
 
 // selectChatWindow 按 token 成本决定扩展还是重置，返回本次要发送的窗口消息。
-// 扩展条件：锚点可用（上次发送的首尾消息仍能找到），且扩展成本 < 重置成本，
-// 且命中前缀+新增不超过上下文护栏 max_context_tokens（超限强制重置）。
+// 决策逻辑在 decideChatWindow（cmd/chat_window.go，纯函数，可单测穷举）；这里只做
+// 配置/锚点读取 + 日志输出。扩展条件：锚点可用、扩展成本 < 重置成本、未超上下文护栏。
 func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPrompt string) []cache.Message {
-	cacheHitCost := r.appCfg.LLMConfig.CacheHitCost
-	cacheMissCost := r.appCfg.LLMConfig.CacheMissCost
-	maxContextTokens := r.appCfg.LLMConfig.MaxContextTokens
-	llmSendCount := r.appCfg.LLMSendCount
 	// systemTokens = 固定前缀 P（systemPrompt + 常量前缀）的 token 数：扩展/重置都会发送
 	systemTokens := cache.EstimateTokens(systemPrompt) + cache.EstimateTokens(userLogPrefix)
+	decision := decideChatWindow(msgs, cache.GetLLMAnchor(groupID),
+		r.appCfg.LLMConfig.CacheHitCost, r.appCfg.LLMConfig.CacheMissCost,
+		r.appCfg.LLMConfig.MaxContextTokens, r.appCfg.LLMSendCount, systemTokens)
 
-	var chatLogMsgs []cache.Message
-	resetReason := "锚点丢失"
-	anchor := cache.GetLLMAnchor(groupID)
-	if anchor != nil {
-		anchorIndex := cache.FindMsgIndex(msgs, anchor.Start)
-		// 防御：LastSent 找不到时按仅锚点自身计（命中前缀取最小）
-		lastSentIndex := max(cache.FindMsgIndex(msgs, anchor.LastSent), anchorIndex)
-		if anchorIndex >= 0 {
-			// 命中前缀 = 上次发送过的完整窗口；新增 = 上次之后到现在的消息
-			previousWindowTokens := cache.ChatLogTokens(msgs[anchorIndex : lastSentIndex+1])
-			newTokens := cache.ChatLogTokens(msgs[lastSentIndex+1:])
-			hitTokens := systemTokens + previousWindowTokens
-
-			// 重置窗口 token（用于和扩展成本对比）
-			resetWindowStart := max(len(msgs)-llmSendCount, 0)
-			resetTokens := systemTokens + cache.ChatLogTokens(msgs[resetWindowStart:])
-
-			extendCost := float64(hitTokens)*cacheHitCost + float64(newTokens)*cacheMissCost
-			resetCost := float64(resetTokens) * cacheMissCost
-			if extendCost < resetCost && (maxContextTokens <= 0 || hitTokens+newTokens <= maxContextTokens) {
-				chatLogMsgs = msgs[anchorIndex:]
-				logutil.Debug("缓存扩展", "group", groupID, "窗口", len(chatLogMsgs),
-					"命中token", hitTokens, "新增token", newTokens, "重置token", resetTokens,
-					"扩展成本", extendCost, "重置成本", resetCost)
-			} else {
-				resetReason = "成本不优"
-			}
-		}
+	if decision.Mode == "extend" {
+		logutil.Debug("缓存扩展", "group", groupID, "窗口", len(decision.Window),
+			"命中token", decision.HitTokens, "新增token", decision.NewTokens, "重置token", decision.ResetTokens,
+			"扩展成本", decision.ExtendCost, "重置成本", decision.ResetCost)
+	} else {
+		logutil.Debug("缓存重置("+decision.ResetReason+")", "group", groupID, "窗口", len(decision.Window),
+			"重置token", decision.ResetTokens)
 	}
-	if len(chatLogMsgs) == 0 {
-		// 重置：发最近 llm_send_count 条，锚点丢失时也是走这里
-		resetStart := max(len(msgs)-llmSendCount, 0)
-		chatLogMsgs = msgs[resetStart:]
-		// 防御：重置窗口也截断到上下文护栏内
-		totalTokens := systemTokens + cache.ChatLogTokens(chatLogMsgs)
-		for maxContextTokens > 0 && totalTokens > maxContextTokens && len(chatLogMsgs) > 1 {
-			totalTokens -= cache.ChatLogTokens(chatLogMsgs[:1])
-			chatLogMsgs = chatLogMsgs[1:]
-		}
-		logutil.Debug("缓存重置("+resetReason+")", "group", groupID, "窗口", len(chatLogMsgs),
-			"重置token", systemTokens+cache.ChatLogTokens(chatLogMsgs))
-	}
-	return chatLogMsgs
+	return decision.Window
 }
 
 // buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt
