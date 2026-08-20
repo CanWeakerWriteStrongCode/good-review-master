@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { debugReset } from './helpers'
+import { debugReset, waitForLLMCalls } from './helpers'
 
 test('bot-flow：注入消息后触发锐评，FakeLLM 被调用并返回固定回复', async ({ request }) => {
   await debugReset(request)
@@ -13,17 +13,8 @@ test('bot-flow：注入消息后触发锐评，FakeLLM 被调用并返回固定�
   expect(triggerRes.status()).toBe(200)
 
   // 轮询 debug state 直到 FakeLLM 被调用（handler 异步执行）
-  let calls: any[] = []
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
-    const stateRes = await request.get('/api/debug/state')
-    const state = await stateRes.json()
-    calls = state.data.llm_calls || []
-    if (calls.length > 0) break
-    await new Promise((r) => setTimeout(r, 200))
-  }
+  const calls = await waitForLLMCalls(request, 1)
 
-  expect(calls.length).toBeGreaterThan(0)
   expect(calls[0].reply).toBe('【测试回复】锐评完毕')
   // chat_log = 发给 LLM 的完整 userMsg，应包含注入的群聊内容与固定前缀
   expect(calls[0].chat_log).toContain('今天好开心')

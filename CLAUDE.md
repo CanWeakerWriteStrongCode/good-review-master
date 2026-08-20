@@ -19,6 +19,7 @@ cd tests/e2e && pnpm test
 ```
 
 - 测试模式：`GOOD_REVIEW_TEST=1` 启动真实二进制 → 用 `FakeLLM` 替代真实大模型、NapCat 指向死地址（`internal/testutil/`），并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger，仅测试模式可达；生产模式下这些路径只会被 SPA fallback 回成页面 HTML）。
+- 用例覆盖：登录鉴权、群/消息数据、bot 全流程、缓存命中成本（扩展 vs 重置窗口）。
 - 详情见 `docs/testing.md`。
 
 ## Build scripts

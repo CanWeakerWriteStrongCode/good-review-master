@@ -352,5 +352,5 @@ cd tests/e2e && pnpm test
 ```
 
 - Test mode `GOOD_REVIEW_TEST=1`: replaces the real LLM with `FakeLLM`, points NapCat at a dead address, and registers `/api/debug/*` self-test endpoints (inject/reset/state/trigger).
-- Covers: auth, group data, message data, and the full bot flow (inject → trigger review → assert reply).
+- Covers: auth, group data, message data, the full bot flow (inject → trigger review → assert reply), and cache-hit cost (extend vs reset window).
 - See [docs/testing.md](docs/testing.md) for details.

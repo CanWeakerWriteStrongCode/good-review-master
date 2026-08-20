@@ -142,7 +142,9 @@ func (s *Server) handleDebugState(fakeLLM *testutil.FakeLLM) gin.HandlerFunc {
 	}
 }
 
-// handleDebugTrigger 模拟 @机器人 消息，走完整指令路由（handler 异步执行，立即返回）
+// handleDebugTrigger 模拟 @机器人 消息，走完整指令路由。
+// handler 经 async 池异步执行，这里阻塞等待其收尾（锚点更新）再返回：
+// 否则异步副作用（SetLLMAnchor）可能在用例结束或下一次 reset 之后才落地，污染跨用例的锚点状态。
 func (s *Server) handleDebugTrigger(router MessageRouter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logutil.Warn("调试接口被调用", "action", "trigger")
@@ -163,7 +165,20 @@ func (s *Server) handleDebugTrigger(router MessageRouter) gin.HandlerFunc {
 			RawMessage:  body.Content,
 			MessageID:   time.Now().UnixNano(),
 		}
+		anchorBefore := cache.GetLLMAnchor(body.GroupID)
 		router.RouteMessage(body.Content, event, body.GroupID)
+		// 等 handler 完全收尾：锚点已存在（首次触发）或 LastSent 已前进（重复触发）。
+		// 超时（如空缓存不设锚点）则直接返回，由测试侧轮询兜底。
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			anchor := cache.GetLLMAnchor(body.GroupID)
+			if anchor != nil {
+				if anchorBefore == nil || anchor.LastSent != anchorBefore.LastSent {
+					break
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 		c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"queued": true}})
 	}
 }

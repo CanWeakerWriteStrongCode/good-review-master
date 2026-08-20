@@ -335,7 +335,7 @@ cd tests/e2e && pnpm test
 ```
 
 - 测试模式 `GOOD_REVIEW_TEST=1`：用 FakeLLM 替代真实大模型、NapCat 指向死地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）。
-- 覆盖：登录鉴权、群数据、消息数据、bot 全流程（注入→触发锐评→断言回复）。
+- 覆盖：登录鉴权、群数据、消息数据、bot 全流程（注入→触发锐评→断言回复）、缓存命中成本（扩展 vs 重置窗口）。
 - 详情见 [docs/testing.md](docs/testing.md)。
 
 ---

@@ -12,8 +12,8 @@ const workdir = path.join(__dirname, '.workdir')
 const exePath = path.join(workdir, exeName)
 
 export default defineConfig({
-  // globalSetup：构建测试二进制 + 写测试 config.yaml（见 global-setup.ts）
-  globalSetup: './global-setup.ts',
+  // 准备（构建二进制 + 写 config.yaml）由 scripts/prep.mjs 在 playwright 启动前完成——
+  // 见 package.json 的 test 脚本。webServer 先于 globalSetup 启动，准备不能放 globalSetup。
   testDir: './specs',
   timeout: 30_000,
   workers: 1,
@@ -28,10 +28,11 @@ export default defineConfig({
   webServer: {
     // 直接用绝对路径前台运行二进制；cwd=.workdir 让 Go 进程按 cwd 解析 config.yaml。
     // Playwright 直接管理 Go 进程，teardown 连坐杀死，不留孤儿。
+    // reuseExistingServer 固定 false：残留进程可能加载旧配置，必须每次全新启动。
     command: exePath,
     cwd: workdir,
     url: 'http://localhost:9090/',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 60_000,
     env: {
       GOOD_REVIEW_TEST: '1',

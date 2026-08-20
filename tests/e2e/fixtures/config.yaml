@@ -7,7 +7,7 @@ bot:
   qq: "123456"
   allow_groups: "10001,10002"
 runtime:
-  llm_send_count: 200
+  llm_send_count: 3   # 小重置窗口：便于缓存成本用例用少量消息触发重置/扩展
   llm_timeout_sec: 20
   max_msg_rune: 500
   max_cache_msg: 6200
