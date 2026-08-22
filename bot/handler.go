@@ -55,7 +55,7 @@ func (b *Bot) ProcessMessage(event onebot.Event) {
 
 // isAtBot 检查是否@机器人（QQ号 + 昵称双重校验）
 func (b *Bot) isAtBot(rawMsg string) bool {
-	if strings.Contains(rawMsg, b.cfg.BotQQ) {
+	if strings.Contains(rawMsg, "[CQ:at,qq="+b.cfg.BotQQ) {
 		return true
 	}
 	if b.cfg.BotNickname != "" && strings.Contains(rawMsg, "@"+b.cfg.BotNickname) {
