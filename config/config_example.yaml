@@ -15,17 +15,17 @@ bot:
 # ===== 运行时参数 =====
 runtime:
   # 每次尽量发送给 LLM 的消息条数，如果能用利用缓存命中则会多发，但不会超出重新发送设置数量的成本
-  llm_send_count: 200
+  llm_send_count: 50
   # 调用大模型超时（秒）
-  llm_timeout_sec: 20
+  llm_timeout_sec: 120
   # 单条消息最大字符数（超出截断）
   max_msg_rune: 500
   # 环形缓冲条数上限（手动配，建议 ≈31×llm_send_count；几百 KB/群不会爆内存）
-  max_cache_msg: 6200
+  max_cache_msg: 3100
   # HTTP 轮询间隔（秒）
   poll_interval_sec: 3
   # Web 管理面板端口（<=0 禁用）
-  web_port: 8080
+  web_port: 7090
   # Web 管理面板登录账号、密码（必填，无免密模式）
   web_username: "admin"
   web_password: "123456"
