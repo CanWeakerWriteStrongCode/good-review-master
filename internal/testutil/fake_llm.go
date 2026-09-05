@@ -75,7 +75,7 @@ func (f *FakeLLM) SetChatScript(responses ...*llm.ChatResponse) {
 }
 
 // Chat 实现 llm.Client：记录消息与工具清单，优先返回脚本预设值
-func (f *FakeLLM) Chat(_ context.Context, messages []llm.Message, tools []llm.Tool) (*llm.ChatResponse, error) {
+func (f *FakeLLM) ChatWithTool(_ context.Context, messages []llm.Message, tools []llm.Tool) (*llm.ChatResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

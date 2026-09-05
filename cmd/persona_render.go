@@ -34,7 +34,7 @@ const personaDirective = `这是你的人格（emotion 字段即你的情绪维�
 // RenderPersona 把人格渲染成 user 消息片段（纯函数，供 RouteMessage 追加到消息末尾）。
 // 渲染顺序：身份 → 性格 → 与群友的关系 → 人格级系统指令 → 情绪维度 → 授权指令。
 // 只保留 essence 字段；说话方式不预设，由 LLM 依据性格+情绪维度自然生成。
-func RenderPersona(p config.Persona) string {
+func RenderPersona(p config.Persona, sharedRules string) string {
 	var b strings.Builder
 	b.WriteString("【人格】\n")
 	b.WriteString("身份：" + p.Identity + "\n")
@@ -43,6 +43,7 @@ func RenderPersona(p config.Persona) string {
 	b.WriteString("人格级系统指令：" + p.SystemPrompt + "\n")
 	writeJSONLine(&b, "情绪维度", p.Emotion)
 	b.WriteString("\n" + personaDirective + "\n")
+	b.WriteString("\n" + sharedRules + "\n")
 	return b.String()
 }
 

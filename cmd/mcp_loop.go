@@ -49,7 +49,7 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 			logutil.Warn("MCP 工具调用轮数达上限，撤回工具强制作答", "工具数", len(tools), "上限", maxRounds)
 		}
 
-		resp, err := r.llmClient.Chat(ctx, messages, roundTools)
+		resp, err := r.llmClient.ChatWithTool(ctx, messages, roundTools)
 		if err != nil {
 			return "", err
 		}

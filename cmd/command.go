@@ -157,20 +157,20 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 		return
 	}
 
+	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
+		"你的QQ号是 %s，昵称是 %s。根据@你的群友刚才发的这条消息，继续聊天。", r.appCfg.LLMConfig.ModelName, r.appCfg.BotQQ, r.appCfg.BotNickname)
 	route := trieMatch(r.routeTrie, text)
 	if route == nil {
-		r.replyDefault(text, event, groupID)
+		r.replyDefault(text, event, groupID, systemPrompt)
 		return
 	}
 
 	extra := strings.TrimSpace(text[len(route.Keyword):])
-	systemPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。\n%s",
-		r.appCfg.BotQQ, r.appCfg.BotNickname, route.SharedRules)
 	// 人格不放 systemPrompt 前面（会破坏聊天记录扩展缓存命中）：
 	// 放到 user 消息最后，保证 [system + 聊天记录前缀] 跨指令稳定 → 换人格不失效扩展命中。
 	persona := ""
 	if route.Persona != nil {
-		persona = RenderPersona(*route.Persona)
+		persona = RenderPersona(*route.Persona, route.SharedRules)
 	}
 	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra, persona)
 }
@@ -185,19 +185,11 @@ func (r *Router) Wait() error {
 	return r.starter.Wait()
 }
 
-// defaultChatPrompt 未匹配指令时的提示词：不加人格，直接回应群友消息。
-// 模型名来自运行时配置（config.yaml 加载后才有），故由调用方注入 modelName，
-// 不能写成包级 const / 直接引用全局配置。
-func (r *Router) defaultChatPrompt() string {
-	return fmt.Sprintf("你知道自己是一个AI，模型是%s，请直接回应@你的群友刚才发的这条消息，继续接着群聊。", r.appCfg.LLMConfig.ModelName)
-}
-
 // replyDefault @bot 但未匹配任何指令：直接发给大模型，不加人格。
 // systemPrompt 只含机器人身份（QQ+昵称），不带指令共享规则；
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑，persona 传空串。
-func (r *Router) replyDefault(text string, event onebot.Event, groupID string) {
-	systemPrompt := fmt.Sprintf("你的QQ号是 %s，昵称是 %s。", r.appCfg.BotQQ, r.appCfg.BotNickname)
-	r.chatReview(event, groupID, systemPrompt, r.defaultChatPrompt(), event.Nickname, text, "")
+func (r *Router) replyDefault(text string, event onebot.Event, groupID string, systemPrompt string) {
+	r.chatReview(event, groupID, systemPrompt, "", event.Nickname, text, "")
 }
 
 // stripCQPrefix 去除消息开头的 CQ 码和 @昵称

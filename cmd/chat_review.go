@@ -7,9 +7,6 @@ import (
 	"good-review-master/onebot"
 )
 
-// userLogPrefix 发送给 LLM 的聊天记录前缀（成本模型中的常量前缀 P 的一部分）
-const userLogPrefix = "以下是群聊记录：\n"
-
 // chatReview 异步锐评（通过 async 管理生命周期，自动继承 shutdown context）
 func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string, persona string) {
 	logutil.Info("触发锐评", "group", groupID, "user", event.Nickname)
@@ -52,7 +49,7 @@ func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPr
 	// systemTokens = 固定前缀 P（systemPrompt + 常量前缀 + MCP 工具清单）的 token 数：扩展/重置都会发送。
 	// 工具清单必须算进来：它是随请求一起下发的 tools 字段，既占上下文长度又属于缓存前缀，
 	// 漏算会低估总 token，把窗口扩到撞穿 max_context_tokens 护栏。
-	systemTokens := cache.EstimateTokens(systemPrompt) + cache.EstimateTokens(userLogPrefix) + r.mcpToolsTokens()
+	systemTokens := cache.EstimateTokens(systemPrompt) + r.mcpToolsTokens()
 	decision := decideChatWindow(msgs, cache.GetLLMAnchor(groupID),
 		r.appCfg.LLMConfig.CacheHitCost, r.appCfg.LLMConfig.CacheMissCost,
 		r.appCfg.LLMConfig.MaxContextTokens, r.appCfg.LLMSendCount, systemTokens)
@@ -94,7 +91,7 @@ func (r *Router) mcpToolsTokens() int {
 // buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt + 人格。
 // 人格放最后：聊天记录保持在前部（扩展缓存命中的前缀），人格切换不破坏聊天记录缓存。
 func buildUserMsg(chatLog string, mentionerNick string, keywordPrompt string, extra string, persona string) string {
-	userMsg := userLogPrefix + chatLog + "\n"
+	userMsg := chatLog + "\n"
 	userMsg += "当前@你的是群友 " + mentionerNick + "。\n"
 	if extra != "" {
 		userMsg += "@你的人补充说这些,优先级较高:" + extra + "。\n"
