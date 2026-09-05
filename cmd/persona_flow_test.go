@@ -97,34 +97,35 @@ rules:
 		t.Fatal("FakeLLM 未被调用（异步 handler 未执行完成）")
 	}
 
-	// 5. 断言：人格移到 user 消息末尾（systemPrompt 保持稳定，跨指令前缀一致 → 不破坏聊天记录缓存命中）
+	// 5. 断言：人格渲染进 systemPrompt（关键字路由 route.Persona → systemPrompt 末尾），
+	// user 消息（chatLog）只含聊天记录 + @者信息 + 关键词 prompt，不携带人格块。
 	systemPrompt := calls[0].SystemPrompt
 	chatLog := calls[0].ChatLog
 	t.Logf("=== 发送给 LLM 的 systemPrompt ===\n%s", systemPrompt)
 	t.Logf("=== 发送给 LLM 的 chatLog ===\n%s", chatLog)
-	if strings.Contains(systemPrompt, "【人格】") {
-		t.Fatalf("persona 不应在 systemPrompt（会破坏跨指令缓存前缀）:\n%s", systemPrompt)
+	if strings.Contains(chatLog, "【人格】") {
+		t.Fatalf("persona 不应在 user 消息（chatLog）中:\n%s", chatLog)
 	}
-	if !strings.Contains(chatLog, "【人格】") {
-		t.Fatalf("chatLog 未包含人格块:\n%s", chatLog)
+	if !strings.Contains(systemPrompt, "【人格】") {
+		t.Fatalf("systemPrompt 未包含人格块:\n%s", systemPrompt)
 	}
-	if !strings.Contains(chatLog, "身份：毒舌点评人") {
-		t.Fatalf("chatLog 未包含身份:\n%s", chatLog)
+	if !strings.Contains(systemPrompt, "身份：毒舌点评人") {
+		t.Fatalf("systemPrompt 未包含身份:\n%s", systemPrompt)
 	}
-	if !strings.Contains(chatLog, "情绪反应性") {
-		t.Fatalf("chatLog 未包含情绪维度:\n%s", chatLog)
+	if !strings.Contains(systemPrompt, "情绪反应性") {
+		t.Fatalf("systemPrompt 未包含情绪维度:\n%s", systemPrompt)
 	}
-	if !strings.Contains(chatLog, "推演每个维度应有的变化") {
-		t.Fatalf("chatLog 未包含授权指令:\n%s", chatLog)
+	if !strings.Contains(systemPrompt, "推演每个维度应有的变化") {
+		t.Fatalf("systemPrompt 未包含授权指令:\n%s", systemPrompt)
 	}
-	if !strings.Contains(chatLog, "不要升级冲突") {
-		t.Fatalf("chatLog 未包含降冲突指令:\n%s", chatLog)
+	if !strings.Contains(systemPrompt, "不要升级冲突") {
+		t.Fatalf("systemPrompt 未包含降冲突指令:\n%s", systemPrompt)
 	}
-	if !strings.Contains(chatLog, "缓解对方情绪") {
-		t.Fatalf("chatLog 未包含情绪缓和指令（过于强烈的喜怒哀乐时应缓解用户情绪）:\n%s", chatLog)
+	if !strings.Contains(systemPrompt, "缓解对方情绪") {
+		t.Fatalf("systemPrompt 未包含情绪缓和指令（过于强烈的喜怒哀乐时应缓解用户情绪）:\n%s", systemPrompt)
 	}
-	// 人格位于 user 消息末尾（聊天记录 + 关键词之后，保证聊天记录保持缓存前缀）
-	if strings.Index(chatLog, "【人格】") <= strings.Index(chatLog, "做犀利总结。") {
-		t.Fatalf("人格应位于关键词提示词之后（消息末尾）:\n%s", chatLog)
+	// 人格块在 systemPrompt 中位于身份头之后
+	if strings.Index(systemPrompt, "【人格】") <= strings.Index(systemPrompt, "你的QQ号是 123456") {
+		t.Fatalf("人格应位于身份头之后的 systemPrompt:\n%s", systemPrompt)
 	}
 }

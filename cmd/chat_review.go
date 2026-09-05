@@ -88,14 +88,11 @@ func (r *Router) mcpToolsTokens() int {
 	return r.mcp.ToolsTokens()
 }
 
-// buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt + 人格。
-// 人格放最后：聊天记录保持在前部（扩展缓存命中的前缀），人格切换不破坏聊天记录缓存。
+// buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt。
+// 人格块不在 user 消息里：由调用方渲染后拼进 systemPrompt（RouteMessage 关键字路由 / replyDefault 群人格）。
 func buildUserMsg(chatLog string, mentionerNick string, keywordPrompt string, extra string) string {
 	userMsg := chatLog + "\n"
-	userMsg += "当前@你的是群友 " + mentionerNick + "。\n"
-	if extra != "" {
-		userMsg += "@你的人补充说这些,优先级较高:" + extra + "。\n"
-	}
+	userMsg += "【重点】优先回复或者执行最后一条信息【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案或推脱"
 	userMsg += keywordPrompt + "\n"
 	return userMsg
 }

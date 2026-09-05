@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"good-review-master/async"
 	"good-review-master/config"
@@ -12,7 +13,8 @@ import (
 )
 
 // HandlerFunc 指令处理函数类型
-// (event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)
+// (event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)
+// systemPrompt 已含渲染好的人格块（若该路由有自带人格）；extra 是关键字后的补充文本。
 type HandlerFunc func(onebot.Event, string, string, string, string, string)
 
 // Command 指令定义
@@ -24,6 +26,15 @@ type Command struct {
 	Category    string // "chat_review" | "internal"
 	Handler     HandlerFunc
 	Persona     *config.Persona // 可选：该指令的人格（渲染进 system prompt）
+}
+
+// groupPersonaBinding 某群"当前人格"的快照：切换时从路由表里把源关键字的人格
+// 与共享规则一起值拷贝进来（config 重载/rebuild 会让旧 *Command/*Persona 指针失效，
+// 存值拷贝才能自包含）。纯 @ 聊天（replyDefault）据此渲染人格块。
+type groupPersonaBinding struct {
+	keyword     string
+	persona     config.Persona
+	sharedRules string
 }
 
 // trieNode 前缀树节点
@@ -72,18 +83,24 @@ type Router struct {
 	appCfg     *config.Config
 	mcp        MCPProvider // MCP 工具提供者，未启用时为 nil
 	starter    *async.Group
+
+	// groupPersona 各群当前人格（#切换人格/#取消人格 维护，纯 @ 聊天时生效）。
+	// 内存态，重启清空，与 cache/锚点一致。同一分发路径读写，加锁防未来并发扩展。
+	groupPersonaMu sync.RWMutex
+	groupPersona   map[string]*groupPersonaBinding // groupID → 本群当前人格
 }
 
 // NewRouter 创建路由器并初始化所有内部指令。
 // mcpProvider 可传 nil（MCP 未启用），此时对话一律走单轮无工具调用。
 func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client, mcpProvider MCPProvider, shutdownCtx context.Context) *Router {
 	r := &Router{
-		llmClient: llmClient,
-		obClient:  obClient,
-		promptCfg: promptCfg,
-		appCfg:    appCfg,
-		mcp:       mcpProvider,
-		starter:   async.New(shutdownCtx),
+		llmClient:    llmClient,
+		obClient:     obClient,
+		promptCfg:    promptCfg,
+		appCfg:       appCfg,
+		mcp:          mcpProvider,
+		starter:      async.New(shutdownCtx),
+		groupPersona: make(map[string]*groupPersonaBinding),
 	}
 	r.handlerMap = map[string]HandlerFunc{
 		"chat_review": r.chatReview,
@@ -166,8 +183,8 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	}
 
 	extra := strings.TrimSpace(text[len(route.Keyword):])
-	// 人格不放 systemPrompt 前面（会破坏聊天记录扩展缓存命中）：
-	// 放到 user 消息最后，保证 [system + 聊天记录前缀] 跨指令稳定 → 换人格不失效扩展命中。
+	// 关键字路由只把"路由自带人格"渲染进 systemPrompt 末尾；
+	// 群人格（#切换人格）只在未命中关键字的纯 @ 聊天里生效，见 replyDefault。
 	persona := ""
 	if route.Persona != nil {
 		persona = RenderPersona(*route.Persona, route.SharedRules)
@@ -186,10 +203,48 @@ func (r *Router) Wait() error {
 	return r.starter.Wait()
 }
 
-// replyDefault @bot 但未匹配任何指令：直接发给大模型，不加人格。
-// systemPrompt 只含机器人身份（QQ+昵称），不带指令共享规则；
-// 复用 chatReview 的缓存窗口/回复/锚点逻辑，persona 传空串。
+// getGroupPersona 返回某群当前人格快照（#切换人格 设置）
+func (r *Router) getGroupPersona(groupID string) (*groupPersonaBinding, bool) {
+	r.groupPersonaMu.RLock()
+	defer r.groupPersonaMu.RUnlock()
+	b, ok := r.groupPersona[groupID]
+	return b, ok
+}
+
+// setGroupPersona 记录某群当前人格
+func (r *Router) setGroupPersona(groupID string, b *groupPersonaBinding) {
+	r.groupPersonaMu.Lock()
+	defer r.groupPersonaMu.Unlock()
+	r.groupPersona[groupID] = b
+}
+
+// clearGroupPersona 清空某群当前人格（#取消人格）
+func (r *Router) clearGroupPersona(groupID string) {
+	r.groupPersonaMu.Lock()
+	defer r.groupPersonaMu.Unlock()
+	delete(r.groupPersona, groupID)
+}
+
+// availablePersonaNames 列出所有"自带人格"的关键字（可作为 #切换人格 的目标人格）。
+// 直接遍历 rebuild 好的路由表：新增/删除关键字经 Reload()+rebuild() 后自动同步。
+func (r *Router) availablePersonaNames() []string {
+	var names []string
+	for _, route := range r.routes {
+		if route.Persona != nil {
+			names = append(names, route.Keyword)
+		}
+	}
+	return names
+}
+
+// replyDefault @bot 但未匹配任何指令：直接发给大模型。
+// systemPrompt 只含机器人身份（QQ+昵称），不带指令共享规则；若本群已 #切换人格，
+// 则在末尾追加渲染好的人格块（仅纯 @ 聊天生效），否则保持无人格普通聊天。
+// 复用 chatReview 的缓存窗口/回复/锚点逻辑。
 func (r *Router) replyDefault(text string, event onebot.Event, groupID string, systemPrompt string) {
+	if b, ok := r.getGroupPersona(groupID); ok {
+		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
+	}
 	r.chatReview(event, groupID, systemPrompt, "", event.Nickname, text)
 }
 

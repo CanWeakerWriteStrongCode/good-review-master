@@ -30,6 +30,12 @@ const (
 	fmtDelRule  = "删除指令规则(类型)"
 	helpDelRule = "格式：" + fmtDelRule + "\n删除 prompt 中特定类型指令的共享规则"
 
+	fmtSwitchPersona  = "#切换人格 (人格名)"
+	helpSwitchPersona = "格式：" + fmtSwitchPersona + "\n切换本群普通@聊天的回复人格（取自带人格的关键字）。\n发 #切换人格 可查看可选人格。\n仅对未命中关键字的@聊天生效，功能指令不受影响。"
+
+	fmtCancelPersona  = "#取消人格"
+	helpCancelPersona = "格式：" + fmtCancelPersona + "\n取消本群人格，恢复普通聊天。"
+
 	helpHelp = "查看可用指令"
 )
 
@@ -39,7 +45,8 @@ func (r *Router) registerInternalCommands() {
 	r.register(Command{Keyword: "#删除关键字", Help: helpDelCmd, Category: "internal", Handler: r.handleDeleteCommand})
 	r.register(Command{Keyword: "#添加指令规则", Help: helpAddRule, Category: "internal", Handler: r.handleAddRule})
 	r.register(Command{Keyword: "#删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
-	r.register(Command{Keyword: "#切换人格", Help: helpDelRule, Category: "internal", Handler: r.handleSwitchPersona})
+	r.register(Command{Keyword: "#切换人格", Help: helpSwitchPersona, Category: "internal", Handler: r.handleSwitchPersona})
+	r.register(Command{Keyword: "#取消人格", Help: helpCancelPersona, Category: "internal", Handler: r.handleCancelPersona})
 	r.register(Command{Keyword: "#帮助", Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
 }
 
@@ -190,6 +197,60 @@ func (r *Router) handleListCommands(event onebot.Event, groupID string, systemPr
 	r.obClient.SendGroupMessage(groupID, buf.String())
 }
 
+// handleSwitchPersona #切换人格 <人格名>：在路由表里找"自带人格"的关键字，
+// 找到就把该人格值拷贝记为本群当前人格（#取消人格 清除，重启清空）。
+// 仅对未命中关键字的纯 @ 聊天生效，命中关键字的指令仍用自带人格。
 func (r *Router) handleSwitchPersona(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+	name := strings.TrimSpace(extra)
 
+	// 不带参数：给出用法并列出可选人格
+	if name == "" {
+		var buf strings.Builder
+		buf.WriteString("用法：" + fmtSwitchPersona + "\n")
+		if names := r.availablePersonaNames(); len(names) > 0 {
+			buf.WriteString("可选人格：\n")
+			for _, n := range names {
+				buf.WriteString("  " + n + "\n")
+			}
+		} else {
+			buf.WriteString("当前无可切换人格，可用 #添加关键字 创建自带人格的指令")
+		}
+		r.obClient.SendGroupMessage(groupID, strings.TrimSpace(buf.String()))
+		return
+	}
+
+	for _, route := range r.routes {
+		if route.Keyword != name {
+			continue
+		}
+		if route.Persona == nil {
+			r.obClient.SendGroupMessage(groupID, "❌ 关键字「"+name+"」没有可绑定的人格")
+			return
+		}
+		r.setGroupPersona(groupID, &groupPersonaBinding{
+			keyword:     name,
+			persona:     *route.Persona,
+			sharedRules: route.SharedRules,
+		})
+		r.obClient.SendGroupMessage(groupID, "✅ 已切换人格："+name+"\n仅对普通@聊天生效，功能指令不受影响。")
+		return
+	}
+
+	msg := "❌ 未找到人格：" + name
+	if names := r.availablePersonaNames(); len(names) > 0 {
+		msg += "\n可选人格：" + strings.Join(names, "、")
+	} else {
+		msg += "\n当前无可切换人格。"
+	}
+	r.obClient.SendGroupMessage(groupID, msg)
+}
+
+// handleCancelPersona #取消人格：清空本群当前人格，纯 @ 聊天恢复无人格。
+func (r *Router) handleCancelPersona(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+	if _, ok := r.getGroupPersona(groupID); !ok {
+		r.obClient.SendGroupMessage(groupID, "ℹ️ 本群未设置人格")
+		return
+	}
+	r.clearGroupPersona(groupID)
+	r.obClient.SendGroupMessage(groupID, "✅ 已取消人格，恢复正常聊天")
 }
