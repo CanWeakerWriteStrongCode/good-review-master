@@ -52,6 +52,9 @@ var emptyParamsSchema = json.RawMessage(`{"type":"object","properties":{}}`)
 type ChatResponse struct {
 	Content   string
 	ToolCalls []ToolCall
+	// FinishReason 模型这轮的结束原因：stop=正常作答 | tool_calls=要调工具 | length=超长被截断。
+	// 诊断「模型为什么死活不调工具」时很关键：若工具已下发却一直是 stop，多半是中转没透传 tools。
+	FinishReason string
 }
 
 // Client 大模型统一接口
@@ -103,20 +106,34 @@ func (adapter *OpenAIAdapter) Chat(ctx context.Context, messages []Message, tool
 		Messages:    toOpenAIMessages(messages),
 		Temperature: adapter.temp,
 		TopP:        adapter.topP,
+		Tools:       toOpenAITools(tools),
+		ToolChoice:  "auto",
 	}
-	if len(tools) > 0 {
-		req.Tools = toOpenAITools(tools)
-		logutil.Debug("下发工具清单", "数量", len(tools))
+	// Debug 级把「发给大模型的完整原始请求 JSON」整段打出来（与 CreateChatCompletion 实际发出的字节一致）。
+	// 平时 InfoLevel 不输出；设 GOOD_REVIEW_LOG_LEVEL=debug 时用于核对模型到底收到了什么。
+	if raw, err := json.Marshal(req); err == nil {
+		logutil.Debug("发给大模型的完整请求JSON", "body", string(raw))
+	} else {
+		logutil.Debug("发给大模型的完整请求JSON序列化失败", "err", err)
 	}
+
 	resp, err := adapter.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("大模型调用失败: %w", err)
 	}
+	// Debug 级把模型返回的完整原始 JSON 整段打出，与上面的请求 JSON 对照：
+	// 能直接看到 finish_reason 是 stop 还是 tool_calls、message.tool_calls 里有没有函数名。
+	if raw, err := json.Marshal(resp); err == nil {
+		logutil.Debug("大模型原始返回JSON", "body", string(raw))
+	} else {
+		logutil.Debug("大模型原始返回JSON序列化失败", "err", err)
+	}
 	if len(resp.Choices) == 0 {
 		return nil, fmt.Errorf("大模型返回为空")
 	}
-	msg := resp.Choices[0].Message
-	out := &ChatResponse{Content: msg.Content}
+	choice := resp.Choices[0]
+	msg := choice.Message
+	out := &ChatResponse{Content: msg.Content, FinishReason: string(choice.FinishReason)}
 	for _, tc := range msg.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{
 			ID:        tc.ID,

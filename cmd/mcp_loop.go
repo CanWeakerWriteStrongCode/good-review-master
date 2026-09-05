@@ -61,8 +61,9 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 			tcNames = append(tcNames, tc.Name)
 		}
 		logutil.Info("模型本轮原始返回", "轮次", round, "下发工具数", len(roundTools),
+			"结束原因", resp.FinishReason,
 			"是否请求工具", len(resp.ToolCalls) > 0, "请求的工具", tcNames,
-			"文本字符数", len([]rune(resp.Content)), "文本摘录", truncateRunes(strings.TrimSpace(resp.Content), 500))
+			"文本字符数", len([]rune(resp.Content)))
 
 		if len(resp.ToolCalls) == 0 || roundTools == nil {
 			// 没要求调工具 = 最终答案；已撤回工具却仍返回 tool_calls 的模型也在这里收口
