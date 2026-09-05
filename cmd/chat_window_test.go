@@ -8,7 +8,7 @@ import (
 )
 
 // makeChatMsgs 构造 n 条连续 MsgID 的消息（从 1001 起），内容固定为「消息N」。
-// 每条 ChatLogTokens 恰为 7：昵称2 + 全角冒号1 + 内容3（消息2 + 数字1）+ 换行1。
+// 单条 JSON 行 ChatLogTokens ≈ 11：昵称2 + 内容3 + JSON 外壳与换行的 ASCII 折算（7 计）。
 func makeChatMsgs(n int) []cache.Message {
 	msgs := make([]cache.Message, n)
 	for i := 0; i < n; i++ {
@@ -85,7 +85,7 @@ func TestDecideChatWindow(t *testing.T) {
 			anchor:           &cache.LLMAnchor{Start: 1003, LastSent: 1005},
 			cacheHitCost:     0.033,
 			cacheMissCost:    1.0,
-			maxContextTokens: 110, // 系统100 + 每条7：3条=121>110，2条=114>110，1条=107<=110
+			maxContextTokens: 115, // 系统100 + 单条约11：重置窗口(3条)超限，2条也>115，截到1条(111<=115)
 			llmSendCount:     3,
 			systemTokens:     100,
 			wantMode:         "reset",
@@ -154,9 +154,9 @@ func TestDecideChatWindow_ResetWindowWithinGuard(t *testing.T) {
 		systemTokens     int
 		llmSendCount     int
 	}{
-		{110, 100, 3},   // 普通截断
-		{50, 100, 3},    // 系统提示本身就超上限 → 截到只剩 1 条
-		{500, 200, 10},  // 护栏宽松，窗口不截断
+		{110, 100, 3},  // 普通截断
+		{50, 100, 3},   // 系统提示本身就超上限 → 截到只剩 1 条
+		{500, 200, 10}, // 护栏宽松，窗口不截断
 	}
 	for _, c := range combos {
 		d := decideChatWindow(makeChatMsgs(7), nil, 0.033, 1.0, c.maxContextTokens, c.llmSendCount, c.systemTokens)

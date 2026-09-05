@@ -1,7 +1,8 @@
 package cache
 
 import (
-	"fmt"
+	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -136,14 +137,33 @@ func (gc *GroupMsgCache) Len() int {
 	return gc.writeAt
 }
 
-// BuildChatLog 将消息列表组装为群聊上下文文本
+// chatLine 单条群聊消息在 JSON 行中的字段（发给大模型的表示）。
+// UserID 取消息里的 user_id（数字 QQ 号）；空或非数字时省略该字段。
+type chatLine struct {
+	User    string `json:"user"`
+	UserID  int64  `json:"user_id,omitempty"`
+	Content string `json:"content"`
+}
+
+// BuildChatLog 将消息列表组装为发给大模型的群聊上下文：每条消息一行 JSON 对象，如
+//
+//	{"user":"张三","user_id":123456,"content":"今天好累"}
+//	{"user":"李四","user_id":888888,"content":"你也好"}
+//
+// 用 json.Marshal 保证昵称/内容里的引号、换行等被正确转义。空内容消息跳过。
 func BuildChatLog(msgs []Message) string {
 	var buf strings.Builder
 	for _, msg := range msgs {
 		if msg.Content == "" {
 			continue
 		}
-		buf.WriteString(fmt.Sprintf("%s：%s\n", msg.Nick, msg.Content))
+		uid, _ := strconv.ParseInt(msg.UserID, 10, 64)
+		line, err := json.Marshal(chatLine{User: msg.Nick, UserID: uid, Content: msg.Content})
+		if err != nil {
+			continue
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
 	}
 	return buf.String()
 }

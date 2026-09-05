@@ -16,16 +16,9 @@ func EstimateTokens(s string) int {
 	return cjk + (ascii+3)/4
 }
 
-// ChatLogTokens 按 BuildChatLog 的格式（昵称：内容\n，跳过空内容）统计一组消息的 token 数。
-// 不分配字符串，避免为了计数而构建整个 chat log。
+// ChatLogTokens 按 BuildChatLog 的实际输出估算一组消息的 token 数（跳过空内容）。
+// 直接复用 BuildChatLog 的格式，成本口径与实际发给模型的内容始终一致，改格式不会两边漂移；
+// 代价是计数时构建一次 chat log 字符串——窗口只有几十条消息，可忽略。
 func ChatLogTokens(msgs []Message) int {
-	total := 0
-	for _, msg := range msgs {
-		if msg.Content == "" {
-			continue
-		}
-		total += EstimateTokens(msg.Nick) + 1    // 全角冒号：
-		total += EstimateTokens(msg.Content) + 1 // 换行
-	}
-	return total
+	return EstimateTokens(BuildChatLog(msgs))
 }
