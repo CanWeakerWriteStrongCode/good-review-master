@@ -15,8 +15,9 @@ import (
 func (b *Bot) RunPollingLoop(ctx context.Context) {
 	// 首次启动：拉取历史消息填充缓存
 	logutil.Info("正在连接 NapCat HTTP API：" + b.cfg.NapCatHTTPAPI)
+	count := 30
 	for _, groupID := range b.cfg.AllowGroups {
-		msgs, err := b.ob.FetchGroupMsgHistory(groupID, b.cfg.LLMSendCount)
+		msgs, err := b.ob.FetchGroupMsgHistory(groupID, count)
 		if err != nil {
 			logutil.Error("首次拉取群消息失败", "group", groupID, "err", err)
 			continue
@@ -53,7 +54,7 @@ func (b *Bot) RunPollingLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			for _, groupID := range b.cfg.AllowGroups {
-				msgs, err := b.ob.FetchGroupMsgHistory(groupID, 10)
+				msgs, err := b.ob.FetchGroupMsgHistory(groupID, count)
 				if err != nil {
 					logutil.Error("轮询群消息失败", "group", groupID, "err", err)
 					continue
