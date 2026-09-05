@@ -92,7 +92,7 @@ mcp:
     # 这对应别人贴的 mcpServers JSON 写法 → 拆成本配置的 name / transport / command / args 四项：
     # {"mcpServers": {"brave-search": {"command": "cmd", "args": ["/c","npx","-y","mcp-trends-hub@1.6.0"]}}}
     #   ↓
-    # Windows 下 npx 是 .cmd 脚本，多数包要经 cmd /c 转发才能被进程直接拉起；
+    # Windows 下 npx 是 .cmd 脚本，多数包要经 cmd /c 转发才能被进程直接拉起；uvx要直接写，不能用cmd
     # macOS / Linux 则直接 command: "npx"
     - name: "mcp-trends-hub"       # 服务名（必填、全局唯一）：只用于日志和跨服务重名消歧
       # 是否把该服务的工具注入对话；不写默认 true，改成 false 则只连接不使用
@@ -100,6 +100,16 @@ mcp:
       transport: "stdio"
       command: "cmd"
       args: ["/c", "npx", "-y", "mcp-trends-hub@1.6.0"]
+      # transport=stdio：可选附加环境变量（叠加到当前进程环境之上），
+      # 很多 MCP 包要求的 API key 就放这里
+      # env:
+      #   SOME_API_KEY: "sk-xxx"
+    - name: "ddg-search"       # 服务名（必填、全局唯一）：只用于日志和跨服务重名消歧
+      # 是否把该服务的工具注入对话；不写默认 true，改成 false 则只连接不使用
+      inject: true
+      transport: "stdio"
+      command: "uvx"
+      args: ["duckduckgo-mcp-server"]
       # transport=stdio：可选附加环境变量（叠加到当前进程环境之上），
       # 很多 MCP 包要求的 API key 就放这里
       # env:
