@@ -58,7 +58,8 @@ func (b *Bot) isAtBot(rawMsg string) bool {
 	if strings.Contains(rawMsg, "[CQ:at,qq="+b.cfg.BotQQ) {
 		return true
 	}
-	if b.cfg.BotNickname != "" && strings.Contains(rawMsg, "@"+b.cfg.BotNickname) {
+	// 检查开始是昵称 @
+	if b.cfg.BotNickname != "" && strings.HasPrefix(rawMsg, "@"+b.cfg.BotNickname) {
 		return true
 	}
 	return false
