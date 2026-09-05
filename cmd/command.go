@@ -158,7 +158,7 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	}
 
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
-		"你的QQ号是 %s，昵称是 %s。根据@你的群友刚才发的这条消息，继续聊天。", r.appCfg.LLMConfig.ModelName, r.appCfg.BotQQ, r.appCfg.BotNickname)
+		"你的QQ号是 %s，昵称是 %s。【要求】根据最后@你的群友刚才发的这条消息，继续聊天或者执行指令。", r.appCfg.LLMConfig.ModelName, r.appCfg.BotQQ, r.appCfg.BotNickname)
 	route := trieMatch(r.routeTrie, text)
 	if route == nil {
 		r.replyDefault(text, event, groupID, systemPrompt)
