@@ -26,6 +26,34 @@ type Config struct {
 	WebUsername       string // Web 管理面板登录账号
 	WebPassword       string // Web 管理面板登录密码，空则不校验
 	LLMConfig         LLMConf
+	MCPConfig         MCPConf
+}
+
+// MCPServerConf 单个 MCP 工具服务配置
+type MCPServerConf struct {
+	Name      string            // 服务名（必填且全局唯一；用于日志与跨服务工具重名消歧）
+	Inject    *bool             // 是否把该服务的工具注入对话（不写默认注入；指针用于区分"没写"和"写了 false"）
+	Transport string            // stdio（拉起本地命令）| http（streamable HTTP 远端）
+	URL       string            // transport=http：服务端点
+	Token     string            // transport=http：可选 Bearer Token（也可直接写在 url 查询串里）
+	Command   string            // transport=stdio：启动命令，如 npx / uvx / python
+	Args      []string          // transport=stdio：命令参数
+	Env       map[string]string // transport=stdio：附加环境变量，叠加到当前进程环境之上
+}
+
+// ShouldInject 该服务的工具是否注入对话（yaml 里没写 inject 时默认注入）
+func (s MCPServerConf) ShouldInject() bool {
+	return s.Inject == nil || *s.Inject
+}
+
+// MCPConf MCP 工具服务总配置
+type MCPConf struct {
+	Enabled           bool            // 总开关，false 时一个服务都不连、对话也不带工具
+	ToolTimeout       time.Duration   // 单个工具调用超时
+	MaxToolRounds     int             // 单次对话最大工具调用轮数，达到后强制模型直接作答
+	MaxToolResultRune int             // 单个工具返回结果最大字符数，超出截断（防撑爆上下文）
+	RetryInterval     time.Duration   // 连接失败后的重连间隔，<=0 表示不自动重连
+	Servers           []MCPServerConf // 已通过校验的服务列表
 }
 
 // LLMConf 大模型配置
@@ -71,6 +99,29 @@ type configFile struct {
 		Temperature      float64 `yaml:"temperature"`
 		TopP             float64 `yaml:"top_p"`
 	} `yaml:"llm"`
+	MCP mcpFile `yaml:"mcp"`
+}
+
+// mcpFile config.yaml 的 mcp 段原始结构
+type mcpFile struct {
+	Enabled           bool            `yaml:"enabled"`
+	ToolTimeoutSec    int             `yaml:"tool_timeout_sec"`
+	MaxToolRounds     int             `yaml:"max_tool_rounds"`
+	MaxToolResultRune int             `yaml:"max_tool_result_rune"`
+	RetryIntervalSec  int             `yaml:"retry_interval_sec"`
+	Servers           []mcpServerFile `yaml:"servers"`
+}
+
+// mcpServerFile config.yaml 的 mcp.servers 单项原始结构
+type mcpServerFile struct {
+	Name      string            `yaml:"name"`
+	Inject    *bool             `yaml:"inject"`
+	Transport string            `yaml:"transport"`
+	URL       string            `yaml:"url"`
+	Token     string            `yaml:"token"`
+	Command   string            `yaml:"command"`
+	Args      []string          `yaml:"args"`
+	Env       map[string]string `yaml:"env"`
 }
 
 // LoadConfig 从指定路径加载 config.yaml，若不存在则从内置模板创建
@@ -111,6 +162,8 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		maxContextTokens = 50000
 	}
 
+	mcpConf := parseMCP(&cfgFile.MCP)
+
 	return &Config{
 		NapCatHTTPAPI:     cfgFile.NapCat.HTTPAPI,
 		NapCatAccessToken: cfgFile.NapCat.AccessToken,
@@ -135,7 +188,82 @@ func LoadConfig(cfgPath string) (*Config, error) {
 			Temperature:      cfgFile.LLM.Temperature,
 			TopP:             cfgFile.LLM.TopP,
 		},
+		MCPConfig: mcpConf,
 	}, nil
+}
+
+// parseMCP 解析 mcp 段：填默认值 + 校验并丢弃非法服务条目（告警不致命）。
+// retry_interval_sec 语义：不写（=0）走缺省 60s 自动重连；写负数表示禁用重连。
+func parseMCP(raw *mcpFile) MCPConf {
+	toolTimeoutSec := raw.ToolTimeoutSec
+	if toolTimeoutSec <= 0 {
+		toolTimeoutSec = 30
+	}
+	maxToolRounds := raw.MaxToolRounds
+	if maxToolRounds <= 0 {
+		maxToolRounds = 5
+	}
+	maxToolResultRune := raw.MaxToolResultRune
+	if maxToolResultRune <= 0 {
+		maxToolResultRune = 2000
+	}
+	retrySec := raw.RetryIntervalSec
+	if retrySec == 0 {
+		retrySec = 60
+	}
+
+	conf := MCPConf{
+		Enabled:           raw.Enabled,
+		ToolTimeout:       time.Duration(toolTimeoutSec) * time.Second,
+		MaxToolRounds:     maxToolRounds,
+		MaxToolResultRune: maxToolResultRune,
+		RetryInterval:     time.Duration(retrySec) * time.Second,
+	}
+	if !conf.Enabled {
+		return conf
+	}
+
+	seen := make(map[string]bool, len(raw.Servers))
+	for _, s := range raw.Servers {
+		srv := MCPServerConf{
+			Name:      strings.TrimSpace(s.Name),
+			Inject:    s.Inject,
+			Transport: strings.ToLower(strings.TrimSpace(s.Transport)),
+			URL:       strings.TrimSpace(s.URL),
+			Token:     s.Token,
+			Command:   strings.TrimSpace(s.Command),
+			Args:      s.Args,
+			Env:       s.Env,
+		}
+		switch {
+		case srv.Name == "":
+			logutil.Warn("MCP 服务缺少 name，已跳过", "transport", srv.Transport)
+			continue
+		case seen[srv.Name]:
+			logutil.Warn("MCP 服务 name 重复，已跳过后者", "name", srv.Name)
+			continue
+		case srv.Transport == "http", srv.Transport == "sse":
+			if srv.URL == "" {
+				logutil.Warn("MCP 服务 transport=http 但 url 为空，已跳过", "name", srv.Name)
+				continue
+			}
+		case srv.Transport == "", srv.Transport == "stdio":
+			srv.Transport = "stdio"
+			if srv.Command == "" {
+				logutil.Warn("MCP 服务 transport=stdio 但 command 为空，已跳过", "name", srv.Name)
+				continue
+			}
+		default:
+			logutil.Warn("MCP 服务 transport 无法识别，已跳过", "name", srv.Name, "transport", srv.Transport)
+			continue
+		}
+		seen[srv.Name] = true
+		conf.Servers = append(conf.Servers, srv)
+	}
+	if len(conf.Servers) == 0 {
+		logutil.Warn("MCP 已启用但没有可用服务，对话不会注入工具")
+	}
+	return conf
 }
 
 // parseAllowGroups 解析逗号分隔的群号列表为字符串切片

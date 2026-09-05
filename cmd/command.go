@@ -21,7 +21,7 @@ type Command struct {
 	Help        string // 仅内部指令使用
 	Prompt      string // 仅用户指令使用（从 YAML 加载）
 	SharedRules string
-	Category    string          // "chat_review" | "internal"
+	Category    string // "chat_review" | "internal"
 	Handler     HandlerFunc
 	Persona     *config.Persona // 可选：该指令的人格（渲染进 system prompt）
 }
@@ -70,16 +70,19 @@ type Router struct {
 	obClient   *onebot.Client
 	promptCfg  *config.PromptConfig
 	appCfg     *config.Config
+	mcp        MCPProvider // MCP 工具提供者，未启用时为 nil
 	starter    *async.Group
 }
 
-// NewRouter 创建路由器并初始化所有内部指令
-func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client, shutdownCtx context.Context) *Router {
+// NewRouter 创建路由器并初始化所有内部指令。
+// mcpProvider 可传 nil（MCP 未启用），此时对话一律走单轮无工具调用。
+func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client, mcpProvider MCPProvider, shutdownCtx context.Context) *Router {
 	r := &Router{
 		llmClient: llmClient,
 		obClient:  obClient,
 		promptCfg: promptCfg,
 		appCfg:    appCfg,
+		mcp:       mcpProvider,
 		starter:   async.New(shutdownCtx),
 	}
 	r.handlerMap = map[string]HandlerFunc{
@@ -186,7 +189,7 @@ func (r *Router) Wait() error {
 // 模型名来自运行时配置（config.yaml 加载后才有），故由调用方注入 modelName，
 // 不能写成包级 const / 直接引用全局配置。
 func (r *Router) defaultChatPrompt() string {
-	return fmt.Sprintf("你知道自己是一个AI，模型是%s，请直接回应@你的群友刚才发的这条消息，自然地接着群聊。", r.appCfg.LLMConfig.ModelName)
+	return fmt.Sprintf("你知道自己是一个AI，模型是%s，请直接回应@你的群友刚才发的这条消息，继续接着群聊。", r.appCfg.LLMConfig.ModelName)
 }
 
 // replyDefault @bot 但未匹配任何指令：直接发给大模型，不加人格。

@@ -55,3 +55,52 @@ llm:
   temperature: 1.2
   # 核采样参数：越小输出越集中
   top_p: 0.95
+
+# ===== MCP 工具服务配置 =====
+# 开启后：启动时自动连接下面列出的每个服务，自动拉取其工具清单（tools/list），
+# 并把「inject 为 true」的服务的工具作为原生 function calling 注入每一次对话。
+# 模型觉得需要时自己发起调用 → 后端执行 MCP tools/call → 结果回填给模型 → 循环，
+# 直到模型给出最终文本答案，才发到群里。
+mcp:
+  # 总开关：false 时下面所有服务都不连接，对话也不带工具
+  enabled: true
+  # 单个工具调用超时（秒）
+  tool_timeout_sec: 30
+  # 单次对话最大工具调用轮数。达到上限后不再下发工具，强制模型直接作答
+  # 注意：每一轮都会重发一次完整上下文（含聊天记录），轮数越多越烧钱；
+  # 好在第 2 轮起前缀与第 1 轮完全一致，走缓存命中价，边际成本很低
+  max_tool_rounds: 3
+  # 单个工具返回结果的最大字符数，超出截断（防止一次返回几十 KB 撑爆上下文）
+  max_tool_result_rune: 2000
+  # 连接失败后的自动重连间隔（秒）；不写默认 60，写 -1 表示禁用自动重连
+  retry_interval_sec: 60
+  # 服务列表，每一项一个 MCP 服务
+  servers:
+    # 服务名（必填、全局唯一）：只用于日志和跨服务工具重名时的消歧，可自己取
+    # - name: "amap"
+      # 是否把该服务的工具注入对话；不写默认 true。
+      # 改成 false 则只连接不使用，方便临时屏蔽某个服务而不用删配置
+      # inject: true
+      # 传输方式：http（远端 streamable HTTP / SSE）| stdio（拉起本地命令）
+      # transport: "http"
+      # url: 服务端点地址
+      # url: "https://mcp.amap.com/mcp?key=你的key"
+      # token：可选 Bearer Token（也可以直接把 key 写在上面的 url 里）
+      # token: ""
+
+    # stdio 示例：本地拉起一个 MCP 子进程（生命周期随主程序，退出时自动杀掉）。
+    # 这对应别人贴的 mcpServers JSON 写法 → 拆成本配置的 name / transport / command / args 四项：
+    # {"mcpServers": {"brave-search": {"command": "cmd", "args": ["/c","npx","-y","mcp-trends-hub@1.6.0"]}}}
+    #   ↓
+    # Windows 下 npx 是 .cmd 脚本，多数包要经 cmd /c 转发才能被进程直接拉起；
+    # macOS / Linux 则直接 command: "npx"
+    - name: "mcp-trends-hub"       # 服务名（必填、全局唯一）：只用于日志和跨服务重名消歧
+      # 是否把该服务的工具注入对话；不写默认 true，改成 false 则只连接不使用
+      inject: true
+      transport: "stdio"
+      command: "cmd"
+      args: ["/c", "npx", "-y", "mcp-trends-hub@1.6.0"]
+      # transport=stdio：可选附加环境变量（叠加到当前进程环境之上），
+      # 很多 MCP 包要求的 API key 就放这里
+      # env:
+      #   SOME_API_KEY: "sk-xxx"

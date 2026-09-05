@@ -28,7 +28,7 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 		defer cancel()
 		userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra, persona)
 
-		reply, err := r.llmClient.Review(ctx, userMsg, systemPrompt)
+		reply, err := r.runReviewLLM(ctx, systemPrompt, userMsg)
 		if err != nil {
 			logutil.Error("大模型调用失败", "err", err)
 			r.obClient.SendGroupMessage(groupID, "大师今天罢工了，稍后再试~")
@@ -49,8 +49,10 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 // 决策逻辑在 decideChatWindow（cmd/chat_window.go，纯函数，可单测穷举）；这里只做
 // 配置/锚点读取 + 日志输出。扩展条件：锚点可用、扩展成本 < 重置成本、未超上下文护栏。
 func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPrompt string) []cache.Message {
-	// systemTokens = 固定前缀 P（systemPrompt + 常量前缀）的 token 数：扩展/重置都会发送
-	systemTokens := cache.EstimateTokens(systemPrompt) + cache.EstimateTokens(userLogPrefix)
+	// systemTokens = 固定前缀 P（systemPrompt + 常量前缀 + MCP 工具清单）的 token 数：扩展/重置都会发送。
+	// 工具清单必须算进来：它是随请求一起下发的 tools 字段，既占上下文长度又属于缓存前缀，
+	// 漏算会低估总 token，把窗口扩到撞穿 max_context_tokens 护栏。
+	systemTokens := cache.EstimateTokens(systemPrompt) + cache.EstimateTokens(userLogPrefix) + r.mcpToolsTokens()
 	decision := decideChatWindow(msgs, cache.GetLLMAnchor(groupID),
 		r.appCfg.LLMConfig.CacheHitCost, r.appCfg.LLMConfig.CacheMissCost,
 		r.appCfg.LLMConfig.MaxContextTokens, r.appCfg.LLMSendCount, systemTokens)
@@ -64,6 +66,29 @@ func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPr
 			"重置token", decision.ResetTokens)
 	}
 	return decision.Window
+}
+
+// runReviewLLM 按当前是否有可用 MCP 工具决定走工具循环还是单轮调用。
+// 工具清单为空（MCP 未启用 / 服务全挂 / inject 全关）时走原来的单轮路径，
+// 请求体里不带 tools 字段，与改造前的字节完全一致，不会无故击穿缓存。
+func (r *Router) runReviewLLM(ctx context.Context, systemPrompt, userMsg string) (string, error) {
+	if r.mcp != nil && len(r.mcp.Tools()) > 0 {
+		return r.runChatWithTools(ctx, systemPrompt, userMsg)
+	}
+	if r.mcp == nil {
+		logutil.Info("MCP 未注入：路由器没有 MCP 提供者，走单轮调用")
+	} else {
+		logutil.Info("MCP 未注入：当前无在线可注入工具（服务全挂或 inject 全关），走单轮调用")
+	}
+	return r.llmClient.Review(ctx, userMsg, systemPrompt)
+}
+
+// mcpToolsTokens MCP 工具清单折算的 token 数（未启用时 0）
+func (r *Router) mcpToolsTokens() int {
+	if r.mcp == nil {
+		return 0
+	}
+	return r.mcp.ToolsTokens()
 }
 
 // buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt + 人格。

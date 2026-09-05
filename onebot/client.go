@@ -77,7 +77,7 @@ func (ob *Client) GetGroupInfo(groupID string) (*GroupInfo, error) {
 
 // SendGroupMessage 发送群消息
 func (ob *Client) SendGroupMessage(groupID, content string) {
-	logutil.Debug("调用 NapCat API", "action", "send_group_msg", "group", groupID)
+	logutil.Debug("调用 NapCat API", "action", "send_group_msg", "group", groupID, "content", content)
 	resp, err := ob.restyClient.R().
 		SetBody(map[string]any{"group_id": groupID, "message": content}).
 		Post("/send_group_msg")

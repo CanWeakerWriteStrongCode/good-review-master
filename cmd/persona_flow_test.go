@@ -67,7 +67,7 @@ rules:
 	}
 	fakeLLM := testutil.NewFakeLLM()
 	obClient := onebot.NewClient("http://127.0.0.1:1", "") // 死地址，调用失败仅日志
-	router := NewRouter(cfg, promptCfg, fakeLLM, obClient, context.Background())
+	router := NewRouter(cfg, promptCfg, fakeLLM, obClient, nil, context.Background())
 
 	// 3. 种入缓存消息，触发 锐评下
 	cache.GetGroupCache("10001", cfg.MaxCacheMsg).Add(cache.Message{

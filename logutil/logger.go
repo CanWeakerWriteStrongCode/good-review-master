@@ -3,6 +3,7 @@ package logutil
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"good-review-master/apppath"
@@ -50,22 +51,39 @@ func SetupLogger() {
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
 
-	// 双输出：控制台用 console 编码，文件用 console 编码（可读性好）
+	// 双输出：控制台用 console 编码，文件用 console 编码（可读性好）。
+	// 级别默认 Info；设 GOOD_REVIEW_LOG_LEVEL=debug 可放开 Debug 明细
+	// （MCP 工具调用/选窗决策等大量 logutil.Debug 平时会被 InfoLevel 过滤掉）。
+	level := logLevelFromEnv()
 	consoleCore := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(encoderConfig),
 		consoleWriter,
-		zap.InfoLevel,
+		level,
 	)
 	fileCore := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(encoderConfig),
 		fileWriter,
-		zap.InfoLevel,
+		level,
 	)
 
 	base := zap.New(zapcore.NewTee(consoleCore, fileCore), zap.AddCaller())
 	// AddCallerSkip(1) 跳过 logutil 包装函数帧，让 caller 指向真实调用位置
 	sugar = base.WithOptions(zap.AddCallerSkip(1)).Sugar()
 	zap.ReplaceGlobals(base)
+}
+
+// logLevelFromEnv 从 GOOD_REVIEW_LOG_LEVEL 读日志级别：debug|info|warn|error，非法值回退 info
+func logLevelFromEnv() zapcore.Level {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOOD_REVIEW_LOG_LEVEL"))) {
+	case "debug", "d":
+		return zapcore.DebugLevel
+	case "warn", "warning", "w":
+		return zapcore.WarnLevel
+	case "error", "e":
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
 }
 
 // Close 刷新并关闭日志文件（释放句柄；测试收尾或优雅停机时调用）
