@@ -8,7 +8,7 @@ import (
 )
 
 // chatReview 异步锐评（通过 async 管理生命周期，自动继承 shutdown context）
-func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string, persona string) {
+func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	logutil.Info("触发锐评", "group", groupID, "user", event.Nickname)
 	r.Go(func(ctx context.Context) error {
 		msgs := cache.GetGroupCache(groupID, r.appCfg.MaxCacheMsg).GetAll()
@@ -23,7 +23,7 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 
 		ctx, cancel := context.WithTimeout(ctx, r.appCfg.LLMTimeout)
 		defer cancel()
-		userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra, persona)
+		userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra)
 
 		reply, err := r.runReviewLLM(ctx, systemPrompt, userMsg)
 		if err != nil {
@@ -90,15 +90,12 @@ func (r *Router) mcpToolsTokens() int {
 
 // buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt + 人格。
 // 人格放最后：聊天记录保持在前部（扩展缓存命中的前缀），人格切换不破坏聊天记录缓存。
-func buildUserMsg(chatLog string, mentionerNick string, keywordPrompt string, extra string, persona string) string {
+func buildUserMsg(chatLog string, mentionerNick string, keywordPrompt string, extra string) string {
 	userMsg := chatLog + "\n"
 	userMsg += "当前@你的是群友 " + mentionerNick + "。\n"
 	if extra != "" {
 		userMsg += "@你的人补充说这些,优先级较高:" + extra + "。\n"
 	}
 	userMsg += keywordPrompt + "\n"
-	if persona != "" {
-		userMsg += "\n" + persona
-	}
 	return userMsg
 }

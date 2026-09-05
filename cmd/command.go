@@ -13,7 +13,7 @@ import (
 
 // HandlerFunc 指令处理函数类型
 // (event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)
-type HandlerFunc func(onebot.Event, string, string, string, string, string, string)
+type HandlerFunc func(onebot.Event, string, string, string, string, string)
 
 // Command 指令定义
 type Command struct {
@@ -172,7 +172,8 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	if route.Persona != nil {
 		persona = RenderPersona(*route.Persona, route.SharedRules)
 	}
-	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra, persona)
+	systemPrompt += "\n" + persona
+	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
 }
 
 // Go 安全启动 goroutine（代理 async.Group）
@@ -189,7 +190,7 @@ func (r *Router) Wait() error {
 // systemPrompt 只含机器人身份（QQ+昵称），不带指令共享规则；
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑，persona 传空串。
 func (r *Router) replyDefault(text string, event onebot.Event, groupID string, systemPrompt string) {
-	r.chatReview(event, groupID, systemPrompt, "", event.Nickname, text, "")
+	r.chatReview(event, groupID, systemPrompt, "", event.Nickname, text)
 }
 
 // stripCQPrefix 去除消息开头的 CQ 码和 @昵称
