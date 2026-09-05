@@ -60,10 +60,10 @@ type ChatResponse struct {
 // Client 大模型统一接口
 type Client interface {
 	// Review 单轮、不带工具的调用（内部指令生成提示词/规则用）
-	Review(ctx context.Context, chatLog, systemPrompt string) (string, error)
+	SingleChat(ctx context.Context, chatLog, systemPrompt string) (string, error)
 	// Chat 多轮对话；tools 非空时启用原生 function calling，
 	// 返回的 ToolCalls 非空表示模型要求调工具而非已给出最终答案
-	ChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error)
+	MutiChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error)
 }
 
 // OpenAIAdapter 适配所有OpenAI协议的大模型（基于 go-openai SDK）
@@ -87,9 +87,9 @@ func NewOpenAIAdapter(apiKey, apiBase, model string, temp, topP float64) Client 
 }
 
 // Review 单轮调用大模型（不带工具），等价于 Chat 的两条消息包装
-func (adapter *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt string) (string, error) {
+func (adapter *OpenAIAdapter) SingleChat(ctx context.Context, chatLog, systemPrompt string) (string, error) {
 	logutil.Info("发送给大模型", "systemPrompt", systemPrompt, "chatLog", chatLog)
-	resp, err := adapter.ChatWithTool(ctx, []Message{
+	resp, err := adapter.MutiChatWithTool(ctx, []Message{
 		{Role: RoleSystem, Content: systemPrompt},
 		{Role: RoleUser, Content: chatLog},
 	}, nil)
@@ -100,7 +100,7 @@ func (adapter *OpenAIAdapter) Review(ctx context.Context, chatLog, systemPrompt 
 }
 
 // Chat 多轮对话；tools 非空时下发原生 function calling 工具清单
-func (adapter *OpenAIAdapter) ChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error) {
+func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error) {
 	req := openai.ChatCompletionRequest{
 		Model:       adapter.model,
 		Messages:    toOpenAIMessages(messages),

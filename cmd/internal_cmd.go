@@ -61,7 +61,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string, 
 	logutil.Info("使用 LLM 生成提示词+人格", "category", category, "keyword", keyword)
 	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 	defer cancel()
-	generated, err := r.llmClient.Review(ctx, requirements, addCommandGenPrompt)
+	generated, err := r.llmClient.SingleChat(ctx, requirements, addCommandGenPrompt)
 	if err != nil {
 		logutil.Error("LLM 生成提示词失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 生成提示词失败: "+err.Error())
@@ -125,7 +125,7 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string, _ s
 	logutil.Info("使用 LLM 生成规则", "category", category)
 	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
 	defer cancel()
-	generated, err := r.llmClient.Review(ctx, requirements, ruleGenSystem)
+	generated, err := r.llmClient.SingleChat(ctx, requirements, ruleGenSystem)
 	if err != nil {
 		logutil.Error("LLM 生成规则失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 生成规则失败: "+err.Error())

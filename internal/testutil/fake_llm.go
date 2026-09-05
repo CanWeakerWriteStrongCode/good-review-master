@@ -46,7 +46,7 @@ func (f *FakeLLM) SetReply(reply string) {
 }
 
 // Review 实现 llm.Client，记录调用并返回固定回复
-func (f *FakeLLM) Review(ctx context.Context, chatLog, systemPrompt string) (string, error) {
+func (f *FakeLLM) SingleChat(ctx context.Context, chatLog, systemPrompt string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, LLMCall{
@@ -75,7 +75,7 @@ func (f *FakeLLM) SetChatScript(responses ...*llm.ChatResponse) {
 }
 
 // Chat 实现 llm.Client：记录消息与工具清单，优先返回脚本预设值
-func (f *FakeLLM) ChatWithTool(_ context.Context, messages []llm.Message, tools []llm.Tool) (*llm.ChatResponse, error) {
+func (f *FakeLLM) MutiChatWithTool(_ context.Context, messages []llm.Message, tools []llm.Tool) (*llm.ChatResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

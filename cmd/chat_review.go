@@ -77,7 +77,7 @@ func (r *Router) runReviewLLM(ctx context.Context, systemPrompt, userMsg string)
 	} else {
 		logutil.Info("MCP 未注入：当前无在线可注入工具（服务全挂或 inject 全关），走单轮调用")
 	}
-	return r.llmClient.Review(ctx, userMsg, systemPrompt)
+	return r.llmClient.SingleChat(ctx, userMsg, systemPrompt)
 }
 
 // mcpToolsTokens MCP 工具清单折算的 token 数（未启用时 0）
