@@ -138,8 +138,9 @@ func (gc *GroupMsgCache) Len() int {
 }
 
 // chatLine 单条群聊消息在 JSON 行中的字段（发给大模型的表示）。
-// UserID 取消息里的 user_id（数字 QQ 号）；空或非数字时省略该字段。
+// UserID 取消息里的 user_id（数字 QQ 号），空或非数字时省略；MsgID 为 0 时省略。
 type chatLine struct {
+	MsgID   int64  `json:"msg_id,omitempty"`
 	User    string `json:"user"`
 	UserID  int64  `json:"user_id,omitempty"`
 	Content string `json:"content"`
@@ -147,8 +148,8 @@ type chatLine struct {
 
 // BuildChatLog 将消息列表组装为发给大模型的群聊上下文：每条消息一行 JSON 对象，如
 //
-//	{"user":"张三","user_id":123456,"content":"今天好累"}
-//	{"user":"李四","user_id":888888,"content":"你也好"}
+//	{"msg_id":1001,"user":"张三","user_id":123456,"content":"今天好累"}
+//	{"msg_id":1002,"user":"李四","user_id":888888,"content":"你也好"}
 //
 // 用 json.Marshal 保证昵称/内容里的引号、换行等被正确转义。空内容消息跳过。
 func BuildChatLog(msgs []Message) string {
@@ -158,7 +159,12 @@ func BuildChatLog(msgs []Message) string {
 			continue
 		}
 		uid, _ := strconv.ParseInt(msg.UserID, 10, 64)
-		line, err := json.Marshal(chatLine{User: msg.Nick, UserID: uid, Content: msg.Content})
+		line, err := json.Marshal(chatLine{
+			MsgID:   msg.MsgID,
+			User:    msg.Nick,
+			UserID:  uid,
+			Content: msg.Content,
+		})
 		if err != nil {
 			continue
 		}

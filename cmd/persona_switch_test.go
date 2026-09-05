@@ -146,6 +146,9 @@ func TestSwitchPersona_DefaultChatInjectsGroupPersona(t *testing.T) {
 	if strings.Contains(sys, "温柔大姐姐") {
 		t.Fatalf("群人格应为 锐评下(毒舌点评人)，不应混入其它人格:\n%s", sys)
 	}
+	if strings.Contains(sys, "普通大模型问答") {
+		t.Fatalf("设置了群人格时不应声明普通问答模式:\n%s", sys)
+	}
 	if strings.Contains(log, "【人格】") {
 		t.Fatalf("persona 不应在 user 消息(chatLog)中:\n%s", log)
 	}
@@ -164,8 +167,12 @@ func TestSwitchPersona_CancelRestoresNormal(t *testing.T) {
 
 	e.route(t, "[CQ:at,qq=123456] 随便聊聊", 3)
 	calls := waitLLMCalls(t, e.fake, 1)
-	if strings.Contains(calls[0].SystemPrompt, "【人格】") {
-		t.Fatalf("取消人格后纯 @ 聊天不应再带人格块:\n%s", calls[0].SystemPrompt)
+	sys := calls[0].SystemPrompt
+	if strings.Contains(sys, "【人格】") {
+		t.Fatalf("取消人格后纯 @ 聊天不应再带人格块:\n%s", sys)
+	}
+	if !strings.Contains(sys, "普通大模型问答") {
+		t.Fatalf("取消人格后应显式声明为普通问答模式:\n%s", sys)
 	}
 }
 
@@ -181,8 +188,12 @@ func TestSwitchPersona_UnknownNameNotSet(t *testing.T) {
 
 	e.route(t, "[CQ:at,qq=123456] 今天天气不错", 2)
 	calls := waitLLMCalls(t, e.fake, 1)
-	if strings.Contains(calls[0].SystemPrompt, "【人格】") {
-		t.Fatalf("未设置人格时纯 @ 聊天不应带人格块:\n%s", calls[0].SystemPrompt)
+	sys := calls[0].SystemPrompt
+	if strings.Contains(sys, "【人格】") {
+		t.Fatalf("未设置人格时纯 @ 聊天不应带人格块:\n%s", sys)
+	}
+	if !strings.Contains(sys, "普通大模型问答") {
+		t.Fatalf("未设置人格时也应显式声明为普通问答模式:\n%s", sys)
 	}
 }
 

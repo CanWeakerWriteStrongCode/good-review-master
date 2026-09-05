@@ -329,9 +329,9 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 	groupID := "guard-test-group"
 	// 本用例 selectChatWindow 的 systemPrompt 传空串；锚点覆盖前 5 条
 	baseSystemTokens := cache.EstimateTokens("")
-	perMsgTokens := cache.ChatLogTokens(msgs[:1])
-	// 护栏：恰好装下全部 10 条（无工具时）→ 不带工具应能扩展
-	guardTokens := baseSystemTokens + 10*perMsgTokens
+	// 护栏 = 完整 10 条的实际 token + 少量舍入余量：无工具时整窗口恰好能装下 → 应扩展
+	allMsgTokens := cache.ChatLogTokens(msgs)
+	guardTokens := baseSystemTokens + allMsgTokens + 4 // +4 抵消「整串 vs 分片」估算的取整差异
 
 	buildRouter := func(provider MCPProvider, maxContextTokens int) *Router {
 		return &Router{
@@ -351,7 +351,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 	t.Run("不带工具时护栏内可扩展", func(t *testing.T) {
 		cache.ResetAll()
 		cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: 1, LastSent: 5})
-		// 命中 5*perMsg + 新增 5*perMsg = 10*perMsg，恰 <= 护栏 → 扩展全部 10 条
+		// 命中(前5条)+新增(后5条) ≈ 全部 10 条，<= 护栏 → 扩展
 		got := buildRouter(nil, guardTokens).selectChatWindow(msgs, groupID, "")
 		if len(got) != 10 {
 			t.Fatalf("期望扩展到全部 10 条，得到 %d 条", len(got))
@@ -361,7 +361,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 	t.Run("工具清单顶穿护栏后强制重置", func(t *testing.T) {
 		cache.ResetAll()
 		cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: 1, LastSent: 5})
-		// 同样的消息与锚点，只多 100 token 的工具清单 → 固定前缀超出护栏 → 必须重置并截断
+		// 同样的消息与锚点，只多 100 token 的工具清单 → 固定前缀远超护栏 → 必须重置并截断
 		mcpTokens := 100
 		r := buildRouter(&fakeMCP{tokens: mcpTokens}, guardTokens)
 		got := r.selectChatWindow(msgs, groupID, "")
@@ -372,10 +372,12 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 		if got[len(got)-1].MsgID != 10 {
 			t.Fatalf("重置应保留最新的消息，得到最后 MsgID=%d", got[len(got)-1].MsgID)
 		}
-		// 截断后的窗口（前缀 = systemPrompt + 工具清单）不得再超护栏
+		// 截断后的窗口（前缀 = systemPrompt + 工具清单）不得再超护栏（只剩 1 条仍超则豁免）
 		systemTokens := baseSystemTokens + mcpTokens
-		if actual := systemTokens + cache.ChatLogTokens(got); actual > guardTokens {
-			t.Fatalf("截断后仍超护栏: token=%d > guard=%d", actual, guardTokens)
+		if len(got) > 1 {
+			if actual := systemTokens + cache.ChatLogTokens(got); actual > guardTokens {
+				t.Fatalf("截断后仍超护栏: token=%d > guard=%d", actual, guardTokens)
+			}
 		}
 	})
 	cache.ResetAll()

@@ -239,11 +239,14 @@ func (r *Router) availablePersonaNames() []string {
 
 // replyDefault @bot 但未匹配任何指令：直接发给大模型。
 // systemPrompt 只含机器人身份（QQ+昵称），不带指令共享规则；若本群已 #切换人格，
-// 则在末尾追加渲染好的人格块（仅纯 @ 聊天生效），否则保持无人格普通聊天。
+// 则在末尾追加渲染好的人格块（仅纯 @ 聊天生效）；否则显式声明当前是普通问答、
+// 不代入任何人格，避免模型在曾被切换过人格的群里继续沿用旧人设。
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑。
 func (r *Router) replyDefault(text string, event onebot.Event, groupID string, systemPrompt string) {
 	if b, ok := r.getGroupPersona(groupID); ok {
 		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
+	} else {
+		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
 	r.chatReview(event, groupID, systemPrompt, "", event.Nickname, text)
 }
