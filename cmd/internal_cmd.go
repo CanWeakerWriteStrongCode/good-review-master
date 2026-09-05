@@ -35,14 +35,15 @@ const (
 
 // registerInternalCommands 向路由器注册所有内置管理指令
 func (r *Router) registerInternalCommands() {
-	r.register(Command{Keyword: "添加关键字", Help: helpAddCmd, Category: "internal", Handler: r.handleAddCommand})
-	r.register(Command{Keyword: "删除关键字", Help: helpDelCmd, Category: "internal", Handler: r.handleDeleteCommand})
-	r.register(Command{Keyword: "添加指令规则", Help: helpAddRule, Category: "internal", Handler: r.handleAddRule})
-	r.register(Command{Keyword: "删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
-	r.register(Command{Keyword: "帮助", Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
+	r.register(Command{Keyword: "#添加关键字", Help: helpAddCmd, Category: "internal", Handler: r.handleAddCommand})
+	r.register(Command{Keyword: "#删除关键字", Help: helpDelCmd, Category: "internal", Handler: r.handleDeleteCommand})
+	r.register(Command{Keyword: "#添加指令规则", Help: helpAddRule, Category: "internal", Handler: r.handleAddRule})
+	r.register(Command{Keyword: "#删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
+	r.register(Command{Keyword: "#切换人格", Help: helpDelRule, Category: "internal", Handler: r.handleSwitchPersona})
+	r.register(Command{Keyword: "#帮助", Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
 }
 
-func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
+func (r *Router) handleAddCommand(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 4 {
@@ -84,7 +85,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, _ string, 
 	r.obClient.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
 }
 
-func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
+func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := delCmdRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
@@ -107,7 +108,7 @@ func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, _ strin
 	r.obClient.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
 }
 
-func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
+func (r *Router) handleAddRule(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := addRuleRe.FindStringSubmatch(content)
 	if len(matches) != 3 {
@@ -142,7 +143,7 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, _ string, _ s
 	r.obClient.SendGroupMessage(groupID, "✅ 规则已添加: "+category)
 }
 
-func (r *Router) handleDeleteRule(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
+func (r *Router) handleDeleteRule(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := delRuleRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
@@ -164,7 +165,7 @@ func (r *Router) handleDeleteRule(event onebot.Event, groupID string, _ string, 
 	r.obClient.SendGroupMessage(groupID, "✅ 规则已删除: "+category)
 }
 
-func (r *Router) handleListCommands(event onebot.Event, groupID string, _ string, _ string, _ string, _ string) {
+func (r *Router) handleListCommands(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	var buf strings.Builder
 	buf.WriteString("【指令帮助】\n\n")
 	buf.WriteString("使用方式：@机器人 + 关键词\n\n")
@@ -187,4 +188,8 @@ func (r *Router) handleListCommands(event onebot.Event, groupID string, _ string
 		buf.WriteString("  " + cmd.Keyword + " [" + cmd.Category + "]\n")
 	}
 	r.obClient.SendGroupMessage(groupID, buf.String())
+}
+
+func (r *Router) handleSwitchPersona(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+
 }
