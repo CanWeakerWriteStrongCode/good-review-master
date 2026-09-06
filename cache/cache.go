@@ -14,8 +14,9 @@ type Message struct {
 	UserID  string `json:"user_id"`
 	Nick    string `json:"nick"`
 	Card    string `json:"card"`
-	Content string `json:"content"`
-	Time    int64  `json:"time"`
+	Content string   `json:"content"`
+	Images  []string `json:"images,omitempty"` // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
+	Time    int64    `json:"time"`
 }
 
 // GroupMsgCache 群消息环形缓存（零拷贝实现）

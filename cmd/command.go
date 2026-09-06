@@ -176,6 +176,10 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
 		"你的QQ号是【%s】，昵称是【%s】。【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。", r.appCfg.LLMConfig.ModelName, r.appCfg.BotQQ, r.appCfg.BotNickname)
+	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
+	if r.appCfg.LLMConfig.ImageMax > 0 {
+		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用 view_image 工具（实际查看有数量上限，达到后请直接作答）。不要编造没实际看过的图片内容。"
+	}
 	route := trieMatch(r.routeTrie, text)
 	if route == nil {
 		r.replyDefault(text, event, groupID, systemPrompt)

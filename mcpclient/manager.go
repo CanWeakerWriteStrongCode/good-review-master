@@ -282,6 +282,49 @@ func (m *Manager) CallTool(ctx context.Context, exposedName, argsJSON string) (s
 	return text, nil
 }
 
+// CallToolImage 同 CallTool，但额外返回工具结果里的图片（mcp.ImageContent），
+// 供 agent「看图」把图回传给视觉模型；纯文本结果 images 为空。
+func (m *Manager) CallToolImage(ctx context.Context, exposedName, argsJSON string) (string, []llm.Image, error) {
+	snap := m.snap.Load()
+	if snap == nil {
+		return "", nil, errors.New("MCP 未启用")
+	}
+	b, ok := snap.bindings[exposedName]
+	if !ok {
+		return "", nil, fmt.Errorf("工具不存在或已下线: %s", exposedName)
+	}
+
+	var args map[string]any
+	if s := strings.TrimSpace(argsJSON); s != "" && s != "null" {
+		if err := json.Unmarshal([]byte(s), &args); err != nil {
+			return "", nil, fmt.Errorf("模型给的入参不是合法 JSON 对象（%s）: %w", s, err)
+		}
+	}
+
+	b.server.mu.Lock()
+	session := b.server.session
+	b.server.mu.Unlock()
+	if session == nil {
+		return "", nil, fmt.Errorf("MCP 服务 %s 当前未连接", b.server.cfg.Name)
+	}
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: b.tool, Arguments: args})
+	if err != nil {
+		if errors.Is(err, mcp.ErrConnectionClosed) {
+			b.server.markDead(err)
+		}
+		return "", nil, fmt.Errorf("调用 %s.%s 失败: %w", b.server.cfg.Name, b.tool, err)
+	}
+
+	text, toolErr, imgs := flattenWithImages(res)
+	logutil.Debug("MCP 工具返回", "server", b.server.cfg.Name, "tool", b.tool,
+		"字符数", len([]rune(text)), "图片数", len(imgs), "isError", toolErr)
+	if toolErr {
+		return text, imgs, fmt.Errorf("工具执行报错: %s", text)
+	}
+	return text, imgs, nil
+}
+
 // Close 关闭所有会话（stdio 子进程随之被终止）并停止重连循环
 func (m *Manager) Close() error {
 	var err error

@@ -187,6 +187,46 @@ func flattenContent(res *mcp.CallToolResult) (string, bool) {
 	return text, res.IsError
 }
 
+// flattenWithImages 同 flattenContent，但额外把 MCP 返回里的 ImageContent 原样带出
+// （不转占位文本），供 agent「看图」把图片回传给视觉模型。Text 部分照常拍平。
+func flattenWithImages(res *mcp.CallToolResult) (string, bool, []llm.Image) {
+	if res == nil {
+		return "", false, nil
+	}
+	var parts []string
+	var imgs []llm.Image
+	for _, c := range res.Content {
+		switch v := c.(type) {
+		case *mcp.TextContent:
+			if v != nil {
+				parts = append(parts, v.Text)
+			}
+		case *mcp.EmbeddedResource:
+			if v != nil {
+				parts = append(parts, flattenResource(v.Resource))
+			}
+		case *mcp.ImageContent:
+			if v != nil && len(v.Data) > 0 {
+				imgs = append(imgs, llm.Image{Data: v.Data, MIMEType: v.MIMEType})
+			}
+		case nil:
+			continue
+		default:
+			parts = append(parts, fmt.Sprintf("[非文本内容（%T）已省略]", c))
+		}
+	}
+	if len(parts) == 0 && res.StructuredContent != nil {
+		if raw, err := json.Marshal(res.StructuredContent); err == nil {
+			parts = append(parts, string(raw))
+		}
+	}
+	text := strings.TrimSpace(strings.Join(parts, "\n"))
+	if text == "" && len(imgs) == 0 {
+		text = "（工具无返回内容）"
+	}
+	return text, res.IsError, imgs
+}
+
 // flattenResource 把嵌入资源转成文本：文本资源直接取内容，二进制资源只报大小
 func flattenResource(rc *mcp.ResourceContents) string {
 	if rc == nil {

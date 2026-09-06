@@ -29,12 +29,9 @@ func (b *Bot) ProcessMessage(event onebot.Event) {
 		return
 	}
 
-	content := strings.TrimSpace(event.RawMessage)
+	content, images := cache.NormalizeContent(event.RawMessage, b.cfg.MaxMsgRune)
 	if content == "" {
 		return
-	}
-	if len([]rune(content)) > b.cfg.MaxMsgRune {
-		content = string([]rune(content)[:b.cfg.MaxMsgRune]) + "..."
 	}
 
 	msg := cache.Message{
@@ -44,6 +41,7 @@ func (b *Bot) ProcessMessage(event onebot.Event) {
 		Nick:    event.Nickname,
 		Card:    event.Card,
 		Content: content,
+		Images:  images,
 		Time:    time.Now().Unix(),
 	}
 	cache.GetGroupCache(groupID, b.cfg.MaxCacheMsg).Add(msg)

@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"context"
+	"fmt"
+	"strings"
+
 	"good-review-master/cache"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
@@ -24,6 +27,12 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 		ctx, cancel := context.WithTimeout(ctx, r.appCfg.LLMTimeout)
 		defer cancel()
 		userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra)
+		// agent「看图」：窗口内有图片且 view_image 工具在线时，附上候选图列表（懒加载，图不随文本常驻）
+		if r.appCfg.LLMConfig.ImageMax > 0 && r.mcp != nil && len(r.mcp.Tools()) > 0 {
+			if block := r.imageCandidatesBlock(chatLogMsgs); block != "" {
+				userMsg += "\n" + block
+			}
+		}
 
 		reply, err := r.runReviewLLM(ctx, systemPrompt, userMsg)
 		if err != nil {
@@ -86,6 +95,45 @@ func (r *Router) mcpToolsTokens() int {
 		return 0
 	}
 	return r.mcp.ToolsTokens()
+}
+
+// imageCandidatesBlock 组装发给模型的「本次窗口内图片候选」文本块：把发送窗口里带图消息的
+// 所有图片 url 都列出来（url 只是文本，成本低），由模型自行决定调 view_image 实际查看哪张。
+// 真正的开销控制是「实际查看上限 cfg.ImageMax」（见 runChatWithTools 的硬限）。无候选返回空串。
+func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	type row struct {
+		nick  string
+		msgID int64
+		url   string
+	}
+	var rows []row
+	for _, m := range msgs {
+		for _, u := range m.Images {
+			if u == "" {
+				continue
+			}
+			rows = append(rows, row{nick: m.Nick, msgID: m.MsgID, url: u})
+		}
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n【群内图片候选（共 ")
+	b.WriteString(fmt.Sprintf("%d", len(rows)))
+	b.WriteString(" 张）】候选只是文字，查看某张图才会真正载入像素。需要看图来回答（图片/表情/截图/图内文字）时，调用 view_image 工具并传对应 url；")
+	if viewMax := r.appCfg.LLMConfig.ImageMax; viewMax > 0 {
+		b.WriteString(fmt.Sprintf("本次最多实际查看 %d 张，达到上限后请直接基于已看到的内容作答；", viewMax))
+	}
+	b.WriteString("不要编造没实际看过的图片内容。\n")
+	for i, row := range rows {
+		b.WriteString(fmt.Sprintf("图%d 发送者:%s (消息%d) url:%s\n", i+1, row.nick, row.msgID, row.url))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt。

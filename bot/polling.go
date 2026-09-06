@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"strconv"
-	"strings"
 	"time"
 
 	"good-review-master/cache"
@@ -24,12 +23,7 @@ func (b *Bot) RunPollingLoop(ctx context.Context) {
 		}
 		gc := cache.GetGroupCache(groupID, b.cfg.MaxCacheMsg)
 		for _, msg := range msgs {
-			content := strings.TrimSpace(msg.RawMessage)
-			if content == "" {
-				content = ""
-			} else if len([]rune(content)) > b.cfg.MaxMsgRune {
-				content = string([]rune(content)[:b.cfg.MaxMsgRune]) + "..."
-			}
+			content, images := cache.NormalizeContent(msg.RawMessage, b.cfg.MaxMsgRune)
 			gc.Add(cache.Message{
 				MsgID:   msg.MessageID,
 				GroupID: onebot.FormatGroupID(msg.GroupID),
@@ -37,6 +31,7 @@ func (b *Bot) RunPollingLoop(ctx context.Context) {
 				Nick:    msg.Sender.Nickname,
 				Card:    msg.Sender.Card,
 				Content: content,
+				Images:  images,
 				Time:    msg.Time,
 			})
 		}

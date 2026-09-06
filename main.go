@@ -16,6 +16,7 @@ import (
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/mcpclient"
+	"good-review-master/mcpserver"
 	"good-review-master/onebot"
 	"good-review-master/version"
 	webserver "good-review-master/web/server"
@@ -79,10 +80,31 @@ func main() {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// 6.5 agent「看图」：image_max>0 时内嵌一个本机 MCP 服务提供 view_image，并注入 MCP manager。
+	// 只监听 127.0.0.1；mcp_builtin_token 非空则服务端校验 Bearer，客户端带同一 token。
+	mcpCfg := cfg.MCPConfig
+	var builtinSrv *mcpserver.Server
+	if cfg.LLMConfig.ImageMax > 0 {
+		builtinSrv = mcpserver.New(nil, cfg.McpBuiltinToken)
+		addr, err := builtinSrv.Start()
+		if err != nil {
+			logutil.Error("内嵌 MCP 服务(看图)启动失败，本会话无 view_image 工具", "err", err)
+			builtinSrv = nil
+		} else {
+			if !mcpCfg.Enabled {
+				mcpCfg.Enabled = true
+				logutil.Warn("启用看图(lm image_max>0)自动开启 mcp.enabled，注入内嵌 view_image 服务")
+			}
+			mcpCfg.Servers = append(append([]config.MCPServerConf{}, mcpCfg.Servers...),
+				config.MCPServerConf{Name: "builtin_image", Transport: "http", URL: addr, Token: cfg.McpBuiltinToken})
+			logutil.Info("内嵌 MCP 服务(看图)已启动", "url", addr, "带Bearer鉴权", cfg.McpBuiltinToken != "")
+		}
+	}
+
 	// 7. 启动 MCP 工具服务：后台并发连接每个服务并自动拉取工具清单（tools/list），
 	// 拉到后原子更新快照，之后每次对话自动把 inject 服务的工具作为 function calling 注入。
 	// 不阻塞启动：连不上的服务由重连循环按 retry_interval_sec 接管。
-	mcpMgr := mcpclient.New(cfg.MCPConfig, shutdownCtx)
+	mcpMgr := mcpclient.New(mcpCfg, shutdownCtx)
 	// 初始化：先把配置里所有 MCP 服务以 Info 打出来，再后台建连
 	mcpMgr.LogConfig()
 	mcpMgr.Start()
@@ -145,6 +167,12 @@ func main() {
 	// 13. 关闭 MCP 会话（stdio 子进程随之终止）
 	if err := mcpMgr.Close(); err != nil {
 		logutil.Error("关闭 MCP 服务失败", "err", err)
+	}
+	// 13.5 关闭内嵌 MCP 服务（看图）
+	if builtinSrv != nil {
+		if err := builtinSrv.Close(); err != nil {
+			logutil.Warn("关闭内嵌 MCP 服务失败", "err", err)
+		}
 	}
 	logutil.Info("已安全退出")
 }

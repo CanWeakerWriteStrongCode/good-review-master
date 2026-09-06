@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"good-review-master/llm"
@@ -40,6 +41,14 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 		{Role: llm.RoleSystem, Content: systemPrompt},
 		{Role: llm.RoleUser, Content: userMsg},
 	}
+
+	// 实际看图硬上限：真正烧视觉 token 的是「把图回传」，不是候选列表。
+	// viewLimit<=0 表示不限制（此时不会有内置 view_image 工具注入）。
+	viewLimit := r.appCfg.LLMConfig.ImageMax
+	viewed := 0
+	// 本次回复内已展示过的图片（按 data URL 去重）：图一旦以 user 消息喂回就会留在
+	// 后续所有轮次的上下文里，模型再次点名同一张无需重复载入，也不占用查看上限。
+	seenImages := make(map[string]bool)
 
 	for round := 1; ; round++ {
 		roundTools := tools
@@ -82,34 +91,99 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 		// 同一轮的多个调用串行执行：绝大多数场景一轮只有一个调用，
 		// 串行能让回填顺序与 tool_calls 顺序严格一致，也避免并发打爆同一个 MCP 服务
 		for _, tc := range resp.ToolCalls {
+			text, imgs := r.callToolOutcome(ctx, tc)
+
+			// 已见过的图（本次回复已作为 user 消息喂回，之后所有轮次都在上下文里）
+			// 不再重复下载/回传：直接提示模型参考上面的那张。
+			var fresh []llm.Image
+			for _, img := range imgs {
+				key := llm.DataURL(img.MIMEType, img.Data)
+				if seenImages[key] {
+					continue
+				}
+				seenImages[key] = true
+				fresh = append(fresh, img)
+			}
+			if len(imgs) > 0 && len(fresh) == 0 {
+				text = "这张图片在本次对话里已经展示过，请直接参考上面那张即可，无需重复载入。"
+			}
+
+			attach := fresh
+			// 超出「本次实际看图上限」：不再回传像素，明确告知模型直接作答
+			if len(fresh) > 0 && viewLimit > 0 {
+				if viewed >= viewLimit {
+					attach = nil
+					text = fmt.Sprintf("本次回复最多实际查看 %d 张图片，已达到上限。请基于已看到的内容直接作答，不要再调用查看工具。", viewLimit)
+				} else if room := viewLimit - viewed; len(fresh) > room {
+					attach = fresh[:room]
+					text = fmt.Sprintf("已达到本次查看上限（%d 张），只展示其中部分，请据此作答。", viewLimit)
+				}
+				viewed += len(attach)
+			}
+
+			// 网关要求非 assistant 消息必须带 content：工具纯图片/纯数据、无文本时给个兜底说明
+			if strings.TrimSpace(text) == "" {
+				text = "（工具已返回内容，无文本；结果见随后的图片/数据消息）"
+			}
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
-				Content:    r.callMCPTool(ctx, tc),
+				Content:    text,
 				ToolCallID: tc.ID,
 				Name:       tc.Name,
 			})
+			// 新图片以一条 user 多模态消息喂回：放 role=tool 之后、role=user，
+			// 适配 llama.cpp 这类「视觉只认 user 消息图片」的实现；一旦喂回即常驻后续轮次上下文。
+			if len(attach) > 0 {
+				urls := make([]string, 0, len(attach))
+				for _, img := range attach {
+					urls = append(urls, llm.DataURL(img.MIMEType, img.Data))
+				}
+				messages = append(messages, llm.Message{
+					Role:          llm.RoleUser,
+					Content:       "（这是你刚请求查看的图片，请据此继续回答；如需再看其它图请继续调用查看工具。）",
+					ImageDataURLs: urls,
+				})
+			}
 		}
 	}
 }
 
-// callMCPTool 执行一次工具调用，返回要回填给模型的文本。
+// imageToolResultProvider 能返回图片内容的 MCP 提供者（*mcpclient.Manager 实现）。
+// 用可选接口而非改 MCPProvider 定义：单测里的假 MCP 提供者不受影响。
+type imageToolResultProvider interface {
+	CallToolImage(ctx context.Context, name, argsJSON string) (string, []llm.Image, error)
+}
+
+// callToolOutcome 执行一次工具调用，返回回填文本与（可能的）图片。
 // 失败时返回错误描述而不是向上抛错：把失败原因交给模型看，它通常会换个参数重试或直接作答。
-// 结果按 max_tool_result_rune 截断，防止某个工具一次吐几十 KB 撑爆上下文。
-func (r *Router) callMCPTool(ctx context.Context, tc llm.ToolCall) string {
+// 文本按 max_tool_result_rune 截断，防止某个工具一次吐几十 KB 撑爆上下文。
+func (r *Router) callToolOutcome(ctx context.Context, tc llm.ToolCall) (string, []llm.Image) {
 	ctx, cancel := context.WithTimeout(ctx, r.appCfg.MCPConfig.ToolTimeout)
 	defer cancel()
+
+	if p, ok := r.mcp.(imageToolResultProvider); ok {
+		text, imgs, err := p.CallToolImage(ctx, tc.Name, tc.Arguments)
+		text = truncateRunes(text, r.appCfg.MCPConfig.MaxToolResultRune)
+		if err != nil {
+			logutil.Error("MCP 工具调用失败", "tool", tc.Name, "args", tc.Arguments, "err", err)
+			if strings.TrimSpace(text) == "" {
+				text = "工具调用失败：" + err.Error()
+			}
+		}
+		return text, imgs
+	}
 
 	out, err := r.mcp.CallTool(ctx, tc.Name, tc.Arguments)
 	out = truncateRunes(out, r.appCfg.MCPConfig.MaxToolResultRune)
 	if err != nil {
 		logutil.Error("MCP 工具调用失败", "tool", tc.Name, "args", tc.Arguments, "err", err)
 		if out == "" {
-			return "工具调用失败：" + err.Error()
+			return "工具调用失败：" + err.Error(), nil
 		}
 		// 工具自己给了错误说明（MCP isError），原样交给模型比再包一层更有信息量
-		return out
+		return out, nil
 	}
-	return out
+	return out, nil
 }
 
 // truncateRunes 按字符数截断，超长时补省略号（与 bot 层截断群消息的写法一致）

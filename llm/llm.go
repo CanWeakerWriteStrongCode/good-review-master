@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,6 +11,11 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+// DataURL 把图片字节编码成 data URL（视觉模型的 image_url 内联标准形态）。
+func DataURL(mime string, data []byte) string {
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
 
 // 对话消息角色（中立定义，避免上层直接依赖 openai SDK 的常量）
 const (
@@ -29,12 +35,15 @@ type ToolCall struct {
 // Message 一条对话消息。
 // Role=assistant 且带 ToolCalls 表示模型要求调工具；
 // Role=tool 表示某次调用的结果，ToolCallID 必须与发起时的 ID 一致。
+// ImageDataURLs 非空时本消息改发多模态内容（MultiContent：文本 + image_url data URL），
+// 供视觉模型直接看到图片；为空则保持纯文本 Content，字节与旧路径一致（保住前缀缓存）。
 type Message struct {
-	Role       string
-	Content    string
-	ToolCalls  []ToolCall
-	ToolCallID string
-	Name       string
+	Role          string
+	Content       string
+	ImageDataURLs []string
+	ToolCalls     []ToolCall
+	ToolCallID    string
+	Name          string
 }
 
 // Tool 注入给模型的工具定义。ParamsJSON 是原始 JSON Schema，用 RawMessage
@@ -47,6 +56,13 @@ type Tool struct {
 
 // emptyParamsSchema 工具未给出入参 schema 时的兜底（OpenAI 要求 parameters 是合法 JSON Schema 对象）
 var emptyParamsSchema = json.RawMessage(`{"type":"object","properties":{}}`)
+
+// Image 一张图片字节（MCP 工具结果/内置「看图」返回），
+// 上层用 llm.DataURL(mime, data) 转成 image_url 的 data URL 塞进 ImageDataURLs。
+type Image struct {
+	Data     []byte
+	MIMEType string
+}
 
 // ChatResponse 一次对话的模型输出：要么给最终文本，要么要求调用工具
 type ChatResponse struct {
@@ -153,6 +169,22 @@ func toOpenAIMessages(messages []Message) []openai.ChatCompletionMessage {
 			Content:    m.Content,
 			Name:       m.Name,
 			ToolCallID: m.ToolCallID,
+		}
+		// 带图消息改用 MultiContent（Content 与 MultiContent 互斥），
+		// 文本在前、图片 data URL 在后；无图则保持纯文本 Content，字节与旧路径一致。
+		if len(m.ImageDataURLs) > 0 {
+			parts := make([]openai.ChatMessagePart, 0, len(m.ImageDataURLs)+1)
+			if strings.TrimSpace(m.Content) != "" {
+				parts = append(parts, openai.ChatMessagePart{Type: openai.ChatMessagePartTypeText, Text: m.Content})
+			}
+			for _, u := range m.ImageDataURLs {
+				parts = append(parts, openai.ChatMessagePart{
+					Type: openai.ChatMessagePartTypeImageURL,
+					ImageURL: &openai.ChatMessageImageURL{URL: u},
+				})
+			}
+			msg.Content = ""
+			msg.MultiContent = parts
 		}
 		for _, tc := range m.ToolCalls {
 			msg.ToolCalls = append(msg.ToolCalls, openai.ToolCall{

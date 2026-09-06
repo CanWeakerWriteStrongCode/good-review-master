@@ -25,6 +25,7 @@ type Config struct {
 	WebPort           int    // Web 管理面板端口，<=0 禁用
 	WebUsername       string // Web 管理面板登录账号
 	WebPassword       string // Web 管理面板登录密码，空则不校验
+	McpBuiltinToken   string // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
 	LLMConfig         LLMConf
 	MCPConfig         MCPConf
 }
@@ -65,6 +66,7 @@ type LLMConf struct {
 	CacheHitCost     float64 // 缓存命中单价（相对值）
 	CacheMissCost    float64 // 缓存未命中单价（相对值）
 	MaxContextTokens int     // 单次发送大模型的上下文 token 上限（护栏，超限强制重置）
+	ImageMax         int     // agent「看图」：单次回复最多实际查看(下载回传)的图片张数；>0 启用，0=关（纯文本）
 	Temperature      float64
 	TopP             float64
 }
@@ -79,14 +81,15 @@ type configFile struct {
 		AllowGroups string `yaml:"allow_groups"`
 	} `yaml:"bot"`
 	Runtime struct {
-		LLMSendCount    int    `yaml:"llm_send_count"`
-		LLMTimeoutSec   int    `yaml:"llm_timeout_sec"`
-		MaxMsgRune      int    `yaml:"max_msg_rune"`
-		PollIntervalSec int    `yaml:"poll_interval_sec"`
-		WebPort         int    `yaml:"web_port"`
-		WebUsername     string `yaml:"web_username"`
-		WebPassword     string `yaml:"web_password"`
-		MaxCacheMsg     int    `yaml:"max_cache_msg"`
+		LLMSendCount     int    `yaml:"llm_send_count"`
+		LLMTimeoutSec    int    `yaml:"llm_timeout_sec"`
+		MaxMsgRune       int    `yaml:"max_msg_rune"`
+		PollIntervalSec  int    `yaml:"poll_interval_sec"`
+		WebPort          int    `yaml:"web_port"`
+		WebUsername      string `yaml:"web_username"`
+		WebPassword      string `yaml:"web_password"`
+		MaxCacheMsg      int    `yaml:"max_cache_msg"`
+		McpBuiltinToken  string `yaml:"mcp_builtin_token"` // 内嵌 MCP 服务端 Bearer token，空=不校验
 	} `yaml:"runtime"`
 	LLM struct {
 		Provider         string  `yaml:"provider"`
@@ -96,6 +99,7 @@ type configFile struct {
 		CacheHitCost     float64 `yaml:"cache_hit_cost"`
 		CacheMissCost    float64 `yaml:"cache_miss_cost"`
 		MaxContextTokens int     `yaml:"max_context_tokens"`
+		ImageMax         int     `yaml:"image_max"` // >0 启用 agent 看图
 		Temperature      float64 `yaml:"temperature"`
 		TopP             float64 `yaml:"top_p"`
 	} `yaml:"llm"`
@@ -177,6 +181,7 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		WebPort:           cfgFile.Runtime.WebPort,
 		WebUsername:       cfgFile.Runtime.WebUsername,
 		WebPassword:       cfgFile.Runtime.WebPassword,
+		McpBuiltinToken:   cfgFile.Runtime.McpBuiltinToken,
 		LLMConfig: LLMConf{
 			Provider:         cfgFile.LLM.Provider,
 			APIKey:           cfgFile.LLM.APIKey,
@@ -185,6 +190,7 @@ func LoadConfig(cfgPath string) (*Config, error) {
 			CacheHitCost:     cacheHitCost,
 			CacheMissCost:    cacheMissCost,
 			MaxContextTokens: maxContextTokens,
+			ImageMax:         cfgFile.LLM.ImageMax,
 			Temperature:      cfgFile.LLM.Temperature,
 			TopP:             cfgFile.LLM.TopP,
 		},
