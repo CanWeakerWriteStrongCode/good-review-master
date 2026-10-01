@@ -197,7 +197,8 @@ rules:
 
 ```
 good-review-master/
-├── main.go                  # 入口：初始化配置、LLM 客户端，启动轮询 + 优雅退出
+├── main.go                  # 入口：日志初始化、首跑提示、app.Run + 退出码
+├── app/                     # 组合根：装配全部组件（App）、启动与优雅关闭
 ├── go.mod / go.sum           # Go 模块依赖
 ├── config.yaml               # 运行时配置（gitignore）
 ├── prompt_system.yaml        # 系统提示词配置（gitignore）
@@ -369,13 +370,15 @@ cd tests/e2e && pnpm test
 
 ### 优雅停机
 
-`main.go` 用 `signal.NotifyContext` 捕获 SIGINT/SIGTERM，三层消费同一个 `shutdownCtx`：
+`app.New` 用 `signal.NotifyContext` 捕获 SIGINT/SIGTERM，三层消费同一个生命周期 ctx（`app.App.ctx`）：
 
 ```
-信号 → shutdownCtx → 轮询循环 select ctx.Done() 正常退出
-                    → webSrv.Shutdown(ctx)（10s 超时排空请求）
-                    → router.Wait() 等所有 in-flight goroutine（LLM 调用可被取消）
+信号 → ctx 取消 → 轮询循环 select ctx.Done() 正常退出
+                → webSrv.Shutdown(ctx)（10s 超时排空请求）
+                → router.Wait() 等所有 in-flight goroutine（LLM 调用可被取消）
 ```
+
+启动与关闭的顺序集中在 `app` 包：`app.New` 只负责装配（`main.go` 只做日志初始化、首跑提示和退出码），`app.Run()` 阻塞到信号后按上面的顺序关闭。
 
 ### 缓存窗口决策：扩展 vs 重置（成本优化）
 

@@ -62,8 +62,8 @@ Browser / MiniProgram ←→ Gin web server (:web_port) ←→ OneBot + Cache (r
 ### Package graph
 
 ```
-main → config, llm, logutil, bot, onebot, async
-main → web/server
+main → app, config, logutil, apppath, version
+app → config, llm, onebot, cmd, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
 bot → config, cache, onebot, cmd
 cmd → config, cache, llm, onebot, async
 web/server → config, logutil, onebot, cache
@@ -77,26 +77,32 @@ logutil → apppath
 apppath → (no internal deps)
 ```
 
-`bot` is the orchestrator; `cmd` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`app` is the composition root (see below); `bot` is the runtime poller; `cmd` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
 
-### Key design: explicit dependency injection, no init() side effects
+### Key design: explicit dependency injection, composition root, no init() side effects
 
-All components are constructed explicitly in `main()`. There are **zero** `init()` functions with cross-package side effects. Dependencies flow top-down through struct fields and constructor parameters.
+All components are constructed explicitly in the `app` package (composition root) and wired through `app.App`'s fields — nothing else constructs them. There are **zero** `init()` functions with cross-package side effects. Dependencies flow top-down through struct fields and constructor parameters. `main` only does the three things that are not wiring: logger setup, first-run prompt, and translating errors into exit codes.
+
+`app` must not be imported by anything but `main` — when a component needs another component, inject it in `app` rather than importing across.
+
+Known remaining global state (deliberately kept for now): `cache` package-level `cacheMap`/`anchorMap` and `logutil`'s logger are shared by `bot`/`cmd`/`web/server` without being held as fields.
 
 ## Startup & shutdown sequence
 
-1. `logutil.SetupLogger()` — console + file logging to `log/bot.log`
-2. `config.LoadConfig(path)` — loads `config.yaml` → `*Config` struct
-3. `config.LoadPromptConfig(systemPath, customPath)` — loads + merges prompt YAML files
-4. `llm.NewOpenAIAdapter(...)` — creates `llm.Client` (go-openai SDK)
-5. `onebot.NewClient(httpAPI, accessToken)` — creates OneBot HTTP client (resty)
-6. `signal.NotifyContext` → `cmd.NewRouter(cfg, promptCfg, llmClient, obClient, shutdownCtx)` — router receives shutdown context for goroutine lifecycle
-7. `obClient.GetLoginInfo()` — fetches bot nickname
-8. `go botInstance.RunPollingLoop(shutdownCtx)` — starts polling in background
-9. `webserver.New(cfg, obClient)` + `go webSrv.Start()` — starts web server (conditional, `cfg.WebPort > 0`)
-10. `<-shutdownCtx.Done()` — blocks until SIGINT/SIGTERM
-11. `webSrv.Shutdown(ctx)` — graceful web shutdown with 10s timeout (conditional)
-12. `router.Wait()` — waits for in-flight goroutines to finish
+`main()` does only: `logutil.SetupLogger()` → `config.InitDefaultFiles()` (first run: create templates, prompt, exit 0) → `app.New(...)` → `app.Run()`.
+
+**`app.New(opts)` — assembly** (see `app/build.go`; the only place components are constructed):
+
+1. `config.LoadConfig` → `config.LoadPromptConfig` → web credentials check (`ErrWebCredentialsMissing`) → LLM client (`testutil.FakeLLM` when `GOOD_REVIEW_TEST=1`, else provider switch). All failures return before any resource is taken.
+2. `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` — the app's lifecycle context, owned by `App`.
+3. `onebot.NewClient` — OneBot HTTP client (resty).
+4. Built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1, its URL is injected into `cfg.MCPConfig`); failure is non-fatal.
+5. `mcpclient.New(cfg.MCPConfig, ctx)` + `LogConfig()` + `Start()`.
+6. `cmd.NewRouter(cfg, promptCfg, llm, ob, mcpMgr, ctx)` — router receives the lifecycle context for its goroutine group.
+7. `obClient.GetLoginInfo()` — bot nickname (failure is non-fatal) + startup logs.
+8. `bot.NewBot(...)`; `webserver.New(cfg, obClient)` + `EnableDebug(router, fakeLLM)` when test mode (conditional, `cfg.WebPort > 0`).
+
+**`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches polling goroutine and web server (non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code.
 
 ## Config files
 
@@ -328,3 +334,4 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 ## Code conventions
 
 - **Variable naming**: 变量名不要简化，要完整让人方便看懂。
+- **Wiring lives in `app`**: 新增组件时在 `app.New` 里构造并挂到 `App` 字段上，启动/关闭动作放 `app.Start`/`app.Shutdown`。不要在 `main`、`cmd`、`bot`、`web/server` 里 new 组件或读包级全局来绕过注入。

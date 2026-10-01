@@ -277,7 +277,8 @@ r.handlerMap = map[string]HandlerFunc{
 
 ```
 good-review-master/
-├── main.go                  # Entry point: init config, LLM client, start polling + graceful shutdown
+├── main.go                  # Entry point: logger, first-run prompt, app.Run + exit code
+├── app/                     # Composition root: wires every component, starts/stops them
 ├── go.mod / go.sum           # Go module dependencies
 ├── config.yaml               # Live config (gitignored)
 ├── prompt_system.yaml        # System prompts (gitignored)
@@ -385,13 +386,15 @@ The project is designed around three goals: **concurrency safety, graceful shutd
 
 ### Graceful Shutdown
 
-`main.go` uses `signal.NotifyContext` to catch SIGINT/SIGTERM; all three layers consume the same `shutdownCtx`:
+`app.New` uses `signal.NotifyContext` to catch SIGINT/SIGTERM; all three layers consume the same lifecycle context (`app.App.ctx`):
 
 ```
-signal → shutdownCtx → poll loop exits on select ctx.Done()
-                     → webSrv.Shutdown(ctx) (10s timeout to drain requests)
-                     → router.Wait() waits for in-flight goroutines (LLM calls cancellable)
+signal → ctx cancelled → poll loop exits on select ctx.Done()
+                       → webSrv.Shutdown(ctx) (10s timeout to drain requests)
+                       → router.Wait() waits for in-flight goroutines (LLM calls cancellable)
 ```
+
+Startup and shutdown order live in the `app` package: `app.New` only assembles (leaving `main.go` with logger setup, the first-run prompt, and exit codes), and `app.Run()` blocks until a signal, then shuts down in the order above.
 
 ### Cache Window Decision: Extend vs Reset (Cost Optimization)
 
