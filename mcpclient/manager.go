@@ -42,12 +42,16 @@ const maxListPages = 50
 // Manager MCP 工具服务管理器。零值不可用，必须经 New 构造。
 type Manager struct {
 	cfg      config.MCPConf
-	lifetime context.Context // 会话生命周期，随主程序 shutdownCtx 一起取消
+	lifetime context.Context // 会话生命周期：只由 Close 结束（见 New 的说明）
 	cancel   context.CancelFunc
 
 	mu      sync.Mutex // 只保护快照重建的串行化（读侧走 snap，无锁）
 	servers []*serverConn
 	snap    atomic.Pointer[snapshot]
+
+	// closing 置位后不再拉起任何新会话（重连循环与 dial 都要让路），
+	// 避免 Close 正在优雅关闭时又被重连塞进一个没人管的新子进程。
+	closing atomic.Bool
 
 	closeOnce sync.Once
 }
@@ -88,8 +92,14 @@ type ServerStatus struct {
 
 // New 构造管理器。enabled=false 或没有可用服务时返回一个空转的 Manager
 // （Tools 恒为空、CallTool 恒报无工具），调用方无需判空。
+//
+// lifetime 刻意用 WithoutCancel 切断与 shutdownCtx 的取消传播：会话（以及 stdio
+// 子进程）只在 Close 时结束。否则 Ctrl+C 一取消父 ctx，exec.CommandContext 会立刻
+// 杀掉子进程，Close 再调 session.Close() 就只是收尸——报出假的 "exit status 1"，
+// 而且优雅关闭（关 stdin 让子进程自己退）根本没机会执行。
+// 调用方必须在退出流程里调用 Close（app 的 Shutdown 保证了这点）。
 func New(cfg config.MCPConf, shutdownCtx context.Context) *Manager {
-	lifetime, cancel := context.WithCancel(shutdownCtx)
+	lifetime, cancel := context.WithCancel(context.WithoutCancel(shutdownCtx))
 	m := &Manager{cfg: cfg, lifetime: lifetime, cancel: cancel}
 	if !cfg.Enabled {
 		return m
@@ -325,11 +335,20 @@ func (m *Manager) CallToolImage(ctx context.Context, exposedName, argsJSON strin
 	return text, imgs, nil
 }
 
-// Close 关闭所有会话（stdio 子进程随之被终止）并停止重连循环
+// Close 关闭所有会话并停止重连循环。
+//
+// 顺序要紧：先竖起 closing 闸门（阻止重连再拉起新子进程），再逐个优雅关闭会话，
+// 最后才取消 lifetime。取消在前的话，stdio 子进程会先被 exec.CommandContext 杀掉，
+// session.Close() 就只剩收尸——本该安静的退出会被记成一条失败。
+//
+// 返回值恒为 nil：会话关闭本身不会失败。stdio 子进程的退出码只记 WARN，
+// 不当成关闭失败——关 stdin 让服务端退出是协议规定的关闭方式，而服务端把 stdin EOF
+// 当异常、以非 0 码退出是常见行为（本项目依赖的 Go SDK 服务端自己就是这样：
+// Run 会返回 "server is closing: EOF"）。真正关不掉的会话，WARN 里带着服务名。
 func (m *Manager) Close() error {
-	var err error
 	m.closeOnce.Do(func() {
-		m.cancel()
+		m.closing.Store(true)
+
 		for _, s := range m.servers {
 			s.mu.Lock()
 			session := s.session
@@ -339,23 +358,37 @@ func (m *Manager) Close() error {
 				continue
 			}
 			if closeErr := session.Close(); closeErr != nil {
-				logutil.Warn("关闭 MCP 会话失败", "server", s.cfg.Name, "err", closeErr)
-				if err == nil {
-					err = closeErr
-				}
+				logutil.Warn("MCP 会话关闭时子进程异常退出", "server", s.cfg.Name, "err", closeErr)
 			}
 		}
+
+		// 兜底：清掉仍挂在 lifetime 上的残留（例如关不干净的 stdio 子进程）
+		m.cancel()
 	})
-	return err
+	return nil
 }
 
 // dial 连接一个服务并拉取工具清单，成功或失败都只记日志，不向上抛
 func (s *serverConn) dial() {
+	if s.mgr.closing.Load() {
+		return // Close 已经开始，不要再拉起新的子进程
+	}
+
 	ctx, cancel := context.WithTimeout(s.mgr.lifetime, s.mgr.opTimeout())
 	defer cancel()
 
 	session, tools, err := s.connect(ctx)
+
 	s.mu.Lock()
+	if s.mgr.closing.Load() {
+		// 闸门是在这次 connect 期间放下的：新会话不能挂上去（Close 已经遍历过了），
+		// 就地关掉，否则会漏一个没人管的后台进程。
+		s.mu.Unlock()
+		if session != nil {
+			_ = session.Close()
+		}
+		return
+	}
 	if err != nil {
 		s.session = nil
 		s.lastErr = err
@@ -397,7 +430,7 @@ func (s *serverConn) logFetchedTools(tools []*mcp.Tool) {
 
 // connect 建连 + initialize 握手 + 拉全量工具清单。任一步失败都会关掉已建会话再返回错误。
 func (s *serverConn) connect(ctx context.Context) (*mcp.ClientSession, []*mcp.Tool, error) {
-	transport, err := s.buildTransport(ctx)
+	transport, err := s.buildTransport()
 	if err != nil {
 		return nil, nil, err
 	}

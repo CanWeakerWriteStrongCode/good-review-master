@@ -88,7 +88,8 @@ func (a *App) Shutdown(ctx context.Context) {
 			logutil.Error("等待 goroutine 退出失败", "err", err)
 		}
 
-		// 关闭 MCP 会话（stdio 子进程随之终止）
+		// 关闭 MCP 会话（stdio 子进程随之终止）。Close 目前恒返回 nil——
+		// 子进程退出码只记 WARN，不算关闭失败（见 mcpclient.Manager.Close 的说明）。
 		if err := a.MCP.Close(); err != nil {
 			logutil.Error("关闭 MCP 服务失败", "err", err)
 		}

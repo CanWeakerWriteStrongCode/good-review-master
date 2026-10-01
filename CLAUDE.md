@@ -104,6 +104,8 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 
 **`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches polling goroutine and web server (non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code.
 
+**MCP session lifetime (invariant):** `mcpclient.Manager`'s lifetime deliberately uses `context.WithoutCancel`, so sessions and their stdio subprocesses end **only via `Manager.Close()`** — the graceful path (close stdin → child exits on its own) never gets a chance if a parent context cancellation kills the child first. `Close()` closes sessions *before* cancelling the lifetime, and takes a `closing` gate so the reconnect loop can't spawn a new subprocess mid-shutdown. Any exit path that skips `App.Shutdown` leaks stdio subprocesses. In `Close`, a child's non-zero exit code is only a WARN, not a failure: servers commonly treat stdin EOF as an error (the Go SDK's own server returns `server is closing: EOF`).
+
 ## Config files
 
 | File | Loaded by | Hot-reload |

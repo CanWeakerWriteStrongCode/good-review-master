@@ -2,7 +2,6 @@ package mcpclient
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,12 +18,16 @@ import (
 )
 
 // buildTransport 按配置构造 MCP 传输层。
-// 传入的 ctx 决定会话生命周期：SDK 用它跑 JSON-RPC 连接的读写循环，
-// ctx 取消即连接关闭（stdio 子进程也随 exec.CommandContext 一并终止）。
-func (s *serverConn) buildTransport(ctx context.Context) (mcp.Transport, error) {
+//
+// stdio 子进程绑在 m.lifetime 上，而不是调用方那次操作（握手/拉清单）的超时 ctx：
+// exec.CommandContext 在 ctx 取消时会杀掉进程，而操作 ctx 是用完即取消的，
+// 绑它等于"刚连上就把子进程杀了"（会话看着还在，工具调用必然失败）。
+// 子进程的终止只有两个来源：Close 里取消 lifetime，或 Close 里 session.Close()
+// 走 SDK 的优雅关闭（关 stdin → 子进程自己退 → 超时才 SIGTERM/SIGKILL）。
+func (s *serverConn) buildTransport() (mcp.Transport, error) {
 	switch s.cfg.Transport {
 	case "stdio":
-		cmd := exec.CommandContext(ctx, s.cfg.Command, s.cfg.Args...)
+		cmd := exec.CommandContext(s.mgr.lifetime, s.cfg.Command, s.cfg.Args...)
 		cmd.Env = append(os.Environ(), envPairs(s.cfg.Env)...)
 		// stdout 是 JSON-RPC 通道，绝不能占用；stderr 是子进程日志，转进本项目日志
 		if pipe, err := cmd.StderrPipe(); err == nil {

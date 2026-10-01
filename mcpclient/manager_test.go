@@ -2,6 +2,7 @@ package mcpclient
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -343,4 +344,83 @@ func TestManager_端到端拉清单并调用(t *testing.T) {
 			t.Fatalf("错误信息不对: %v", err)
 		}
 	})
+}
+
+// echoIn stdio 夹具工具的入参（schema 由 SDK 自动推导）
+type echoIn struct {
+	Text string `json:"text"`
+}
+
+// TestStdioHelperProcess 不是普通用例，而是子进程夹具：
+// 被 TestManager_stdio子进程活到会话结束 以「本测试二进制 + MCP_STDIO_HELPER=1」拉起时，
+// 在本进程里跑一个真实的 stdio MCP 服务端；stdin 被关闭（EOF）即正常退出，退出码 0
+// —— 这正是"体面的 stdio 服务"该有的行为。
+func TestStdioHelperProcess(t *testing.T) {
+	if os.Getenv("MCP_STDIO_HELPER") != "1" {
+		t.Skip("仅作为子进程夹具使用")
+	}
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "stdio-helper", Version: "v1"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "echo", Description: "原样返回入参"},
+		func(_ context.Context, _ *mcp.CallToolRequest, in echoIn) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: in.Text}},
+			}, nil, nil
+		})
+	// 客户端关掉 stdin 即 Run 返回。注意 SDK 会把这次 EOF 报成错误
+	// （"server is closing: EOF"）——夹具一律按正常收工退 0，本用例考察的是客户端侧：
+	// 子进程有没有被提前杀掉、Close 走的是不是优雅路径。
+	_ = srv.Run(context.Background(), &mcp.StdioTransport{})
+	// stdout 是 JSON-RPC 通道，不能混进测试框架的输出，收工直接退
+	os.Exit(0)
+}
+
+// stdio 子进程必须活到会话结束，而不是握手一完就被自己的 ctx 杀掉。
+// 回归的是：buildTransport 曾把子进程绑在"握手/拉清单"的超时 ctx 上，
+// 而 dial 一返回就 defer cancel，于是 stdio 服务刚连上就被 exec.CommandContext 杀掉，
+// 会话看着还在、工具调用必然失败，关停时还报出一条假的 exit status 1。
+func TestManager_stdio子进程活到会话结束(t *testing.T) {
+	setupTestLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := New(config.MCPConf{
+		Enabled:       true,
+		ToolTimeout:   5 * time.Second,
+		RetryInterval: 0, // 关掉自动重连，让本用例只考察会话本身
+		Servers: []config.MCPServerConf{{
+			Name:      "helper",
+			Transport: "stdio",
+			Command:   os.Args[0],
+			Args:      []string{"-test.run=TestStdioHelperProcess"},
+			Env:       map[string]string{"MCP_STDIO_HELPER": "1"},
+		}},
+	}, ctx)
+
+	m.Start()
+	t.Cleanup(func() { _ = m.Close() })
+
+	// dial 是后台异步的，等它把工具清单拉回来
+	deadline := time.Now().Add(10 * time.Second)
+	for len(m.Tools()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(m.Tools()) != 1 {
+		t.Fatalf("未拿到工具清单: %+v", m.Status())
+	}
+
+	// 断言一：握手之后子进程仍活着，工具能真调通
+	out, err := m.CallTool(ctx, "echo", `{"text":"hello"}`)
+	if err != nil {
+		t.Fatalf("调用失败（子进程是否在 dial 返回后就被杀了？）: %v", err)
+	}
+	if out != "hello" {
+		t.Fatalf("工具返回不对: %q", out)
+	}
+
+	// 断言二：优雅关闭——关 stdin 后子进程自己退 0，Close 不应报错
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close 报错（子进程被强杀而不是优雅退出？）: %v", err)
+	}
 }
