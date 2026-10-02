@@ -1,8 +1,8 @@
 import type { GroupInfo, BotStatus, Message, APIResponse } from './types'
 
-const BASE_URL = '/api'
+export const BASE_URL = '/api'
 
-function getAuthHeader(): Record<string, string> {
+export function getAuthHeader(): Record<string, string> {
   const token = localStorage.getItem('good_review_token')
   if (token) {
     return { Authorization: `Bearer ${token}` }
@@ -10,7 +10,21 @@ function getAuthHeader(): Record<string, string> {
   return {}
 }
 
-async function request<T>(url: string): Promise<T> {
+/**
+ * 401 的统一出口：清 token 并回登录页。
+ *
+ * 抽出来是因为还有第二个调用面——pprof 那几个端点返回的不是 {code,data} 信封
+ * （有的是明文、有的是二进制），走不了 request<T>，只能自己调 uni.request。
+ * 那种地方必须复用这里，否则 token 过期后不同入口的行为会不一致。
+ */
+export function handleUnauthorized(): never {
+  localStorage.removeItem('good_review_token')
+  uni.reLaunch({ url: '/pages/login/index' })
+  throw new Error('未授权，请重新登录')
+}
+
+/** 发一个 GET 并拆掉 {code,data} 信封。非信封响应（pprof）见 diagnostics.ts。 */
+export async function request<T>(url: string): Promise<T> {
   const res = await uni.request({
     url: BASE_URL + url,
     method: 'GET',
@@ -18,10 +32,7 @@ async function request<T>(url: string): Promise<T> {
   })
   const body = res.data as APIResponse<T>
   if (body.code === 401) {
-    // token 失效，跳转登录
-    localStorage.removeItem('good_review_token')
-    uni.reLaunch({ url: '/pages/login/index' })
-    throw new Error('未授权，请重新登录')
+    handleUnauthorized()
   }
   if (body.code !== 200) {
     throw new Error(`API error: ${res.statusCode}`)

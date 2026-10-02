@@ -84,7 +84,7 @@ main → app, config, logutil, apppath, version
 app → config, llm, onebot, cmd, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
 bot → config, cache, onebot, cmd
 cmd → config, cache, llm, onebot, async
-web/server → config, logutil, onebot, cache
+web/server → config, logutil, onebot, cache, version
 async → logutil, pool
 pool → (仅标准库 sync)
 onebot → (no internal deps)
@@ -259,6 +259,7 @@ Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go
 | `auth.go` | JWT generation (HS256, 24h expiry) and parsing; login failure rate limit (per-IP token bucket, failures only) |
 | `middleware.go` | Logger, Recovery (panic guard), CORS (allowlist), JWT auth guard |
 | `health.go` | `/healthz` + `/readyz` probes (no auth) |
+| `diagnostics.go` | `/api/diagnostics` — runtime summary + goroutine grouping (always on, parsed in Go) |
 | `pprof.go` | `net/http/pprof` under the authenticated `/api/debug/pprof/`, off unless `runtime.enable_pprof` |
 | `embed.go` | `//go:embed static/frontend` |
 
@@ -271,6 +272,7 @@ Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go
 | GET | `/api/groups` | JWT | Per-group info with activity stats |
 | GET | `/api/groups/:id` | JWT | Cached messages for one group |
 | POST | `/api/logout` | JWT | No-op (stateless token) |
+| GET | `/api/diagnostics` | JWT | Runtime summary + goroutine grouping; `?full=1` adds the stack dump |
 | GET | `/healthz` | **No** | Liveness: always 200 while the process serves |
 | GET | `/readyz` | **No** | Readiness: 503 while draining (see `shutdown_delay_sec`) |
 | GET | `/api/debug/pprof/*` | JWT | Only when `runtime.enable_pprof: true` |
@@ -283,10 +285,36 @@ Key details: Gin runs in ReleaseMode; `web_password` is required (no password-le
 - **CORS** — default is same-origin only (no CORS headers at all). `runtime.cors_origins` adds an allowlist; `*` re-opens it to everything. The dev Vite server uses a proxy, so nothing needs configuring.
 - **JWT** — signs and verifies HS256 only. `jwt_secret` is separate from `web_password`; if unset it falls back to the password with a WARN (note: jwt/v5 already rejects `alg=none` and RS256 key-confusion via its keyfunc, so `WithValidMethods` is defense-in-depth, not a fix for a live hole).
 - **Probes leak nothing** — `/healthz` and `/readyz` are unauthenticated, so their bodies contain status strings only: never config values, group IDs or upstream addresses. They also deliberately **do not** check NapCat reachability: that is degradation, not unreadiness, and an unauthenticated endpoint must not trigger outbound calls.
+- **Diagnostics are JWT-gated** — `/api/diagnostics` and `/api/debug/pprof/*` both sit behind `AuthMiddleware`. pprof can dump heap contents and call stacks (including config values), so it is never a public endpoint.
+
+### Diagnostics page (`pages/diagnostics/index.vue`)
+
+An authenticated panel page showing runtime health. Reachable via the 「诊断」 button in the groups page status bar (there is no central nav component).
+
+**The split that matters:** goroutine analysis does **not** depend on `runtime.enable_pprof`.
+
+| Section | Source | Needs `enable_pprof` |
+| --- | --- | --- |
+| Overview cards + goroutine grouping + full stack | `GET /api/diagnostics` | no |
+| heap / allocs / block / mutex / threadcreate text | `GET /api/debug/pprof/<name>?debug=1` | **yes** |
+| Binary profile download (for `go tool pprof`) | `GET /api/debug/pprof/<name>` | **yes** |
+
+Reasons for that split: `enable_pprof` carries real sampling overhead and defaults to off, while diagnostics should always be available; and `runtime.Stack(buf, true)` yields the *same* data as pprof's `goroutine?debug=2`, so taking it directly costs nothing extra. Parsing the dump lives in Go (`diagnostics.go`), where it is unit-tested — the frontend has no test framework, so a fragile text parser must not live there.
+
+`groupGoroutines` keys each goroutine by the **first frame that is not `runtime.`/`runtime/`/`sync.`/`internal/`/`os/signal.`**. Skipping those is the whole point: parked goroutines all sit in `runtime.gopark`, so without skipping you get one giant bucket. Two subtleties are load-bearing and both were caught by tests, not by reading:
+
+1. **Frame names must have their argument list stripped.** Arg values contain pointers, so `net/http.(*Server).Serve(0xc000..., {...})` differs per goroutine — keeping args makes every goroutine its own group and the aggregation silently does nothing.
+2. **`%2e` must be unescaped.** The compiler escapes `.` in the last segment of a package path (`cmd/internal/objabi/path.go`), so `gopkg.in/natefinch/lumberjack.v2` appears as `lumberjack%2ev2`. Only `%2e` needs replacing, because a real `%` is escaped to `%25`.
+
+The dump is fetched only with `?full=1` (auto-refresh must not ship megabytes), rendered truncated at 256 KB, and the page's auto-refresh defaults to **off** because `runtime.Stack(all=true)` stops the world.
+
+The frontend streams non-envelope responses through `src/api/diagnostics.ts`, which bypasses `request<T>` (that helper only unwraps `{code,data}`). Two verified uni-app facts it depends on: `responseType` accepts only `'text'` or `'arraybuffer'` (anything else is *silently* downgraded to text), and plain text needs no special option because `parseResponseText` try/catches `JSON.parse` and returns the raw string. Downloads are the repo's **first H5-only code** (`Blob` + `createObjectURL` + a synthetic `<a download>`), guarded with `#ifdef H5`; MiniProgram gets a toast instead.
 
 ### Frontend (`web/frontend/`)
 
-uni-app Vue 3 project — targets H5 web and WeChat MiniProgram. 3 pages: Login, Groups List, Message Detail. Pinia stores with token in `localStorage["good_review_token"]`. Hash routing for SPA compatibility.
+uni-app Vue 3 project — targets H5 web and WeChat MiniProgram. 4 pages: Login, Groups List, Message Detail, Diagnostics. Pinia stores with token in `localStorage["good_review_token"]`. Hash routing for SPA compatibility.
+
+Conventions worth matching: no UI library (hand-rolled `<view>`/`<text>` + scoped plain CSS, navy gradient `#1a1a2e → #16213e` header motif, white cards); always `<script setup lang="ts">`; each protected page runs its own auth guard in `onMounted` (`authStore.isAuthenticated()` else `uni.reLaunch` to login) — there is no router guard or shared nav component. Registering a page means a `.vue` file plus one entry in `src/pages.json`; nothing else (no tabBar, no route table). `api/index.ts` exports `request<T>` (unwraps `{code,data}`), `getAuthHeader()` and `handleUnauthorized()` — reuse the latter two anywhere you must call `uni.request` directly.
 
 **Build requirement:** Frontend must be built before the Go binary. Running `go build` without a pre-built frontend produces a working bot but the web panel returns "前端资源未构建".
 

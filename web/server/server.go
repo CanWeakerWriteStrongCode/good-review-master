@@ -28,6 +28,7 @@ type Server struct {
 	groupNamesMu sync.RWMutex
 	loginLimiter *loginRateLimiter
 	draining     atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
+	startedAt    time.Time    // 供 /api/diagnostics 报运行时长
 }
 
 // New 创建 Web 服务器实例
@@ -52,6 +53,7 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 		obClient:     obClient,
 		groupNames:   make(map[string]string),
 		loginLimiter: newLoginRateLimiter(),
+		startedAt:    time.Now(),
 	}
 
 	// 探针：无鉴权，注册在 engine 根上（不走 /api 的鉴权中间件）
@@ -67,6 +69,9 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames, &s.groupNamesMu))
 		apiGroup.GET("/groups/:id", handleAPIMessages(s.groupNames, &s.groupNamesMu))
 		apiGroup.POST("/logout", handleLogout())
+		// 运行时诊断：恒定可用，不受 enable_pprof 影响。
+		// goroutine 概览走 runtime.Stack 自取，没有采样式开销，没必要跟着 pprof 一起关。
+		apiGroup.GET("/diagnostics", handleDiagnostics(cfg, s.startedAt))
 
 		if cfg.EnablePprof {
 			registerPprof(apiGroup.Group("/debug"))

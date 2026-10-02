@@ -15,6 +15,7 @@ runtime:
   web_port: 9090
   web_username: "admin"
   web_password: "123456"
+  enable_pprof: true   # 诊断用例要打 /api/debug/pprof/*，必须开
 llm:
   provider: "openai"        # 测试模式走 FakeLLM 分支，此值不被读取
   api_key: "sk-test"

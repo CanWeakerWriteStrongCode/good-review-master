@@ -7,7 +7,10 @@
         监控 {{ store.botStatus.group_count }} 个群 |
         API: {{ store.botStatus.api_key }}
       </text>
-      <text class="logout-btn" @click="doLogout">退出</text>
+      <view class="status-actions">
+        <text class="diag-btn" @click="goDiagnostics">诊断</text>
+        <text class="logout-btn" @click="doLogout">退出</text>
+      </view>
     </view>
 
     <!-- 群列表 -->
@@ -83,6 +86,10 @@ function goMessages(groupId: string) {
     url: `/pages/messages/index?id=${groupId}`,
   })
 }
+
+function goDiagnostics() {
+  uni.navigateTo({ url: '/pages/diagnostics/index' })
+}
 </script>
 
 <style scoped>
@@ -105,6 +112,18 @@ function goMessages(groupId: string) {
   color: #aab;
   font-size: 13px;
   flex: 1;
+}
+.status-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.diag-btn {
+  color: #7ec8e3;
+  font-size: 13px;
+  padding: 4px 12px;
+  border: 1px solid #7ec8e3;
+  border-radius: 6px;
 }
 .logout-btn {
   color: #e74c3c;
