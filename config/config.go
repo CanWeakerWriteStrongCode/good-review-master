@@ -25,7 +25,11 @@ type Config struct {
 	WebPort           int    // Web 管理面板端口，<=0 禁用
 	WebUsername       string // Web 管理面板登录账号
 	WebPassword       string // Web 管理面板登录密码，空则不校验
+	JWTSecret         string // JWT 签名密钥；未配置时回退为 WebPassword（见 LoadConfig 的告警）
 	McpBuiltinToken   string // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
+	CorsOrigins       []string // 允许跨域访问管理面板的来源白名单；空=仅同源（不下发任何 CORS 头）
+	EnablePprof       bool     // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
+	ShutdownDelay     time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
 	LLMConfig         LLMConf
 	MCPConfig         MCPConf
 }
@@ -90,6 +94,10 @@ type configFile struct {
 		WebPassword      string `yaml:"web_password"`
 		MaxCacheMsg      int    `yaml:"max_cache_msg"`
 		McpBuiltinToken  string `yaml:"mcp_builtin_token"` // 内嵌 MCP 服务端 Bearer token，空=不校验
+		JWTSecret        string `yaml:"jwt_secret"`        // JWT 签名密钥，空则回退 web_password
+		CorsOrigins      string `yaml:"cors_origins"`      // 逗号分隔的来源白名单，空=仅同源
+		EnablePprof      bool   `yaml:"enable_pprof"`      // 开放 /api/debug/pprof/
+		ShutdownDelaySec int    `yaml:"shutdown_delay_sec"`
 	} `yaml:"runtime"`
 	LLM struct {
 		Provider         string  `yaml:"provider"`
@@ -140,7 +148,19 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		os.Exit(1)
 	}
 
-	allowGroups := parseAllowGroups(cfgFile.Bot.AllowGroups)
+	allowGroups := parseCommaList(cfgFile.Bot.AllowGroups)
+
+	// JWT 签名密钥：独立配置优先；未配置则回退 web 密码。
+	// 回退不是"等价"：密码一改，所有已签发的 token 立即失效，且用户复用了同一份秘密。
+	// 只告警、不自动改写用户文件——配置由用户拥有，程序不该替他们做決定。
+	jwtSecret := strings.TrimSpace(cfgFile.Runtime.JWTSecret)
+	if jwtSecret == "" {
+		jwtSecret = cfgFile.Runtime.WebPassword
+		if jwtSecret != "" {
+			logutil.Warn("runtime.jwt_secret 未配置，暂以 web_password 作为 JWT 签名密钥。" +
+				"建议单独设置一个随机值：改密码会导致所有已登录会话立刻掉线")
+		}
+	}
 
 	// 缓存扩展配置：默认值 + 手动缓冲上限
 	llmSendCount := cfgFile.Runtime.LLMSendCount
@@ -181,7 +201,11 @@ func LoadConfig(cfgPath string) (*Config, error) {
 		WebPort:           cfgFile.Runtime.WebPort,
 		WebUsername:       cfgFile.Runtime.WebUsername,
 		WebPassword:       cfgFile.Runtime.WebPassword,
+		JWTSecret:         jwtSecret,
 		McpBuiltinToken:   cfgFile.Runtime.McpBuiltinToken,
+		CorsOrigins:       parseCommaList(cfgFile.Runtime.CorsOrigins),
+		EnablePprof:       cfgFile.Runtime.EnablePprof,
+		ShutdownDelay:     time.Duration(max(0, cfgFile.Runtime.ShutdownDelaySec)) * time.Second,
 		LLMConfig: LLMConf{
 			Provider:         cfgFile.LLM.Provider,
 			APIKey:           cfgFile.LLM.APIKey,
@@ -272,16 +296,16 @@ func parseMCP(raw *mcpFile) MCPConf {
 	return conf
 }
 
-// parseAllowGroups 解析逗号分隔的群号列表为字符串切片
-func parseAllowGroups(raw string) []string {
-	var groups []string
-	for _, group := range strings.Split(raw, ",") {
-		group = strings.TrimSpace(group)
-		if group != "" {
-			groups = append(groups, group)
+// parseCommaList 把逗号分隔的字符串切成去空白、去空项的切片（群号白名单、CORS 来源共用）。
+func parseCommaList(raw string) []string {
+	var items []string
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			items = append(items, item)
 		}
 	}
-	return groups
+	return items
 }
 
 // HasGroup 检查群号是否在白名单中

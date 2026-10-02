@@ -1,0 +1,37 @@
+# 编辑器统一约定。Go 与前端都靠它，避免"我这边保存后整文件 diff"。
+# 支持度：VS Code / GoLand / Vim / Sublime 均原生或插件支持。
+
+root = true
+
+# 行尾这里刻意**不管**：仓库已由 .gitattributes 定好（*.bat→CRLF、*.sh→LF）
+# 并用 core.autocrlf=true 让工作区在 Windows 上是 CRLF。
+# editorconfig 再规定一套就会变成两个相互冲突的事实来源——
+# 编辑器按 LF 写、git 按 CRLF 检出，来回拉锯，每次保存都产生假 diff。
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Go 强制 tab 缩进（gofmt 的产物），覆盖上面的 space
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# YAML：配置与提示词文件，缩进必须稳定，2 空格
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# 前端与脚本
+[*.{js,ts,mjs,cjs,json,jsonc,vue,css,scss,html}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+indent_style = space
+indent_size = 2
+# Markdown 里行尾两空格是"硬换行"语法，不能裁掉
+trim_trailing_whitespace = false

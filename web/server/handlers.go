@@ -1,12 +1,14 @@
 package server
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"sync"
 	"time"
 
 	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/logutil"
 	"good-review-master/onebot"
 
 	"github.com/gin-gonic/gin"
@@ -95,10 +97,15 @@ func handleAPIGroups(cfg *config.Config, obClient *onebot.Client, groupNames map
 	}
 }
 
-func handleAPIMessages(cfg *config.Config, obClient *onebot.Client, groupNames map[string]string) gin.HandlerFunc {
+// handleAPIMessages 返回指定群的缓存消息。
+// groupNames 由 handleAPIGroups 与 debug inject/reset 并发读写，读也要持锁——
+// 之前这里直读 map，是已知的数据竞争点。
+func handleAPIMessages(groupNames map[string]string, groupNamesMu *sync.RWMutex) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID := c.Param("id")
+		groupNamesMu.RLock()
 		groupName := groupNames[groupID]
+		groupNamesMu.RUnlock()
 
 		gc := cache.GetCache(groupID)
 		if gc == nil {
@@ -145,27 +152,43 @@ func formatTimestamp(ts int64) string {
 	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
 }
 
-// handleLogin 登录校验，成功返回 token（web_password 必填，无免密通道）
-func handleLogin(username, password string) gin.HandlerFunc {
+// handleLogin 登录校验，成功返回 token（web_password 必填，无免密通道）。
+//
+// 限流按来源 IP 施加，且**只对失败计数**（成功不消费令牌）：
+// 正常用户不会被自己拖慢，暴力破解则在若干次失败后必须等桶回填。
+func handleLogin(username, password, jwtSecret string, limiter *loginRateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		clientIP := c.ClientIP()
+		if limiter.Blocked(clientIP) {
+			logutil.Warn("登录失败次数过多，已限流", "ip", clientIP)
+			c.Header("Retry-After", "60")
+			c.JSON(http.StatusTooManyRequests, APIResponse{Code: 429, Data: gin.H{"msg": "尝试过于频繁，请稍后再试"}})
+			return
+		}
+
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(400, APIResponse{Code: 400, Data: nil})
+			c.JSON(http.StatusBadRequest, APIResponse{Code: 400, Data: nil})
 			return
 		}
-		if body.Username != username || body.Password != password {
-			c.JSON(200, APIResponse{Code: 401, Data: gin.H{"msg": "账号或密码错误"}})
+		// 常量时间比较：避免用响应时间逐字节猜密码（subtle 的用法见 chacha20 文档）
+		if subtle.ConstantTimeCompare([]byte(body.Username), []byte(username)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(body.Password), []byte(password)) != 1 {
+			limiter.RecordFailure(clientIP)
+			logutil.Warn("登录失败", "ip", clientIP, "username", body.Username)
+			c.JSON(http.StatusOK, APIResponse{Code: 401, Data: gin.H{"msg": "账号或密码错误"}})
 			return
 		}
-		token, err := GenerateJWT(username, password)
+		token, err := GenerateJWT(username, jwtSecret)
 		if err != nil {
-			c.JSON(500, APIResponse{Code: 500, Data: gin.H{"msg": "token 生成失败"}})
+			logutil.Error("生成 token 失败", "err", err)
+			c.JSON(http.StatusInternalServerError, APIResponse{Code: 500, Data: gin.H{"msg": "token 生成失败"}})
 			return
 		}
-		c.JSON(200, APIResponse{Code: 200, Data: gin.H{"token": token}})
+		c.JSON(http.StatusOK, APIResponse{Code: 200, Data: gin.H{"token": token}})
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"good-review-master/config"
@@ -25,6 +26,8 @@ type Server struct {
 	obClient     *onebot.Client
 	groupNames   map[string]string // groupID → groupName 缓存
 	groupNamesMu sync.RWMutex
+	loginLimiter *loginRateLimiter
+	draining     atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
 }
 
 // New 创建 Web 服务器实例
@@ -32,22 +35,43 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 
+	// 不信任任何代理头：gin 默认会采信 X-Forwarded-For，那样 c.ClientIP() 就成了
+	// 请求方完全可控的值，登录限流只要每次换个假 IP 就能绕过。
+	// 面板默认直连（内嵌同源 H5），这样最安全。
+	// 若将来确实放在反代后面，要改成 SetTrustedProxies([]string{"反代IP"}) 而不是放开全部。
+	_ = engine.SetTrustedProxies(nil)
+
 	// 全局中间件
 	engine.Use(RecoveryMiddleware())
 	engine.Use(LoggerMiddleware())
-	engine.Use(CORSMiddleware())
+	engine.Use(CORSMiddleware(cfg.CorsOrigins))
 
-	s := &Server{cfg: cfg, engine: engine, obClient: obClient, groupNames: make(map[string]string)}
+	s := &Server{
+		cfg:          cfg,
+		engine:       engine,
+		obClient:     obClient,
+		groupNames:   make(map[string]string),
+		loginLimiter: newLoginRateLimiter(),
+	}
+
+	// 探针：无鉴权，注册在 engine 根上（不走 /api 的鉴权中间件）
+	engine.GET("/healthz", s.handleHealthz())
+	engine.GET("/readyz", s.handleReadyz())
 
 	// API 路由
 	apiGroup := engine.Group("/api")
-	apiGroup.POST("/login", handleLogin(cfg.WebUsername, cfg.WebPassword))
-	apiGroup.Use(AuthMiddleware(cfg.WebPassword, cfg.WebPassword))
+	apiGroup.POST("/login", handleLogin(cfg.WebUsername, cfg.WebPassword, cfg.JWTSecret, s.loginLimiter))
+	apiGroup.Use(AuthMiddleware(cfg.JWTSecret))
 	{
 		apiGroup.GET("/status", handleAPIStatus(cfg))
 		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames, &s.groupNamesMu))
-		apiGroup.GET("/groups/:id", handleAPIMessages(cfg, obClient, s.groupNames))
+		apiGroup.GET("/groups/:id", handleAPIMessages(s.groupNames, &s.groupNamesMu))
 		apiGroup.POST("/logout", handleLogout())
+
+		if cfg.EnablePprof {
+			registerPprof(apiGroup.Group("/debug"))
+			logutil.Warn("pprof 已开放", "path", "/api/debug/pprof/", "提示", "需 JWT；用完建议关掉 runtime.enable_pprof")
+		}
 	}
 
 	// SPA fallback：非 /api/* 路径返回前端静态文件
@@ -107,8 +131,32 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Shutdown 优雅关闭 Web 服务
+// Shutdown 优雅关闭 Web 服务，顺序对优雅下线是本质的：
+//
+//  1. 置 draining → /readyz 立刻转 503
+//  2. 等 shutdown_delay_sec（默认 0）
+//  3. 才停监听、等在途请求收尾
+//
+// 第 2 步不能省：http.Server.Shutdown 会**立即关闭监听器**，之后再来的探针
+// 连连接都建不起来，503 就没有任何观察窗口——等于白标。只有先亮出"我不ready了"、
+// 留出时间让调用方（k8s endpoints、LB、nginx upstream）把流量摘走，再停监听，
+// 顺序才成立。
+//
+// 所以这个等待**只在有调用方观察时才有意义**（k8s/LB 后面）。
+// 直连单机跑的时候没有观察者，等待纯属拖慢退出，因此默认 0 = 不等待、行为与改造前一致。
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.draining.Store(true)
+
+	if delay := s.cfg.ShutdownDelay; delay > 0 {
+		logutil.Info("已置为 not-ready，等待流量摘除后再停监听", "等待", delay.String())
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			// 上层给的关闭预算用完了，跳过等待直接关，不要卡住整个退出流程
+			logutil.Warn("等待流量摘除被取消，直接关闭监听", "err", ctx.Err())
+		}
+	}
+
 	logutil.Info("正在关闭 Web 管理面板...")
 	return s.httpServer.Shutdown(ctx)
 }

@@ -4,11 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Verify
 
+**没有 Makefile、没有 CI、没有统一入口**——检查直接敲命令。代价是"忘了跑"没有兜底，所以每阶段收尾请按下面这条顺序过一遍：
+
 ```bash
-go vet ./...          # check all packages
 go build ./...        # verify all packages compile
-go test ./...         # run Go unit tests (cmd/chat_window_test.go — cache cost window selection)
-go build -o good-review-master.exe .  # build binary
+go vet ./...          # 必须绿
+go test ./...         # 必须绿
+go tool golangci-lint run    # 参考，不是门禁（红了挑着修，别为它改无意义的代码）
+cd tests/e2e && pnpm test    # 行为回归，每阶段收尾必跑（基线 7 过 / 2 既有失败 bot-flow、persona）
+go build -o good-review-master.exe .  # 出二进制
+```
+
+**不跑 `go test -race`**：race detector 需要 cgo + C 编译器，本机没装 gcc。
+这意味着**没有任何自动并发检查**，写并发代码时靠注释里的不变量（"单写者""快照不可变"）兜着。
+真需要时 `winget install BrechtSanders.WinLibs.POSIX.UCRT` 装完即可补跑。
+
+### Go 工具（`go tool` 指令，不装全局）
+
+三个工具用 Go 1.24+ 的 `tool` 指令钉在 `go.mod` 里（取代 `tools.go` + `//go:build tools` 那个老 hack），换机器零安装、`go mod tidy` 不会删：
+
+```bash
+go tool golangci-lint run    # 只开 govet / ineffassign / unused（见 .golangci.yml）
+go tool govulncheck ./...    # 想查依赖漏洞时跑
+go tool wire ./app           # 阶段 6 起：改了 provider 就要重跑，然后 git status 应无差异
 ```
 
 ## Testing（API 层自测）
@@ -103,6 +121,8 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 8. `bot.NewBot(...)`; `webserver.New(cfg, obClient)` + `EnableDebug(router, fakeLLM)` when test mode (conditional, `cfg.WebPort > 0`).
 
 **`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches polling goroutine and web server (non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code.
+
+**Readiness during shutdown (invariant):** `webserver.Server.Shutdown` sets the `draining` flag **first**, then optionally waits `shutdown_delay_sec`, and only then stops the listener. The order is essential and was empirically verified: `http.Server.Shutdown` closes the listener *immediately*, so setting the flag and calling it back-to-back leaves `/readyz` no observable window — a probe cannot even open a connection (it gets an RST). The wait is what lets a load balancer notice the 503 and drain. With the default `shutdown_delay_sec: 0` there is no observable, which is correct for a directly-reached panel.
 
 **MCP session lifetime (invariant):** `mcpclient.Manager`'s lifetime deliberately uses `context.WithoutCancel`, so sessions and their stdio subprocesses end **only via `Manager.Close()`** — the graceful path (close stdin → child exits on its own) never gets a chance if a parent context cancellation kills the child first. `Close()` closes sessions *before* cancelling the lifetime, and takes a `closing` gate so the reconnect loop can't spawn a new subprocess mid-shutdown. Any exit path that skips `App.Shutdown` leaks stdio subprocesses. In `Close`, a child's non-zero exit code is only a WARN, not a failure: servers commonly treat stdin EOF as an error (the Go SDK's own server returns `server is closing: EOF`).
 
@@ -236,21 +256,33 @@ Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go
 | --- | --- |
 | `server.go` | Gin engine, route registration, SPA fallback, graceful shutdown |
 | `handlers.go` | API handlers: login, logout, status, groups list, group messages |
-| `auth.go` | JWT generation (HS256, 24h expiry) and parsing |
-| `middleware.go` | Logger, Recovery (panic guard), CORS, JWT auth guard |
+| `auth.go` | JWT generation (HS256, 24h expiry) and parsing; login failure rate limit (per-IP token bucket, failures only) |
+| `middleware.go` | Logger, Recovery (panic guard), CORS (allowlist), JWT auth guard |
+| `health.go` | `/healthz` + `/readyz` probes (no auth) |
+| `pprof.go` | `net/http/pprof` under the authenticated `/api/debug/pprof/`, off unless `runtime.enable_pprof` |
 | `embed.go` | `//go:embed static/frontend` |
 
 **API endpoints:**
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/api/login` | No | Returns JWT token (validates username/password) |
+| POST | `/api/login` | No | Returns JWT token (validates username/password; rate-limited) |
 | GET | `/api/status` | JWT | BotQQ, Nickname, MaskedAPIKey, GroupCount |
 | GET | `/api/groups` | JWT | Per-group info with activity stats |
 | GET | `/api/groups/:id` | JWT | Cached messages for one group |
 | POST | `/api/logout` | JWT | No-op (stateless token) |
+| GET | `/healthz` | **No** | Liveness: always 200 while the process serves |
+| GET | `/readyz` | **No** | Readiness: 503 while draining (see `shutdown_delay_sec`) |
+| GET | `/api/debug/pprof/*` | JWT | Only when `runtime.enable_pprof: true` |
 
-Key details: Gin runs in ReleaseMode; CORS allows all origins; `web_password` is required (no password-less mode — the bot exits at startup if web is enabled without a password); `groupNames` map caches GetGroupInfo results to avoid repeated NapCat calls.
+Key details: Gin runs in ReleaseMode; `web_password` is required (no password-less mode — the bot exits at startup if web is enabled without a password); `groupNames` map caches GetGroupInfo results to avoid repeated NapCat calls.
+
+**Security posture** (all changed together — keep them consistent if you touch auth):
+
+- **Login rate limit** — per-IP token bucket, 5 consecutive failures then 429 (`Retry-After: 60`). Only *failures* consume tokens, so a successful login never throttles a legitimate user. `engine.SetTrustedProxies(nil)` is set deliberately: gin trusts `X-Forwarded-For` by default, which would make `c.ClientIP()` attacker-controlled and the limit trivially bypassable. If you ever put this behind a reverse proxy, change it to `SetTrustedProxies([]string{"<proxy-ip>"})` — never re-open it to all.
+- **CORS** — default is same-origin only (no CORS headers at all). `runtime.cors_origins` adds an allowlist; `*` re-opens it to everything. The dev Vite server uses a proxy, so nothing needs configuring.
+- **JWT** — signs and verifies HS256 only. `jwt_secret` is separate from `web_password`; if unset it falls back to the password with a WARN (note: jwt/v5 already rejects `alg=none` and RS256 key-confusion via its keyfunc, so `WithValidMethods` is defense-in-depth, not a fix for a live hole).
+- **Probes leak nothing** — `/healthz` and `/readyz` are unauthenticated, so their bodies contain status strings only: never config values, group IDs or upstream addresses. They also deliberately **do not** check NapCat reachability: that is degradation, not unreadiness, and an unauthenticated endpoint must not trigger outbound calls.
 
 ### Frontend (`web/frontend/`)
 
@@ -329,6 +361,10 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 - `prompt_system.yaml` is also auto-created with a comment header if missing
 - `runtime.web_port` — web panel port, <=0 disables the web server
 - `runtime.web_username` / `runtime.web_password` — login credentials (both required when the web panel is enabled)
+- `runtime.jwt_secret` — JWT signing key; falls back to `web_password` with a WARN when empty (a password change then invalidates every logged-in session)
+- `runtime.cors_origins` — comma-separated origin allowlist; empty = same-origin only. `*` allows any origin
+- `runtime.enable_pprof` — exposes `net/http/pprof` under the authenticated `/api/debug/pprof/`
+- `runtime.shutdown_delay_sec` — pre-stop wait: mark not-ready, wait this long, *then* stop the listener. Default 0 (stop immediately). Only meaningful behind an LB / k8s / nginx that polls `/readyz`; must stay under the 10s shutdown budget in `app.Run`
 - `Config.MaskedAPIKey()` — returns API key with only first 4 and last 4 chars visible (e.g., `sk-9a****d8`), used by web API
 - `apppath.ResolvePath(filename)` searches `./` then `exeDir/`
 - `config.CustomPromptPath(systemPath)` gives `prompt_custom.yaml` path in the same directory as `prompt_system.yaml`

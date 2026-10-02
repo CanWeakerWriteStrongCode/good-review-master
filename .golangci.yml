@@ -1,0 +1,35 @@
+# golangci-lint 配置（v2 schema）。
+#
+# 设计原则：只开"会报真错"的 linter，一个风格类都不开。
+# 本项目是单人维护的小项目，风格分歧没有价值，"这段写了没用 / 写错了"才有价值。
+# 这是参考工具，不是门禁：红了挑着修，不要为了让它变绿去改无意义的代码。
+#
+# 对应命令：go tool golangci-lint run
+# 只看最近改动：go tool golangci-lint run --new-from-rev=HEAD~20
+
+version: "2"
+
+linters:
+  # 关掉全部默认 linter，只显式开启下面三个
+  default: none
+
+  enable:
+    # go vet 的完整规则集：printf 参数不匹配、锁值拷贝、无用 struct tag 等
+    - govet
+    # 赋值后再也没被读过（写了没用）
+    - ineffassign
+    # 无人引用的常量/变量/函数/字段（写了没用）
+    - unused
+
+  # 不给 govet 加 settings：用它的默认分析器集，也就是 go vet 跑的那一套。
+  # 特意不开 enable-all —— 那会把 shadow、fieldalignment 这类"风格/洁癖"分析器拉进来，
+  # 正是要避免的噪音来源。
+
+  exclusions:
+    # 生成物（wire_gen.go 等）不参与检查
+    generated: lax
+
+# 格式化器单独一段，一个都不开：
+# gofmt/gofumpt 属于"代码长什么样"，编辑器保存时已经处理，不需要 CI 化的第二道意见
+formatters:
+  enable: []
