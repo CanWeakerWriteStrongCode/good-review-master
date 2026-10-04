@@ -38,23 +38,21 @@ type App struct {
 	Web        *webserver.Server        // web_port<=0 时为 nil
 	Metrics    *telemetry.MetricsServer // metrics_addr=off 时为 nil
 
-	ctx       context.Context // 生命周期 context：收到 SIGINT/SIGTERM 或 Shutdown 时取消
-	stop      context.CancelFunc
-	closeOnce sync.Once
-
-	// 配置快照机制的内部件，以及"只有 app 知道"的派生值（见 build.go 的 derive）
-	sources          config.Sources
-	configStore      *store.Store[config.Config]
-	configInformer   *store.Informer[config.Config]
-	promptObserver   *store.Observer
-	botNickname      string // 启动时从 NapCat 取到，之后不变
-	builtinImageAddr string // 内嵌看图 MCP 的地址；空表示本会话没启用
-	webURL           string // 启动时算好的面板地址，只用于启动日志
-
-	// 可观测性：注册表只在这里持有（指标定义在 telemetry 包），
-	// shutdownTrace 在追踪未启用时是一个 no-op 函数，永远非 nil。
-	registry      *telemetry.Registry
+	// 下面这两类**不属于依赖图**，所以没走 Wire，由 build.go 在装配后赋值：
+	//
+	//  - 生命周期状态：ctx/stop/closeOnce 说的是"什么时候结束"，不是"由什么造出来"；
+	//  - 只在这层用到的收尾钩子：shutdownTrace 是 telemetry.InitTracing 的返回值
+	//    （设置全局 TracerProvider 是副作用），webURL 只是给启动日志用的一行字。
+	ctx           context.Context // 生命周期 context：收到 SIGINT/SIGTERM 或 Shutdown 时取消
+	stop          context.CancelFunc
+	closeOnce     sync.Once
+	webURL        string // 启动时算好的面板地址，只用于启动日志
 	shutdownTrace func(context.Context) error
+
+	// 两个监听器：构造在依赖图里（见 providers.go），Start() 负责跑起来。
+	// 它们不进导出字段，因为除了本包没人该碰。
+	configInformer *store.Informer[config.Config]
+	promptObserver *store.Observer
 }
 
 // Ctx 返回应用生命周期 context。

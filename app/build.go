@@ -9,18 +9,12 @@ import (
 	"syscall"
 	"time"
 
-	"good-review-master/bot"
 	"good-review-master/config"
-	"good-review-master/config/store"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
 	"good-review-master/logutil"
-	"good-review-master/mcpclient"
-	"good-review-master/mcpserver"
-	"good-review-master/onebot"
 	"good-review-master/router"
 	"good-review-master/telemetry"
-	webserver "good-review-master/web/server"
 )
 
 // Options 装配输入（都是外部环境决定、组件自己拿不到的东西）。
@@ -36,166 +30,158 @@ type Options struct {
 // 每次 tick 只做几次 os.Stat，开销可忽略。
 const configWatchInterval = 2 * time.Second
 
-// New 装配整个应用：加载配置、构造各组件并接线，返回可直接 Run 的 App。
+// New 装配整个应用。
 //
-// 所有可能失败的步骤（配置、校验、大模型提供商）都排在占用任何资源之前，
-// 因此 New 失败时调用方无需清理。
-// 注意 New 并非无副作用的纯构造：内嵌看图 MCP 要在此绑定端口（地址得参与装配），
-// MCP 建连也在这里发起。
+// **依赖图本身不在这里**——它声明在 providers.go，由 `go tool wire ./app` 生成
+// wire_gen.go。本函数只做 Wire 表达不了的那部分：凡带副作用、或顺序本身即语义的动作。
+//
+// 具体是四类：
+//
+//  1. 生命周期：signal.NotifyContext 要在任何组件跑起来之前装好，
+//     而且它注册的是进程级信号处理器，不是"某个依赖"；
+//  2. 按运行期条件二选一：大模型实现由 GOOD_REVIEW_TEST 决定，
+//     而 Wire 的图是编译期定死的，不能"看环境变量选实现"；
+//  3. 首跑与日志：main 负责建模板文件，这里负责把加载结果打成启动日志；
+//  4. 启动动作的时序：MCP 的 LogConfig/Start 与面板的 EnableDebug 都是
+//     构造之后的**方法调用**，Wire 只接构造函数。
+//
+// 顺序上有一处硬约束：**昵称必须在快照构造之前取到**（见 providers.go 的
+// provideBotNickname）——快照要求不可变，"先发布再往里面写昵称"正是这次重构要消掉的动作。
 func New(opts Options) (*App, error) {
+	// 配置只读这一次。**必须在造大模型客户端之前**：客户端的 provider 分支、
+	// 接口地址、采样参数全都来自它。校验失败就在这里返回，
+	// 此时还没占任何资源（信号处理器、端口、子进程都还没动）。
 	sources := config.Sources{Config: opts.ConfigPath, Secret: opts.SecretPath}
-
-	// 配置的合法性（含"开了 web_port 就必须有账号密码"）由 config.Load 内部的
-	// 域内校验 + Config.Validate 一次性判定，New 不再自己重复检查一遍。
-	cfg, err := config.Load(sources)
+	loaded, err := config.Load(sources)
 	if err != nil {
 		return nil, fmt.Errorf("加载配置失败：%w", err)
 	}
 
-	promptCfg, err := config.LoadPromptConfig(opts.SystemPromptPath, config.CustomPromptPath(opts.SystemPromptPath))
+	llmClient, fakeLLM, err := buildLLMClient(opts, loaded)
 	if err != nil {
-		return nil, fmt.Errorf("加载提示词配置失败：%w", err)
+		return nil, err
 	}
 
-	application := &App{Prompt: promptCfg, sources: sources}
+	// 生命周期 context：MCP 会话、路由 goroutine、消息轮询、配置监听都挂在它下面。
+	// 它属于 App 的"状态"而不是"依赖"，所以不进依赖图，构造完再赋值。
+	lifecycleCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	// 大模型客户端（测试模式用 FakeLLM，不走真实 API）
-	if opts.TestMode {
-		application.FakeLLM = testutil.NewFakeLLM()
-		application.LLM = application.FakeLLM
-		logutil.Warn("测试模式已启用：使用 FakeLLM，NapCat 指向死地址")
-	} else {
-		switch cfg.LLMConfig.Provider {
-		case "openai":
-			adapter := llm.NewOpenAIAdapter(
-				cfg.LLMConfig.APIKey,
-				cfg.LLMConfig.APIBase,
-				cfg.LLMConfig.ModelName,
-				cfg.LLMConfig.Temperature,
-				cfg.LLMConfig.TopP,
-			)
-			// 出站保护（限速 + 熔断）包在适配器外面，而不是塞进适配器内部：
-			// 它管的是"要不要发这一趟"，与"怎么发"是两件事，分开后各自可测。
-			// 参数取的是一次启动快照——熔断器/限速器是有状态的，热更新数值
-			// 会让计数含义漂移，不值得。
-			application.LLM = llm.NewResilient(adapter, llm.ResilientOptions{
-				RatePerSecond:   cfg.LLMConfig.RateLimitPerSec,
-				RateLimitBurst:  cfg.LLMConfig.RateLimitBurst,
-				BreakerFailures: cfg.LLMConfig.BreakerFailures,
-				BreakerCooldown: cfg.LLMConfig.BreakerCooldown,
-			})
-		default:
-			// 理论上到不了这里：provider 白名单已在 llmSection.Validate 里拦下。
-			// 留着是为了让"加了 provider 却没加分支"立刻编译期/启动期可见，而不是静默走错。
-			return nil, fmt.Errorf("不支持的大模型提供商：%s（config 校验通过却无对应分支，请检查 app/build.go）",
-				cfg.LLMConfig.Provider)
-		}
+	application, err := initializeApp(injectorInputs{
+		Sources: sources,
+		Loaded:  loadedConfig{loaded},
+		PromptPaths: promptPaths{
+			System: opts.SystemPromptPath,
+			Custom: config.CustomPromptPath(opts.SystemPromptPath),
+		},
+		LLM: llmClient,
+		Ctx: lifecycleCtx,
+	})
+	if err != nil {
+		// 装配失败时还没起任何后台东西，但信号处理器已经装上了，要收掉
+		stop()
+		return nil, err
 	}
 
-	// shutdown context：MCP 会话、路由 goroutine、消息轮询、配置监听都挂在它下面
-	application.ctx, application.stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	application.ctx = lifecycleCtx
+	application.stop = stop
+	application.FakeLLM = fakeLLM
 
-	application.OneBot = onebot.NewClient(cfg.NapCatHTTPAPI, cfg.NapCatAccessToken)
-
-	// 昵称必须在建快照**之前**取到：快照要求不可变，"先建快照再往里面写昵称"
-	// 正是这次改造要消掉的那种运行期写入。
-	if info, err := application.OneBot.GetLoginInfo(); err != nil {
-		logutil.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
-	} else {
-		application.botNickname = info.Nickname
-		logutil.Info("机器人昵称", "nickname", application.botNickname)
-	}
-
-	application.setupBuiltinImageMCP(cfg)
-
-	// 第一份快照：贴上昵称与内嵌看图服务后发布出去，之后就不再修改它
-	initial := application.derive(cfg)
-	application.configStore = store.NewStore(initial)
-	application.Config = application.configStore.Get // 方法值，类型恰为 config.Snapshot
-	application.webURL = fmt.Sprintf("http://localhost:%d", initial.WebPort)
-
-	// 可观测性：指标注册表与（可选）链路追踪都在这里建好，Shutdown 时一起收。
-	// 用 initial 而不是每次读快照：metrics_addr / otlp_endpoint 都是启动期决定
-	// （监听器已绑定、导出器已构造），改了要重启——warnRestartOnlyChanges 会提示。
-	application.registry = telemetry.NewRegistry()
-	shutdownTrace, err := telemetry.InitTracing(initial.OTLPEndpoint, "good-review")
+	// 可观测性：注册表随依赖图一起建好了，追踪是全局状态（otel.SetTracerProvider），
+	// 带副作用且失败要降级，所以留在这一层。
+	shutdownTrace, traceErr := telemetry.InitTracing(loaded.OTLPEndpoint, "good-review")
 	switch {
-	case err != nil:
+	case traceErr != nil:
 		// 追踪配错了不该拦住启动：没有链路不影响机器人干活
-		logutil.Warn("链路追踪初始化失败，本次运行不采集链路", "err", err)
-	case initial.OTLPEndpoint != "":
+		logutil.Warn("链路追踪初始化失败，本次运行不采集链路", "err", traceErr)
+	case loaded.OTLPEndpoint != "":
 		// 只在真的开了的时候说一声：这条日志是"我配的 endpoint 到底生效没有"的唯一直接证据
-		logutil.Info("链路追踪已启用", "endpoint", initial.OTLPEndpoint)
+		logutil.Info("链路追踪已启用", "endpoint", loaded.OTLPEndpoint)
 	}
 	application.shutdownTrace = shutdownTrace
-	if initial.MetricsAddr != config.MetricsAddrOff {
-		application.Metrics = telemetry.NewMetricsServer(initial.MetricsAddr, application.registry)
-	}
 
-	// MCP 工具服务：后台并发连接每个服务并自动拉取工具清单（tools/list），
-	// 拉到后原子更新快照，之后每次对话自动把 inject 服务的工具作为 function calling 注入。
+	// MCP 工具服务：构造已经在图里完成，这里触发"连上去 + 拉工具清单"。
 	// 不阻塞启动：连不上的服务由重连循环按 retry_interval_sec 接管。
-	// 注意用的是 initial 而非快照：MCP 的服务列表**不**随配置热更新（见阶段 7）。
-	application.MCP = mcpclient.New(initial.MCPConfig, application.ctx)
+	// 顺序上排在启动摘要之前，是为了让日志读起来仍是"组件先自报家门，再打总结"。
 	application.MCP.LogConfig()
 	application.MCP.Start()
 
-	application.Router = router.NewRouter(application.Config, promptCfg, application.LLM, application.OneBot, application.MCP, application.ctx)
+	logStartup(application)
 
-	logutil.Info("🚀 【不是好评大师】机器人启动成功")
-	logutil.Info("机器人QQ：" + initial.BotQQ)
-	logutil.Info("允许响应群：" + initial.AllowGroupsStr())
-	logutil.Info("NapCat HTTP API：" + initial.NapCatHTTPAPI)
-
-	application.Bot = bot.NewBot(application.Config, application.OneBot, application.Router)
-
-	if initial.WebPort > 0 {
-		application.Web = webserver.New(application.Config, application.OneBot)
-		if opts.TestMode {
-			application.Web.EnableDebug(application.Router, application.FakeLLM)
-		}
+	if application.Web != nil && fakeLLM != nil {
+		application.Web.EnableDebug(application.Router, fakeLLM)
 	}
 
-	// 配置监听：把"重新加载"这件事收敛到一个入口。
-	// list 里走的是 derive 而**不是**裸的 config.Load——否则每次重读磁盘配置
-	// 都会把昵称和内嵌看图服务从快照里抹掉（它们不在文件里）。
-	application.configInformer = store.NewInformer(application.configStore, func() (*config.Config, error) {
-		reloaded, err := config.Load(sources)
-		if err != nil {
-			return nil, err
-		}
-		return application.derive(reloaded), nil
-	}, store.NewFilePoller(configWatchInterval, opts.ConfigPath, opts.SecretPath))
-	application.configInformer.AddEventHandler(warnRestartOnlyChanges)
-
-	// 提示词监听：提示词有自己的合并语义（系统只读 + 自定义每次读盘），
-	// 数据也由 PromptConfig 自己持有，所以这里只观察"变了"，不另存一份快照。
-	application.promptObserver = store.NewObserver(
-		store.NewFilePoller(configWatchInterval,
-			opts.SystemPromptPath, config.CustomPromptPath(opts.SystemPromptPath)),
-		application.reloadPrompts,
-	)
-
 	return application, nil
+}
+
+// buildLLMClient 按运行环境挑大模型实现。
+//
+// 这一步必须在依赖图之外：Wire 的图是编译期定死的，而"测试模式用 FakeLLM"
+// 是运行期条件。所以选好的实现作为 injector 的**入参**传进去，
+// 图里那一堆下游（router / 测试接口）看到的就是同一个 llm.Client。
+//
+// 同时返回具体的 FakeLLM：只有测试模式非 nil，Web 面板要用它注册 /api/debug/*。
+func buildLLMClient(opts Options, cfg *config.Config) (llm.Client, *testutil.FakeLLM, error) {
+	if opts.TestMode {
+		fakeLLM := testutil.NewFakeLLM()
+		logutil.Warn("测试模式已启用：使用 FakeLLM，NapCat 指向死地址")
+		return fakeLLM, fakeLLM, nil
+	}
+
+	switch cfg.LLMConfig.Provider {
+	case "openai":
+		adapter := llm.NewOpenAIAdapter(
+			cfg.LLMConfig.APIKey,
+			cfg.LLMConfig.APIBase,
+			cfg.LLMConfig.ModelName,
+			cfg.LLMConfig.Temperature,
+			cfg.LLMConfig.TopP,
+		)
+		// 出站保护（限速 + 熔断）包在适配器外面，而不是塞进适配器内部：
+		// 它管的是"要不要发这一趟"，与"怎么发"是两件事，分开后各自可测。
+		return llm.NewResilient(adapter, llm.ResilientOptions{
+			RatePerSecond:   cfg.LLMConfig.RateLimitPerSec,
+			RateLimitBurst:  cfg.LLMConfig.RateLimitBurst,
+			BreakerFailures: cfg.LLMConfig.BreakerFailures,
+			BreakerCooldown: cfg.LLMConfig.BreakerCooldown,
+		}), nil, nil
+	default:
+		// 理论上到不了这里：provider 白名单已在 llmSection.Validate 里拦下。
+		// 留着是为了让"加了 provider 却没加分支"立刻编译期/启动期可见，而不是静默走错。
+		return nil, nil, fmt.Errorf("不支持的大模型提供商：%s（config 校验通过却无对应分支，请检查 app/build.go）",
+			cfg.LLMConfig.Provider)
+	}
+}
+
+// logStartup 打启动摘要。只有这里知道"哪些东西真的起来了"（面板可能被禁用、
+// 指标端点可能被关掉），所以它读的是装配结果而不是配置。
+func logStartup(application *App) {
+	cfg := application.Config()
+	logutil.Info("🚀 【不是好评大师】机器人启动成功")
+	logutil.Info("机器人QQ：" + cfg.BotQQ)
+	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
+	logutil.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
 }
 
 // reloadPrompts 提示词文件变化后的动作：重读并重建路由表。
 //
 // 两步缺一不可：Reload 只换数据，而路由表（前缀树 + 帮助列表）是从数据**派生**出来的，
 // 不重建的话新关键字根本命中不了——用户会看到"配置文件里明明写了，发出去却没反应"。
-func (a *App) reloadPrompts() {
-	a.Prompt.Reload()
-	a.Router.Rebuild()
-	data := a.Prompt.Snapshot()
-	logutil.Info("提示词已热更新并重建路由表", "指令类别数", len(data.CmdConfigs))
+//
+// 写成自由函数而不是 App 的方法：监听器的 provider 需要它，而 App 需要监听器——
+// 方法值会把这个依赖变成环（App → observer → App）。
+func reloadPrompts(promptCfg *config.PromptConfig, messageRouter *router.Router) {
+	promptCfg.Reload()
+	messageRouter.Rebuild()
+	logutil.Info("提示词已热更新并重建路由表", "指令类别数", len(promptCfg.Snapshot().CmdConfigs))
 }
 
 // warnRestartOnlyChanges 报告"改了但不会热生效"的配置项。
 //
 // 为什么需要这个告警：热更新一上线，用户会理所当然地以为改什么都能立刻生效。
 // 而下面这几项在启动时就固化了——端口已绑定、路由表与鉴权中间件已按当时的值装好、
-// MCP 客户端已按当时的服务列表构造。不提示的话，用户会以为改动生效了，
-// 然后花时间排查"为什么改端口没用"。
+// MCP 客户端已按当时的服务列表构造、限速器与熔断器是有状态的。
+// 不提示的话，用户会以为改动生效了，然后花时间排查"为什么改端口没用"。
 func warnRestartOnlyChanges(previous, next *config.Config) {
 	if previous.WebPort != next.WebPort {
 		logutil.Warn("web_port 已变化，但需要重启才能生效（监听器在启动时已绑定）",
@@ -250,17 +236,21 @@ func sameMCPServers(previous, next []config.MCPServerConf) bool {
 	return true
 }
 
-// derive 把"只有 app 知道"的运行期值贴到一份刚加载出来的配置上，得到可以发布的快照。
+// deriveConfig 把"只有本进程知道"的运行期值贴到一份刚加载出来的配置上，
+// 得到可以发布的快照内容。
 //
 // 这些值不在任何文件里（昵称来自 NapCat，地址来自本次进程绑定的端口），
 // 但它们又必须出现在快照里，否则 bot 的 @检测 与 MCP 的工具注入就看不到。
 // 所以**每一次重新加载都要经过这里**，而不是只有启动时走一次。
 //
 // 本函数不改动入参之外的东西，也不打日志（重载会反复调用，日志会刷屏）。
-func (a *App) derive(base *config.Config) *config.Config {
-	base.BotNickname = a.botNickname
+//
+// 写成自由函数而不是 App 的方法：配置监听器的 provider 需要它，
+// 而 App 需要监听器——方法值会把依赖变成环。
+func deriveConfig(base *config.Config, nickname botNickname, addr builtinImageAddr) *config.Config {
+	base.BotNickname = string(nickname)
 
-	if a.builtinImageAddr == "" {
+	if addr == "" {
 		return base
 	}
 	base.MCPConfig.Enabled = true
@@ -271,35 +261,9 @@ func (a *App) derive(base *config.Config) *config.Config {
 	servers = append(servers, config.MCPServerConf{
 		Name:      "builtin_image",
 		Transport: "http",
-		URL:       a.builtinImageAddr,
+		URL:       string(addr),
 		Token:     base.McpBuiltinToken,
 	})
 	base.MCPConfig.Servers = servers
 	return base
-}
-
-// setupBuiltinImageMCP 在 llm.image_max>0 时启动内嵌「看图」MCP 服务（提供 view_image），
-// 并把它的地址记在 App 上，由 derive 注入到每一份配置快照里。
-//
-// 只监听 127.0.0.1；mcp_builtin_token 非空则服务端校验 Bearer，客户端带同一 token。
-// 启动失败不致命：只记日志，本会话没有 view_image 工具。
-func (a *App) setupBuiltinImageMCP(cfg *config.Config) {
-	if cfg.LLMConfig.ImageMax <= 0 {
-		return
-	}
-
-	builtinServer := mcpserver.New(nil, cfg.McpBuiltinToken)
-	addr, err := builtinServer.Start()
-	if err != nil {
-		logutil.Error("内嵌 MCP 服务(看图)启动失败，本会话无 view_image 工具", "err", err)
-		return
-	}
-
-	if !cfg.MCPConfig.Enabled {
-		logutil.Warn("启用看图(lm image_max>0)自动开启 mcp.enabled，注入内嵌 view_image 服务")
-	}
-
-	a.BuiltinMCP = builtinServer
-	a.builtinImageAddr = addr
-	logutil.Info("内嵌 MCP 服务(看图)已启动", "url", addr, "带Bearer鉴权", cfg.McpBuiltinToken != "")
 }

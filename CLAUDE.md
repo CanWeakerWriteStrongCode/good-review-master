@@ -31,8 +31,11 @@ curl -s 127.0.0.1:9100/metrics | head           # 指标端点自检
 ```bash
 go tool golangci-lint run    # 只开 govet / ineffassign / unused（见 .golangci.yml）
 go tool govulncheck ./...    # 想查依赖漏洞时跑
-go tool wire ./app           # 阶段 6 起：改了 provider 就要重跑，然后 git status 应无差异
+go tool wire ./app           # 改了 provider 就要重跑；重跑后 git status 应无差异
+go tool wire check ./app     # 只校验依赖图，不写文件（缺 provider 会在这里报出来）
 ```
+
+`wire` 只参与**生成**，不进产物：`go tool nm good-review-master.exe | grep google/wire` 应当是 0 处。
 
 ## Testing（API 层自测）
 
@@ -76,6 +79,10 @@ The frontend **must** be compiled before the Go binary — Go's `embed` resolves
 | `go.uber.org/zap` | Structured logging |
 | `gopkg.in/natefinch/lumberjack.v2` | Log rotation (size-based, 30-day retention, gzip compression) |
 | `gopkg.in/yaml.v3` | Config YAML parsing |
+| `github.com/prometheus/client_golang` | Metrics: counters/histograms + the `/metrics` handler |
+| `go.opentelemetry.io/otel` + `/sdk` | Traces. **Without** the official OTLP exporter — see `docs/monitoring.md` |
+| `github.com/sony/gobreaker/v2` | Circuit breaker for LLM and MCP calls |
+| `github.com/google/wire` | Build-time only: generates `app/wire_gen.go`. Not linked into the binary |
 
 ## Architecture
 
@@ -122,28 +129,70 @@ Two structural conventions behind that layout:
 
 ### Key design: explicit dependency injection, composition root, no init() side effects
 
-All components are constructed explicitly in the `app` package (composition root) and wired through `app.App`'s fields — nothing else constructs them. There are **zero** `init()` functions with cross-package side effects. Dependencies flow top-down through struct fields and constructor parameters. `main` only does the three things that are not wiring: logger setup, first-run prompt, and translating errors into exit codes.
+All components are constructed in the `app` package (composition root) and wired through `app.App`'s fields — nothing else constructs them. There are **zero** `init()` functions with cross-package side effects. Dependencies flow top-down through struct fields and constructor parameters. `main` only does the three things that are not wiring: logger setup, first-run prompt, and translating errors into exit codes.
 
 `app` must not be imported by anything but `main` — when a component needs another component, inject it in `app` rather than importing across.
 
-Known remaining global state (deliberately kept for now): `cache` package-level `cacheMap`/`anchorMap` and `logutil`'s logger are shared by `bot`/`router`/`web/server` without being held as fields.
+Known remaining global state (deliberately kept for now): `cache` package-level `cacheMap`/`anchorMap`, `logutil`'s logger, and the `telemetry` package's metric handles are shared by `bot`/`router`/`web/server` without being held as fields.
+
+### The assembly is generated: `app/wire.go` + `app/wire_gen.go`
+
+`app` splits three ways, and the split is the point:
+
+| File | Holds | Built when |
+| --- | --- | --- |
+| `app/providers.go` | one function per node — "what am I made of" | always |
+| `app/wire.go` | the graph itself: one `wire.Build(...)` listing those providers | **only** under `wireinject` |
+| `app/wire_gen.go` | the generated `initializeApp` — real construction order | always, **committed** |
+| `app/build.go` | everything WIRE CANNOT EXPRESS (see below) | always |
+
+`wire.go` is build-tagged so `github.com/google/wire` is **not linked into the binary** — verified with `go tool nm … | grep google/wire`. Keeping the provider list in a package-level `wire.NewSet` would run a (harmless but pointless) package-level initializer on every start.
+
+**What stays in `build.go`, and why** — Wire only wires *constructors*. Four things are not constructors:
+
+1. **Lifecycle**: `signal.NotifyContext` registers a process-wide handler; it is state, not a dependency (so `App.ctx`/`stop`/`closeOnce` are assigned after the graph is built).
+2. **Runtime-conditional choice**: `llm.Client` is `FakeLLM` or an adapter depending on `GOOD_REVIEW_TEST`. Wire's graph is fixed at compile time, so the chosen implementation is an **injector input**.
+3. **First-run + logging**: `main` creates template files; `build.go` prints the startup summary.
+4. **Method calls after construction**: `mcp.Start()`, `web.EnableDebug(...)`, `telemetry.InitTracing(...)`, `App.Run/Shutdown` ordering.
+
+**Wire's real cost, paid honestly.** Wire resolves by *type*, so two values of the same type are indistinguishable. That is why `loadedConfig`, `botNickname`, `builtinImageAddr` and `promptPaths` exist as distinct types, and why `onebot.NewClient` / `config.LoadPromptConfig` / `provideWebServer` / `provideMetricsServer` are wrappers rather than raw constructors:
+
+- **two stages of the same data** — `loadedConfig` (read from disk) vs `*config.Config` (after `deriveConfig`). They must be different nodes: `deriveConfig` needs the nickname, and the nickname comes from this same config's NapCat address, so one node would be a cycle.
+- **two strings** — `onebot.NewClient(httpAPI, accessToken)`.
+- **conditionals** — Wire has no "pick one at runtime", so `web_port<=0` and `metrics_addr: off` are expressed as "the provider returns nil" (`provideWebServer`, `provideMetricsServer`).
+- **multi-return** — Wire accepts a second return value only if it is `error` or `func()`, which is why `provideBuiltinImageMCP` and `provideBuiltinImageAddr` are two providers.
+
+The payoff is that ordering constraints which used to live in comments are now *types*: Wire derives `provideOneBot → provideBotNickname → provideDerivedConfig → …` on its own, so "the nickname must be fetched before the snapshot is published" is enforced by the assembler instead of by a sentence someone can delete. `go tool wire check ./app` turns a missing provider into a generation-time error (`no provider found for X`) instead of a runtime nil.
 
 ## Startup & shutdown sequence
 
 `main()` does only: `logutil.SetupLogger()` → `config.InitDefaultFiles()` (first run: create templates, prompt, exit 0) → `app.New(...)` → `app.Run()`.
 
-**`app.New(opts)` — assembly** (see `app/build.go`; the only place components are constructed):
+**`app.New(opts)` — assembly.** The component graph is *generated* (`app/wire.go` → `wire_gen.go`,
+see the section above); `app/build.go` only does the parts Wire cannot express. Order as it actually runs:
 
-1. `config.Load(config.Sources{Config, Secret})` (config + secret + validation, see *Config layering* below) → `config.LoadPromptConfig` → LLM client (`testutil.FakeLLM` when `GOOD_REVIEW_TEST=1`, else provider switch). All failures return before any resource is taken; `Load` is the only place that decides whether the config is usable, so `New` does not re-check anything.
+1. `config.Load(config.Sources{Config, Secret})` — **read exactly once**, before anything is built:
+   the provider switch, base URL and sampling params all come from it. Validation failures return
+   before any resource is taken. Then the LLM client is chosen (`testutil.FakeLLM` when
+   `GOOD_REVIEW_TEST=1`, else provider switch) and passed into the graph as an input.
 2. `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` — the app's lifecycle context, owned by `App`.
-3. `onebot.NewClient` — OneBot HTTP client (resty).
-4. `obClient.GetLoginInfo()` — bot nickname (failure is non-fatal). **Must come before the snapshot is built**, so the nickname is baked into an immutable config instead of being written into it later.
-5. Built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1); its address is remembered on `App` for `derive` to inject. Failure is non-fatal.
-6. **`derive` + first snapshot**: `store.NewStore(initial)`; `App.Config` is the store's `Get` method value. Nothing mutates this config afterwards.
-7. `mcpclient.New(initial.MCPConfig, ctx)` + `LogConfig()` + `Start()` — uses the initial config, not the snapshot: MCP servers do **not** hot-reload.
-8. `router.NewRouter(snapshot, promptCfg, llm, ob, mcpMgr, ctx)` — router receives the lifecycle context for its goroutine group.
-9. Startup logs; `bot.NewBot(snapshot, ...)`; `webserver.New(snapshot, obClient)` + `EnableDebug(router, fakeLLM)` when test mode (conditional, `initial.WebPort > 0`).
-10. `store.NewInformer(configStore, list, FilePoller)` + `store.NewObserver(promptPoller, reloadPrompts)` — built last, both started by `Start()`. The prompt observer calls `Prompt.Reload()` then `Router.Rebuild()`.
+3. `initializeApp(...)` — the generated graph. Wire picks the order from the types; what it
+   produces is: `onebot.NewClient` → `GetLoginInfo()` (bot nickname; failure non-fatal, **before**
+   the snapshot, so the nickname is baked into an immutable config instead of written into it
+   later) → built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1; failure
+   non-fatal) → `deriveConfig` + `store.NewStore(initial)` (`App.Config` is the store's `Get`
+   method value; nothing mutates this config afterwards) → `LoadPromptConfig` →
+   `mcpclient.New` → `router.NewRouter` → `bot.NewBot` → `webserver.New` →
+   `telemetry.NewRegistry` + `NewMetricsServer` → config informer + prompt observer.
+   Two method calls Wire can't express happen *inside* providers:
+   `configInformer.AddEventHandler(warnRestartOnlyChanges)` and `NewStore`→`Get` as a method value.
+   `webserver.New` and `NewMetricsServer` therefore run here, which is why their startup logs
+   ("Web API 服务已就绪", "pprof 已开放") appear **before** the startup banner now —
+   the one visible difference from the pre-Wire order, and purely a log-ordering one.
+4. `telemetry.InitTracing(...)` (global provider = side effect) → `mcp.LogConfig()` + `mcp.Start()`
+   (uses the initial config, not the snapshot: MCP servers do **not** hot-reload)
+   → startup banner → `Web.EnableDebug(...)` in test mode.
+5. `Start()` launches both watchers. The prompt observer calls `Prompt.Reload()` then `Router.Rebuild()`.
 
 **`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches the polling goroutine, the config informer, and the web server (all non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code. The informer exits on the same cancelled ctx — if it didn't, it would hold up graceful shutdown.
 
@@ -574,4 +623,4 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 ## Code conventions
 
 - **Variable naming**: 变量名不要简化，要完整让人方便看懂。
-- **Wiring lives in `app`**: 新增组件时在 `app.New` 里构造并挂到 `App` 字段上，启动/关闭动作放 `app.Start`/`app.Shutdown`。不要在 `main`、`router`、`bot`、`web/server` 里 new 组件或读包级全局来绕过注入。
+- **Wiring lives in `app`**: 新增组件时写一个 provider（`app/providers.go`）、在 `app/wire.go` 的 `wire.Build` 里加一行、然后 `go tool wire ./app`；启动/关闭动作放 `app.Start`/`app.Shutdown`。带副作用的编排（读环境、绑端口、开信号监听）留在 `app/build.go`。不要在 `main`、`router`、`bot`、`web/server` 里 new 组件或读包级全局来绕过注入。
