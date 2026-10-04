@@ -7,3 +7,6 @@ var configExampleTemplate []byte
 
 //go:embed prompt_system_example.yaml
 var promptSystemExampleTemplate []byte
+
+//go:embed secret_example.yaml
+var secretExampleTemplate []byte

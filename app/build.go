@@ -2,14 +2,12 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"good-review-master/bot"
-	"good-review-master/router"
 	"good-review-master/config"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
@@ -17,27 +15,28 @@ import (
 	"good-review-master/mcpclient"
 	"good-review-master/mcpserver"
 	"good-review-master/onebot"
+	"good-review-master/router"
 	webserver "good-review-master/web/server"
 )
 
 // Options 装配输入（都是外部环境决定、组件自己拿不到的东西）。
 type Options struct {
 	ConfigPath       string // config.yaml 路径
+	SecretPath       string // secret.yaml 路径（可以不存在）
 	SystemPromptPath string // prompt_system.yaml 路径
 	TestMode         bool   // true：用 FakeLLM 顶替真实大模型，并开放 /api/debug/* 自测接口
 }
 
-// ErrWebCredentialsMissing 表示启用了 Web 面板却没配账号密码，调用方应提示用户改配置后重启。
-var ErrWebCredentialsMissing = errors.New("web 管理面板已启用（web_port>0）但未设置 web_username/web_password")
-
 // New 装配整个应用：加载配置、构造各组件并接线，返回可直接 Run 的 App。
 //
-// 所有可能失败的步骤（配置、凭证、大模型提供商）都排在占用任何资源之前，
+// 所有可能失败的步骤（配置、校验、大模型提供商）都排在占用任何资源之前，
 // 因此 New 失败时调用方无需清理。
 // 注意 New 并非无副作用的纯构造：内嵌看图 MCP 要在此绑定端口（地址得参与装配），
 // MCP 建连也在这里发起，这样启动日志的顺序与改造前逐条一致。
 func New(opts Options) (*App, error) {
-	cfg, err := config.LoadConfig(opts.ConfigPath)
+	// 配置的合法性（含"开了 web_port 就必须有账号密码"）由 config.Load 内部的
+	// 域内校验 + Config.Validate 一次性判定，New 不再自己重复检查一遍。
+	cfg, err := config.Load(config.Sources{Config: opts.ConfigPath, Secret: opts.SecretPath})
 	if err != nil {
 		return nil, fmt.Errorf("加载配置失败：%w", err)
 	}
@@ -45,11 +44,6 @@ func New(opts Options) (*App, error) {
 	promptCfg, err := config.LoadPromptConfig(opts.SystemPromptPath, config.CustomPromptPath(opts.SystemPromptPath))
 	if err != nil {
 		return nil, fmt.Errorf("加载提示词配置失败：%w", err)
-	}
-
-	// Web 管理面板必须配置账号密码（无免密模式）
-	if cfg.WebPort > 0 && (cfg.WebUsername == "" || cfg.WebPassword == "") {
-		return nil, ErrWebCredentialsMissing
 	}
 
 	application := &App{Config: cfg, Prompt: promptCfg}

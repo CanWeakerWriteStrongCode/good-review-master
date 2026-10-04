@@ -28,7 +28,7 @@ type Server struct {
 	groupNamesMu sync.RWMutex
 	loginLimiter *loginRateLimiter
 	draining     atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
-	startedAt    time.Time    // 供 /api/diagnostics 报运行时长
+	startedAt    time.Time   // 供 /api/diagnostics 报运行时长
 }
 
 // New 创建 Web 服务器实例

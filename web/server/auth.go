@@ -48,10 +48,10 @@ func ParseJWT(tokenStr, secret string) (jwt.MapClaims, error) {
 // ===== 登录失败限流 =====
 
 const (
-	loginFailBurst  = 5                // 允许的连续失败次数（桶容量）
+	loginFailBurst  = 5                      // 允许的连续失败次数（桶容量）
 	loginFailRefill = rate.Limit(5.0 / 60.0) // 恢复速率：5 次/分钟
-	loginVisitorTTL = 10 * time.Minute // 该 IP 超过这么久没再出现，就回收它的桶
-	loginSweepEvery = time.Minute      // 回收扫描的最小间隔
+	loginVisitorTTL = 10 * time.Minute       // 该 IP 超过这么久没再出现，就回收它的桶
+	loginSweepEvery = time.Minute            // 回收扫描的最小间隔
 )
 
 // loginRateLimiter 按来源 IP 分桶的登录限流器。

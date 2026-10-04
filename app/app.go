@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"good-review-master/bot"
-	"good-review-master/router"
 	"good-review-master/config"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
@@ -19,6 +18,7 @@ import (
 	"good-review-master/mcpclient"
 	"good-review-master/mcpserver"
 	"good-review-master/onebot"
+	"good-review-master/router"
 	webserver "good-review-master/web/server"
 )
 

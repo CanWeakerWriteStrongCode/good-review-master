@@ -179,7 +179,7 @@ func toOpenAIMessages(messages []Message) []openai.ChatCompletionMessage {
 			}
 			for _, u := range m.ImageDataURLs {
 				parts = append(parts, openai.ChatMessagePart{
-					Type: openai.ChatMessagePartTypeImageURL,
+					Type:     openai.ChatMessagePartTypeImageURL,
 					ImageURL: &openai.ChatMessageImageURL{URL: u},
 				})
 			}

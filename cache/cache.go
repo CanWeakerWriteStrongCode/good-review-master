@@ -9,11 +9,11 @@ import (
 
 // Message 群聊消息
 type Message struct {
-	MsgID   int64  `json:"msg_id"`
-	GroupID string `json:"group_id"`
-	UserID  string `json:"user_id"`
-	Nick    string `json:"nick"`
-	Card    string `json:"card"`
+	MsgID   int64    `json:"msg_id"`
+	GroupID string   `json:"group_id"`
+	UserID  string   `json:"user_id"`
+	Nick    string   `json:"nick"`
+	Card    string   `json:"card"`
 	Content string   `json:"content"`
 	Images  []string `json:"images,omitempty"` // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
 	Time    int64    `json:"time"`

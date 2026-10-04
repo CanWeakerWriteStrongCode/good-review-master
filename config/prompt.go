@@ -324,7 +324,7 @@ func writePromptYAMLBlock(buf *strings.Builder, indent, key, text string) {
 	}
 }
 
-// writePromptJSONField 写单引号 JSON 字符串字段（JSON 内部单引号按 YAML 规则转义为 ''）
+// writePromptJSONField 写单引号 JSON 字符串字段（JSON 内部单引号按 YAML 规则转义为 ”）
 func writePromptJSONField(buf *strings.Builder, indent, key string, raw []byte) {
 	escaped := strings.ReplaceAll(string(raw), "'", "''")
 	buf.WriteString(indent + key + ": '" + escaped + "'\n")

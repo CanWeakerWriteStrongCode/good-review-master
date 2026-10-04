@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"good-review-master/cache"
-	"good-review-master/router"
 	"good-review-master/config"
 	"good-review-master/onebot"
+	"good-review-master/router"
 )
 
 // Bot 机器人运行时，管理消息处理与轮询

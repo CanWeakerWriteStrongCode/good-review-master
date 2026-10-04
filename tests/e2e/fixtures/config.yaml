@@ -14,7 +14,8 @@ runtime:
   poll_interval_sec: 3600   # 轮询静默，避免干扰注入
   web_port: 9090
   web_username: "admin"
-  web_password: "123456"
+  # web_password 已挪到 fixtures/secret.yaml，用来覆盖密钥文件那条新路径。
+  # 下面的 llm.api_key 刻意继续留在旧位置，覆盖"兼容 + 迁移告警"那条路径。
   enable_pprof: true   # 诊断用例要打 /api/debug/pprof/*，必须开
 llm:
   provider: "openai"        # 测试模式走 FakeLLM 分支，此值不被读取

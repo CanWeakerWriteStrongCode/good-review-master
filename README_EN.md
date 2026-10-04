@@ -119,7 +119,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `bot.qq` | Bot's QQ number | `123456` |
 | `bot.allow_groups` | Allowed group IDs (comma-separated) | `123456,789012` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |
-| `llm.api_key` | LLM API key | `sk-xxx` |
+| `llm.api_key` | LLM API key (**move to `secret.yaml`**) | `sk-xxx` |
 | `llm.api_base` | LLM API base URL | `https://api.deepseek.com` |
 | `llm.model_name` | Model name | `deepseek-v4-flash` |
 | `llm.temperature` | Sampling temperature (1.0=creative, 0.5=focused) | `1.2` |
@@ -134,7 +134,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `runtime.poll_interval_sec` | Poll interval (seconds) | `3` |
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
-| `runtime.web_password` | Web panel login password (required) | `"123456"` |
+| `runtime.web_password` | Web panel login password (required; **move to `secret.yaml`**) | `"123456"` |
 
 ### Web Management Panel
 
@@ -149,6 +149,12 @@ Gin + JWT + embedded Vue SPA for group message monitoring.
 | POST | `/api/logout` | JWT | No-op (stateless token) |
 
 `web_username` / `web_password` are required whenever the web panel is enabled — there is no password-less mode (the bot exits at startup if they're missing). Set `web_port` to 0 or negative to disable the web panel entirely.
+
+> **Secrets file**: the fields marked "move to `secret.yaml`" above, plus `runtime.mcp_builtin_token` and
+> `mcp.servers[].token`, may live in a sibling `secret.yaml` (auto-created on first run, mode 0600, gitignored).
+> Precedence is **env > secret.yaml > config.yaml**; values left in `config.yaml` keep working and emit a
+> migration warning — the program never rewrites your files. Available env vars:
+> `GOOD_REVIEW_LLM_API_KEY`, `GOOD_REVIEW_WEB_PASSWORD`, `GOOD_REVIEW_NAPCAT_TOKEN`.
 
 ### prompt_system.yaml
 
@@ -285,6 +291,7 @@ good-review-master/
 ├── config.yaml               # Live config (gitignored)
 ├── prompt_system.yaml        # System prompts (gitignored)
 ├── prompt_custom.yaml        # Dynamic prompts (gitignored, auto-created)
+├── secret.yaml               # Secrets (API key / password / tokens; gitignored, mode 0600)
 ├── start_main.bat / .sh      # Dev launcher scripts (includes frontend build)
 ├── build_exe.bat / .sh       # Build & package scripts (cross-compile 4 targets)
 ├── version/

@@ -13,6 +13,8 @@ __debug_bin*
 /config.yaml
 /prompt_system.yaml
 /prompt_custom.yaml
+# 密钥文件：单独一份、权限 0600，绝不能进版本库
+/secret.yaml
 
 # 日志
 /log/

@@ -116,7 +116,7 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 | `bot.qq`                    | 机器人 QQ 号                        | `123456`                   |
 | `bot.allow_groups`          | 允许响应的群号（逗号分隔）                   | `123456,789012`            |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |
-| `llm.api_key`               | 大模型 API Key                     | `sk-xxx`                   |
+| `llm.api_key`               | 大模型 API Key（**建议移到 `secret.yaml`**） | `sk-xxx`                   |
 | `llm.api_base`              | 大模型接口地址                         | `https://api.deepseek.com` |
 | `llm.model_name`            | 模型名称                            | `deepseek-v4-flash`        |
 | `llm.temperature`           | 锐评风格：1.0=发散 0.5=集中              | `1.2`                      |
@@ -131,7 +131,7 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 | `runtime.poll_interval_sec` | 轮询间隔（秒）                         | `3`                        |
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）              | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                     | `admin`                    |
-| `runtime.web_password`      | Web 面板登录密码（必填）                  | `"123456"`                 |
+| `runtime.web_password`      | Web 面板登录密码（必填；**建议移到 `secret.yaml`**） | `"123456"`                 |
 
 ### Web 管理面板
 
@@ -146,6 +146,11 @@ Gin + JWT + 内嵌 Vue SPA，提供群消息监控页面。
 | POST | `/api/logout` | JWT | 登出（无状态 token，占位） |
 
 `web_password` 必填，登录页面始终需要账号密码。`web_port` 设为 0 或负数可以完全禁用 Web 面板。
+
+> **密钥文件**：上表中带「建议移到 secret.yaml」的字段，以及 `runtime.mcp_builtin_token`、`mcp.servers[].token`，
+> 都可以改写进同目录的 `secret.yaml`（首次运行自动创建，权限 0600、已在 `.gitignore` 中）。
+> 优先级为 **环境变量 > secret.yaml > config.yaml**；仍写在 `config.yaml` 里的会正常工作并打一条迁移告警，
+> 程序不会自动改写你的文件。可用环境变量：`GOOD_REVIEW_LLM_API_KEY`、`GOOD_REVIEW_WEB_PASSWORD`、`GOOD_REVIEW_NAPCAT_TOKEN`。
 
 ### 指令提示词配置
 
@@ -205,6 +210,7 @@ good-review-master/
 ├── config.yaml               # 运行时配置（gitignore）
 ├── prompt_system.yaml        # 系统提示词配置（gitignore）
 ├── prompt_custom.yaml        # 动态添加的提示词（gitignore，程序自动创建）
+├── secret.yaml               # 密钥（API Key / 登录密码 / token；gitignore，权限 0600）
 ├── start_main.bat / .sh      # 开发启动脚本（含前端构建）
 ├── build_exe.bat / .sh       # 编译打包脚本（交叉编译 4 平台）
 ├── version/

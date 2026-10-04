@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -27,15 +26,14 @@ func main() {
 
 	application, err := app.New(app.Options{
 		ConfigPath:       apppath.ResolvePath("config.yaml"),
+		SecretPath:       apppath.ResolvePath("secret.yaml"),
 		SystemPromptPath: apppath.ResolvePath("prompt_system.yaml"),
 		TestMode:         os.Getenv("GOOD_REVIEW_TEST") == "1",
 	})
 	if err != nil {
-		if errors.Is(err, app.ErrWebCredentialsMissing) {
-			logutil.Error("Web 管理面板已启用（web_port>0）但未设置 web_username/web_password，请在 config.yaml 中配置登录账号和密码")
-		} else {
-			logutil.Error(err.Error())
-		}
+		// 配置不合法的具体原因（哪一段、当前值、该怎么改）已经在 config 包里写清楚了，
+		// 这里不再按错误类型分派不同文案——那种分派会随着校验规则增加而不断膨胀。
+		logutil.Error(err.Error())
 		os.Exit(1)
 	}
 

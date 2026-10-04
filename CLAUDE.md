@@ -92,7 +92,7 @@ pool → (仅标准库 sync)
 onebot → (no internal deps)
 cache → (no internal deps)
 llm → (no internal deps)
-config → apppath
+config → apppath, logutil
 logutil → apppath
 apppath → (no internal deps)
 ```
@@ -118,7 +118,7 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 
 **`app.New(opts)` — assembly** (see `app/build.go`; the only place components are constructed):
 
-1. `config.LoadConfig` → `config.LoadPromptConfig` → web credentials check (`ErrWebCredentialsMissing`) → LLM client (`testutil.FakeLLM` when `GOOD_REVIEW_TEST=1`, else provider switch). All failures return before any resource is taken.
+1. `config.Load(config.Sources{Config, Secret})` (config + secret + validation, see *Config layering* below) → `config.LoadPromptConfig` → LLM client (`testutil.FakeLLM` when `GOOD_REVIEW_TEST=1`, else provider switch). All failures return before any resource is taken; `Load` is the only place that decides whether the config is usable, so `New` does not re-check anything.
 2. `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` — the app's lifecycle context, owned by `App`.
 3. `onebot.NewClient` — OneBot HTTP client (resty).
 4. Built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1, its URL is injected into `cfg.MCPConfig`); failure is non-fatal.
@@ -137,15 +137,42 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 
 | File | Loaded by | Hot-reload |
 | --- | --- | --- |
-| `config.yaml` | `config.LoadConfig()` | No |
+| `config.yaml` | `config.Load(config.Sources{...})` | No |
+| `secret.yaml` | same `Load` call (`Sources.Secret`) | No |
 | `prompt_system.yaml` | `config.LoadPromptConfig()` | Yes (`PromptConfig.Reload()`) |
 | `prompt_custom.yaml` | merged into `PromptConfig` at startup | Yes (`PromptConfig.Reload()`) |
 
-All three YAML files are auto-created from embedded templates on first run if missing. `config.yaml` and `prompt_system.yaml` use templates under `config/`; `prompt_custom.yaml` is created empty on first keyword addition.
+All four YAML files are auto-created from embedded templates on first run if missing (`config.InitDefaultFiles()`, the only place allowed to create files). `config.yaml`, `secret.yaml` and `prompt_system.yaml` use templates under `config/`; `prompt_custom.yaml` is created empty on first keyword addition.
 
-`config.yaml` has four sections: `napcat`, `bot`, `runtime`, `llm`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
+`config.yaml` has five sections: `napcat`, `bot`, `runtime`, `llm`, `mcp`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
 
 `prompt_system.yaml` is parsed once at startup and cached (`Config.systemPrompt`) — subsequent checks read the cached pointer, not the file. `prompt_custom.yaml` is read on every write operation (add/delete command/rule) and on `Reload()`.
+
+### Config layering: Sections, registry, four-step load
+
+The config layer follows the *shape* of K8s' API machinery (external/internal split + a registry) without importing any of it. One "domain" = one file:
+
+| File | Role |
+| --- | --- |
+| `config/section.go` | the `Section` interface + shared helpers (`decodeSection`, `validateEndpoint`, …) |
+| `config/scheme.go` | **the registry**: `newSections()` + `registry()`. Adding a domain = one file + one line |
+| `config/section_{napcat,bot,runtime,llm,mcp}.go` | each holds its own yaml tags, defaults, and validation |
+| `config/section_secret.go` | the secret domain — **sources differ**, see below |
+| `config/loader.go` | the four-step load: read → decode → SetDefaults → Validate |
+| `config/convert.go` | external → internal (`assemble`), plus secret precedence |
+| `config/config.go` | the internal `Config`/`LLMConf`/`MCPConf`/`MCPServerConf` types — **shape unchanged by the refactor** |
+
+Why the internal shape is frozen: `mcpclient`, `router` and `web/server` tests construct `config.Config{...}` / `config.MCPConf{...}` literals directly. Consumers still write `cfg.BotQQ`.
+
+**Ordering is load-bearing.** `SetDefaults` must run *before* `Validate`, because a field that is legitimately omitted must be defaulted and then validated — not rejected. Note that several numeric checks are only meaningful post-default, and they are not decoration: `poll_interval_sec` feeds `time.NewTicker` (**panics** if ≤ 0, inside a goroutine, taking the process down), `llm_timeout_sec` feeds `context.WithTimeout` (= 0 means every LLM call fails instantly), `max_cache_msg` feeds `make([]Message, n)` and is then indexed.
+
+**`Load` must stay side-effect free and idempotent.** Scheduled work will call it repeatedly (config reload + resync), so `InitDefaultFiles` (which creates files) must never be called from it. `config/loader_test.go` asserts both properties.
+
+**Secret domain** is deliberately outside `registry()`: its sources are `secret.yaml` + environment variables, not `config.yaml`, and `secret.yaml`'s whole content *is* the domain (no top-level key to look up). Precedence is **env > secret.yaml > config.yaml legacy location**; env is folded into the domain during decode, so `convert.go` only has to resolve two layers. Legacy values still work and emit a migration WARN — the program never rewrites the user's files.
+
+Per-domain `Validate` handles single-domain rules; cross-domain rules (e.g. `web_port > 0` requires credentials, which may live in `secret.yaml`) live in `Config.Validate`, which runs at the end of `Load`. Validation errors are written for whoever edits the YAML: name the field, show the current value, say what to write instead. Never let a struct-tag validator produce messages like `Field validation for 'X' failed on the 'gt' tag`.
+
+`secret.yaml` is created with mode `0600` — **but that is a no-op on Windows**, where Go's file modes only map to the read-only attribute. On Windows its protection comes from filesystem ACLs; on Linux/macOS the mode does apply.
 
 ## Command system (`router/`)
 
@@ -389,7 +416,7 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 
 ## Config notes
 
-- `config.yaml` and `prompt_custom.yaml` contain real credentials/user data — NOT committed
+- `config.yaml`, `secret.yaml` and `prompt_custom.yaml` contain real credentials/user data — NOT committed (`.gitignore` covers all four)
 - `prompt_system.yaml` also NOT committed (auto-created from embedded `config/prompt_system_example.yaml` on first run, like config.yaml)
 - `config_example.yaml` is the committed template, embedded via `//go:embed` and auto-copied to `config.yaml` on first run
 - On first run, `config.yaml` is created from the embedded template and the program exits — edit it and re-run
