@@ -20,7 +20,7 @@ import (
 
 // Server Web 管理面板服务器
 type Server struct {
-	cfg          *config.Config
+	cfg          config.Snapshot
 	engine       *gin.Engine
 	httpServer   *http.Server
 	obClient     *onebot.Client
@@ -31,8 +31,15 @@ type Server struct {
 	startedAt    time.Time   // 供 /api/diagnostics 报运行时长
 }
 
-// New 创建 Web 服务器实例
-func New(cfg *config.Config, obClient *onebot.Client) *Server {
+// New 创建 Web 服务器实例。
+//
+// 这里体现了一条分界：**面板的"形状"是启动期决定的，面板展示的"内容"才是可热更新的**。
+// 监听端口、路由表、CORS 白名单、鉴权密钥、pprof 开关都必须在 New 时定下来
+// （监听器已经绑定、中间件已经装好、注册表已经建好），所以下面统一取一份启动快照来做这些决定；
+// 而 /api/status、/api/groups 返回的内容每次请求都重新取快照，改了配置下一次请求就能看到。
+func New(cfg config.Snapshot, obClient *onebot.Client) *Server {
+	startup := cfg()
+
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 
@@ -45,7 +52,7 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 	// 全局中间件
 	engine.Use(RecoveryMiddleware())
 	engine.Use(LoggerMiddleware())
-	engine.Use(CORSMiddleware(cfg.CorsOrigins))
+	engine.Use(CORSMiddleware(startup.CorsOrigins))
 
 	s := &Server{
 		cfg:          cfg,
@@ -62,8 +69,8 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 
 	// API 路由
 	apiGroup := engine.Group("/api")
-	apiGroup.POST("/login", handleLogin(cfg.WebUsername, cfg.WebPassword, cfg.JWTSecret, s.loginLimiter))
-	apiGroup.Use(AuthMiddleware(cfg.JWTSecret))
+	apiGroup.POST("/login", handleLogin(startup.WebUsername, startup.WebPassword, startup.JWTSecret, s.loginLimiter))
+	apiGroup.Use(AuthMiddleware(startup.JWTSecret))
 	{
 		apiGroup.GET("/status", handleAPIStatus(cfg))
 		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames, &s.groupNamesMu))
@@ -71,9 +78,9 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 		apiGroup.POST("/logout", handleLogout())
 		// 运行时诊断：恒定可用，不受 enable_pprof 影响。
 		// goroutine 概览走 runtime.Stack 自取，没有采样式开销，没必要跟着 pprof 一起关。
-		apiGroup.GET("/diagnostics", handleDiagnostics(cfg, s.startedAt))
+		apiGroup.GET("/diagnostics", handleDiagnostics(startup, s.startedAt))
 
-		if cfg.EnablePprof {
+		if startup.EnablePprof {
 			registerPprof(apiGroup.Group("/debug"))
 			logutil.Warn("pprof 已开放", "path", "/api/debug/pprof/", "提示", "需 JWT；用完建议关掉 runtime.enable_pprof")
 		}
@@ -82,7 +89,7 @@ func New(cfg *config.Config, obClient *onebot.Client) *Server {
 	// SPA fallback：非 /api/* 路径返回前端静态文件
 	engine.NoRoute(s.serveFrontend)
 
-	addr := fmt.Sprintf(":%d", cfg.WebPort)
+	addr := fmt.Sprintf(":%d", startup.WebPort)
 	s.httpServer = &http.Server{
 		Addr:         addr,
 		Handler:      engine,
@@ -152,7 +159,8 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.draining.Store(true)
 
-	if delay := s.cfg.ShutdownDelay; delay > 0 {
+	// 关闭延迟实时读：它在"开始关闭"这一刻才被用到，读最新的比读启动时的更贴合意图
+	if delay := s.cfg().ShutdownDelay; delay > 0 {
 		logutil.Info("已置为 not-ready，等待流量摘除后再停监听", "等待", delay.String())
 		select {
 		case <-time.After(delay):

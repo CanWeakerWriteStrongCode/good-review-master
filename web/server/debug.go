@@ -64,7 +64,7 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 			s.groupNamesMu.Unlock()
 		}
 
-		gc := cache.GetGroupCache(body.GroupID, s.cfg.MaxCacheMsg)
+		gc := cache.GetGroupCache(body.GroupID, s.cfg().MaxCacheMsg)
 		now := time.Now().Unix()
 		for _, m := range body.Messages {
 			msg := cache.Message{

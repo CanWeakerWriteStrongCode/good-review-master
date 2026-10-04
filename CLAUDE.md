@@ -83,7 +83,7 @@ Browser / MiniProgram ←→ Gin web server (:web_port) ←→ OneBot + Cache (r
 
 ```
 main → app, config, logutil, apppath, version
-app → config, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
+app → config, config/store, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
 bot → config, cache, onebot, router
 router → config, cache, llm, onebot, async
 web/server → config, logutil, onebot, cache, version
@@ -93,6 +93,7 @@ onebot → (no internal deps)
 cache → (no internal deps)
 llm → (no internal deps)
 config → apppath, logutil
+config/store → logutil
 logutil → apppath
 apppath → (no internal deps)
 ```
@@ -121,13 +122,15 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 1. `config.Load(config.Sources{Config, Secret})` (config + secret + validation, see *Config layering* below) → `config.LoadPromptConfig` → LLM client (`testutil.FakeLLM` when `GOOD_REVIEW_TEST=1`, else provider switch). All failures return before any resource is taken; `Load` is the only place that decides whether the config is usable, so `New` does not re-check anything.
 2. `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` — the app's lifecycle context, owned by `App`.
 3. `onebot.NewClient` — OneBot HTTP client (resty).
-4. Built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1, its URL is injected into `cfg.MCPConfig`); failure is non-fatal.
-5. `mcpclient.New(cfg.MCPConfig, ctx)` + `LogConfig()` + `Start()`.
-6. `router.NewRouter(cfg, promptCfg, llm, ob, mcpMgr, ctx)` — router receives the lifecycle context for its goroutine group.
-7. `obClient.GetLoginInfo()` — bot nickname (failure is non-fatal) + startup logs.
-8. `bot.NewBot(...)`; `webserver.New(cfg, obClient)` + `EnableDebug(router, fakeLLM)` when test mode (conditional, `cfg.WebPort > 0`).
+4. `obClient.GetLoginInfo()` — bot nickname (failure is non-fatal). **Must come before the snapshot is built**, so the nickname is baked into an immutable config instead of being written into it later.
+5. Built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1); its address is remembered on `App` for `derive` to inject. Failure is non-fatal.
+6. **`derive` + first snapshot**: `store.NewStore(initial)`; `App.Config` is the store's `Get` method value. Nothing mutates this config afterwards.
+7. `mcpclient.New(initial.MCPConfig, ctx)` + `LogConfig()` + `Start()` — uses the initial config, not the snapshot: MCP servers do **not** hot-reload.
+8. `router.NewRouter(snapshot, promptCfg, llm, ob, mcpMgr, ctx)` — router receives the lifecycle context for its goroutine group.
+9. Startup logs; `bot.NewBot(snapshot, ...)`; `webserver.New(snapshot, obClient)` + `EnableDebug(router, fakeLLM)` when test mode (conditional, `initial.WebPort > 0`).
+10. `store.NewInformer(configStore, list, FilePoller)` — built last, started by `Start()`.
 
-**`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches polling goroutine and web server (non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code.
+**`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches the polling goroutine, the config informer, and the web server (all non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code. The informer exits on the same cancelled ctx — if it didn't, it would hold up graceful shutdown.
 
 **Readiness during shutdown (invariant):** `webserver.Server.Shutdown` sets the `draining` flag **first**, then optionally waits `shutdown_delay_sec`, and only then stops the listener. The order is essential and was empirically verified: `http.Server.Shutdown` closes the listener *immediately*, so setting the flag and calling it back-to-back leaves `/readyz` no observable window — a probe cannot even open a connection (it gets an RST). The wait is what lets a load balancer notice the 503 and drain. With the default `shutdown_delay_sec: 0` there is no observable, which is correct for a directly-reached panel.
 
@@ -137,8 +140,8 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 
 | File | Loaded by | Hot-reload |
 | --- | --- | --- |
-| `config.yaml` | `config.Load(config.Sources{...})` | No |
-| `secret.yaml` | same `Load` call (`Sources.Secret`) | No |
+| `config.yaml` | `config.Load(config.Sources{...})` | Yes (snapshot swap) |
+| `secret.yaml` | same `Load` call (`Sources.Secret`) | Yes (snapshot swap) |
 | `prompt_system.yaml` | `config.LoadPromptConfig()` | Yes (`PromptConfig.Reload()`) |
 | `prompt_custom.yaml` | merged into `PromptConfig` at startup | Yes (`PromptConfig.Reload()`) |
 
@@ -174,6 +177,35 @@ Per-domain `Validate` handles single-domain rules; cross-domain rules (e.g. `web
 
 `secret.yaml` is created with mode `0600` — **but that is a no-op on Windows**, where Go's file modes only map to the read-only attribute. On Windows its protection comes from filesystem ACLs; on Linux/macOS the mode does apply.
 
+### Config snapshots (`config.Snapshot` + `config/store/`)
+
+Consumers no longer hold a `*config.Config`. They hold a `config.Snapshot`, which is `func() *Config`:
+
+```go
+cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X throughout
+```
+
+**Why a function and not a pointer:** a struct field of type `*config.Config` invites the reader to treat it as a constant ("it was loaded at startup"). Hot-reload then silently does nothing — no error, just stale values. Writing `cfg()` every time makes the mutation visible at the call site.
+
+**Take one snapshot per operation, never several.** Each accessor calls it once at the top and threads the result down (`ProcessMessage` → `isAtBot`, `RouteMessage` → `stripCQPrefix`, `chatReview` → `selectChatWindow`). Calling `cfg()` repeatedly inside one operation means a reload landing mid-flight can produce a mixed state — e.g. a system prompt with the new model name and the old nickname.
+
+| Piece | File | Role |
+| --- | --- | --- |
+| `Snapshot` | `config/snapshot.go` | `func() *Config`; satisfied directly by `store.Store.Get`'s method value, so `config` and `config/store` need not import each other |
+| `Store[T]` | `config/store/store.go` | immutable snapshot behind `atomic.Pointer`; readers always see one self-consistent version |
+| `Source` | `config/store/source.go` | emits "changed" signals; `FilePoller` stats files (mtime+size) every 2s |
+| `Informer[T]` | `config/store/informer.go` | List → swap → notify handlers; runs under `app`'s lifecycle context |
+
+**A file source has no deltas.** Files are rewritten wholesale, so every change is a full re-List and the snapshot is swapped entire — there is no merge step, which is why `old`/`new` handed to handlers are always two complete, self-consistent configs.
+
+**On a failed re-read the old snapshot is kept.** Users edit config halfway all the time; continuing with the last working config beats being pushed into a "no config" state. There is a test for this.
+
+**`app.derive` is not optional on the reload path.** The nickname (from NapCat) and the built-in `builtin_image` MCP address are not in any file, so a config re-read from disk *cannot* contain them. Both the initial snapshot and the informer's `list` go through `derive`; skipping it would silently drop them on the next reload (visible only as "@-detection stopped working" or "view_image disappeared"). `app/derive_test.go` pins this, including the copy-before-append so the new snapshot never shares a backing array with the published old one.
+
+The initial snapshot is built **after** the nickname is fetched and the built-in MCP is started — that ordering is what makes "snapshots are immutable" true from the very first one, replacing the two runtime mutations the old code did (`cfg.BotNickname = ...` and injecting into `cfg.MCPConfig`).
+
+What hot-reloads and what does not: `allow_groups`, thresholds, cost params, model name take effect on the next read. `web_port`, credentials, `jwt_secret` and `mcp.servers` are **startup-time** decisions (listener bound, middleware installed, clients constructed) and need a restart. `webserver.New` takes one startup snapshot for exactly those, while `/api/status` and `/api/groups` call the snapshot per request.
+
 ## Command system (`router/`)
 
 ### Two kinds of commands
@@ -194,7 +226,7 @@ type Router struct {
     llmClient  llm.Client
     obClient   *onebot.Client
     promptCfg  *config.PromptConfig
-    appCfg     *config.Config
+    appCfg     config.Snapshot
     starter    *async.Group     // goroutine 生命周期管理
 }
 func NewRouter(appCfg, promptCfg, llmClient, obClient, shutdownCtx) *Router

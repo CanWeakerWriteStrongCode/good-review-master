@@ -67,7 +67,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, systemProm
 	}
 
 	logutil.Info("使用 LLM 生成提示词+人格", "category", category, "keyword", keyword)
-	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg().LLMTimeout)
 	defer cancel()
 	generated, err := r.llmClient.SingleChat(ctx, requirements, addCommandGenPrompt)
 	if err != nil {
@@ -131,7 +131,7 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, systemPrompt 
 	}
 
 	logutil.Info("使用 LLM 生成规则", "category", category)
-	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg.LLMTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg().LLMTimeout)
 	defer cancel()
 	generated, err := r.llmClient.SingleChat(ctx, requirements, ruleGenSystem)
 	if err != nil {

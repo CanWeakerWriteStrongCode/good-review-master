@@ -34,8 +34,11 @@ type MCPProvider interface {
 // 真正的新增开销只有 assistant 的 tool_calls 和 tool 结果那几条消息。
 // 轮数用尽后撤回 tools 字段，模型只能基于已拿到的信息直接作答，杜绝无限调用。
 func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg string) (string, error) {
+	// 一次工具循环全程用同一份配置：轮数上限与看图上限是同一次对话的两条硬约束，
+	// 中途换掉会让"最多 N 轮"这类保证失去意义
+	cfg := r.appCfg()
 	tools := r.mcp.Tools()
-	maxRounds := r.appCfg.MCPConfig.MaxToolRounds
+	maxRounds := cfg.MCPConfig.MaxToolRounds
 	logutil.Info("对话走 MCP 工具循环", "注入工具数", len(tools), "最大轮数", maxRounds, "工具token", r.mcp.ToolsTokens())
 	messages := []llm.Message{
 		{Role: llm.RoleSystem, Content: systemPrompt},
@@ -44,7 +47,7 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 
 	// 实际看图硬上限：真正烧视觉 token 的是「把图回传」，不是候选列表。
 	// viewLimit<=0 表示不限制（此时不会有内置 view_image 工具注入）。
-	viewLimit := r.appCfg.LLMConfig.ImageMax
+	viewLimit := cfg.LLMConfig.ImageMax
 	viewed := 0
 	// 本次回复内已展示过的图片（按 data URL 去重）：图一旦以 user 消息喂回就会留在
 	// 后续所有轮次的上下文里，模型再次点名同一张无需重复载入，也不占用查看上限。
@@ -158,12 +161,14 @@ type imageToolResultProvider interface {
 // 失败时返回错误描述而不是向上抛错：把失败原因交给模型看，它通常会换个参数重试或直接作答。
 // 文本按 max_tool_result_rune 截断，防止某个工具一次吐几十 KB 撑爆上下文。
 func (r *Router) callToolOutcome(ctx context.Context, tc llm.ToolCall) (string, []llm.Image) {
-	ctx, cancel := context.WithTimeout(ctx, r.appCfg.MCPConfig.ToolTimeout)
+	// 单次工具调用自成一体：超时与截断长度取自同一份配置
+	cfg := r.appCfg()
+	ctx, cancel := context.WithTimeout(ctx, cfg.MCPConfig.ToolTimeout)
 	defer cancel()
 
 	if p, ok := r.mcp.(imageToolResultProvider); ok {
 		text, imgs, err := p.CallToolImage(ctx, tc.Name, tc.Arguments)
-		text = truncateRunes(text, r.appCfg.MCPConfig.MaxToolResultRune)
+		text = truncateRunes(text, cfg.MCPConfig.MaxToolResultRune)
 		if err != nil {
 			logutil.Error("MCP 工具调用失败", "tool", tc.Name, "args", tc.Arguments, "err", err)
 			if strings.TrimSpace(text) == "" {
@@ -174,7 +179,7 @@ func (r *Router) callToolOutcome(ctx context.Context, tc llm.ToolCall) (string, 
 	}
 
 	out, err := r.mcp.CallTool(ctx, tc.Name, tc.Arguments)
-	out = truncateRunes(out, r.appCfg.MCPConfig.MaxToolResultRune)
+	out = truncateRunes(out, cfg.MCPConfig.MaxToolResultRune)
 	if err != nil {
 		logutil.Error("MCP 工具调用失败", "tool", tc.Name, "args", tc.Arguments, "err", err)
 		if out == "" {

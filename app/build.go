@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"good-review-master/bot"
 	"good-review-master/config"
+	"good-review-master/config/store"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
 	"good-review-master/logutil"
@@ -27,16 +29,23 @@ type Options struct {
 	TestMode         bool   // true：用 FakeLLM 顶替真实大模型，并开放 /api/debug/* 自测接口
 }
 
+// configWatchInterval 配置文件轮询间隔。
+// 2 秒是"改完几乎立刻生效"与"别把磁盘刷穿"之间的折中；文件源只能轮询，
+// 每次 tick 只做几次 os.Stat，开销可忽略。
+const configWatchInterval = 2 * time.Second
+
 // New 装配整个应用：加载配置、构造各组件并接线，返回可直接 Run 的 App。
 //
 // 所有可能失败的步骤（配置、校验、大模型提供商）都排在占用任何资源之前，
 // 因此 New 失败时调用方无需清理。
 // 注意 New 并非无副作用的纯构造：内嵌看图 MCP 要在此绑定端口（地址得参与装配），
-// MCP 建连也在这里发起，这样启动日志的顺序与改造前逐条一致。
+// MCP 建连也在这里发起。
 func New(opts Options) (*App, error) {
+	sources := config.Sources{Config: opts.ConfigPath, Secret: opts.SecretPath}
+
 	// 配置的合法性（含"开了 web_port 就必须有账号密码"）由 config.Load 内部的
 	// 域内校验 + Config.Validate 一次性判定，New 不再自己重复检查一遍。
-	cfg, err := config.Load(config.Sources{Config: opts.ConfigPath, Secret: opts.SecretPath})
+	cfg, err := config.Load(sources)
 	if err != nil {
 		return nil, fmt.Errorf("加载配置失败：%w", err)
 	}
@@ -46,7 +55,7 @@ func New(opts Options) (*App, error) {
 		return nil, fmt.Errorf("加载提示词配置失败：%w", err)
 	}
 
-	application := &App{Config: cfg, Prompt: promptCfg}
+	application := &App{Prompt: promptCfg, sources: sources}
 
 	// 大模型客户端（测试模式用 FakeLLM，不走真实 API）
 	if opts.TestMode {
@@ -64,58 +73,107 @@ func New(opts Options) (*App, error) {
 				cfg.LLMConfig.TopP,
 			)
 		default:
-			return nil, fmt.Errorf("不支持的大模型提供商：%s", cfg.LLMConfig.Provider)
+			// 理论上到不了这里：provider 白名单已在 llmSection.Validate 里拦下。
+			// 留着是为了让"加了 provider 却没加分支"立刻编译期/启动期可见，而不是静默走错。
+			return nil, fmt.Errorf("不支持的大模型提供商：%s（config 校验通过却无对应分支，请检查 app/build.go）",
+				cfg.LLMConfig.Provider)
 		}
 	}
 
-	// shutdown context：MCP 会话、路由 goroutine、消息轮询都挂在它下面，退出时一并收摊
+	// shutdown context：MCP 会话、路由 goroutine、消息轮询、配置监听都挂在它下面
 	application.ctx, application.stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	application.OneBot = onebot.NewClient(cfg.NapCatHTTPAPI, cfg.NapCatAccessToken)
 
-	application.setupBuiltinImageMCP()
+	// 昵称必须在建快照**之前**取到：快照要求不可变，"先建快照再往里面写昵称"
+	// 正是这次改造要消掉的那种运行期写入。
+	if info, err := application.OneBot.GetLoginInfo(); err != nil {
+		logutil.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
+	} else {
+		application.botNickname = info.Nickname
+		logutil.Info("机器人昵称", "nickname", application.botNickname)
+	}
+
+	application.setupBuiltinImageMCP(cfg)
+
+	// 第一份快照：贴上昵称与内嵌看图服务后发布出去，之后就不再修改它
+	initial := application.derive(cfg)
+	application.configStore = store.NewStore(initial)
+	application.Config = application.configStore.Get // 方法值，类型恰为 config.Snapshot
+	application.webURL = fmt.Sprintf("http://localhost:%d", initial.WebPort)
 
 	// MCP 工具服务：后台并发连接每个服务并自动拉取工具清单（tools/list），
 	// 拉到后原子更新快照，之后每次对话自动把 inject 服务的工具作为 function calling 注入。
 	// 不阻塞启动：连不上的服务由重连循环按 retry_interval_sec 接管。
-	application.MCP = mcpclient.New(cfg.MCPConfig, application.ctx)
+	// 注意用的是 initial 而非快照：MCP 的服务列表**不**随配置热更新（见阶段 7）。
+	application.MCP = mcpclient.New(initial.MCPConfig, application.ctx)
 	application.MCP.LogConfig()
 	application.MCP.Start()
 
-	application.Router = router.NewRouter(cfg, promptCfg, application.LLM, application.OneBot, application.MCP, application.ctx)
-
-	if info, err := application.OneBot.GetLoginInfo(); err != nil {
-		logutil.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
-	} else {
-		cfg.BotNickname = info.Nickname
-		logutil.Info("机器人昵称", "nickname", cfg.BotNickname)
-	}
+	application.Router = router.NewRouter(application.Config, promptCfg, application.LLM, application.OneBot, application.MCP, application.ctx)
 
 	logutil.Info("🚀 【不是好评大师】机器人启动成功")
-	logutil.Info("机器人QQ：" + cfg.BotQQ)
-	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
-	logutil.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
+	logutil.Info("机器人QQ：" + initial.BotQQ)
+	logutil.Info("允许响应群：" + initial.AllowGroupsStr())
+	logutil.Info("NapCat HTTP API：" + initial.NapCatHTTPAPI)
 
-	application.Bot = bot.NewBot(cfg, application.OneBot, application.Router)
+	application.Bot = bot.NewBot(application.Config, application.OneBot, application.Router)
 
-	if cfg.WebPort > 0 {
-		application.Web = webserver.New(cfg, application.OneBot)
+	if initial.WebPort > 0 {
+		application.Web = webserver.New(application.Config, application.OneBot)
 		if opts.TestMode {
 			application.Web.EnableDebug(application.Router, application.FakeLLM)
 		}
 	}
 
+	// 配置监听：把"重新加载"这件事收敛到一个入口。
+	// list 里走的是 derive 而**不是**裸的 config.Load——否则每次重读磁盘配置
+	// 都会把昵称和内嵌看图服务从快照里抹掉（它们不在文件里）。
+	application.configInformer = store.NewInformer(application.configStore, func() (*config.Config, error) {
+		reloaded, err := config.Load(sources)
+		if err != nil {
+			return nil, err
+		}
+		return application.derive(reloaded), nil
+	}, store.NewFilePoller(configWatchInterval, opts.ConfigPath, opts.SecretPath))
+
 	return application, nil
 }
 
+// derive 把"只有 app 知道"的运行期值贴到一份刚加载出来的配置上，得到可以发布的快照。
+//
+// 这些值不在任何文件里（昵称来自 NapCat，地址来自本次进程绑定的端口），
+// 但它们又必须出现在快照里，否则 bot 的 @检测 与 MCP 的工具注入就看不到。
+// 所以**每一次重新加载都要经过这里**，而不是只有启动时走一次。
+//
+// 本函数不改动入参之外的东西，也不打日志（重载会反复调用，日志会刷屏）。
+func (a *App) derive(base *config.Config) *config.Config {
+	base.BotNickname = a.botNickname
+
+	if a.builtinImageAddr == "" {
+		return base
+	}
+	base.MCPConfig.Enabled = true
+	// 复制一份再 append：直接 append 到切片的底层数组上，
+	// 会让这份配置与"已发布出去的旧快照"共享底层数组——旧的必须保持不可变
+	servers := make([]config.MCPServerConf, 0, len(base.MCPConfig.Servers)+1)
+	servers = append(servers, base.MCPConfig.Servers...)
+	servers = append(servers, config.MCPServerConf{
+		Name:      "builtin_image",
+		Transport: "http",
+		URL:       a.builtinImageAddr,
+		Token:     base.McpBuiltinToken,
+	})
+	base.MCPConfig.Servers = servers
+	return base
+}
+
 // setupBuiltinImageMCP 在 llm.image_max>0 时启动内嵌「看图」MCP 服务（提供 view_image），
-// 并把它的地址注入 MCP 配置。
+// 并把它的地址记在 App 上，由 derive 注入到每一份配置快照里。
 //
 // 只监听 127.0.0.1；mcp_builtin_token 非空则服务端校验 Bearer，客户端带同一 token。
 // 启动失败不致命：只记日志，本会话没有 view_image 工具。
-// 注入直接写到 cfg.MCPConfig（而非拷贝），保证 Router 与 MCP Manager 看到同一份配置。
-func (a *App) setupBuiltinImageMCP() {
-	cfg := a.Config
+func (a *App) setupBuiltinImageMCP(cfg *config.Config) {
 	if cfg.LLMConfig.ImageMax <= 0 {
 		return
 	}
@@ -128,12 +186,10 @@ func (a *App) setupBuiltinImageMCP() {
 	}
 
 	if !cfg.MCPConfig.Enabled {
-		cfg.MCPConfig.Enabled = true
 		logutil.Warn("启用看图(lm image_max>0)自动开启 mcp.enabled，注入内嵌 view_image 服务")
 	}
-	cfg.MCPConfig.Servers = append(append([]config.MCPServerConf{}, cfg.MCPConfig.Servers...),
-		config.MCPServerConf{Name: "builtin_image", Transport: "http", URL: addr, Token: cfg.McpBuiltinToken})
 
 	a.BuiltinMCP = builtinServer
+	a.builtinImageAddr = addr
 	logutil.Info("内嵌 MCP 服务(看图)已启动", "url", addr, "带Bearer鉴权", cfg.McpBuiltinToken != "")
 }

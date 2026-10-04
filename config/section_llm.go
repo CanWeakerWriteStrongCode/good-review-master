@@ -90,10 +90,10 @@ func (s *llmSection) Validate() error {
 	if s.TopP < 0 || s.TopP > 1 {
 		logutil.Warn("llm.top_p 超出区间 0~1", "值", s.TopP)
 	}
-	if s.CacheHitCost >= s.CacheMissCost {
-		logutil.Warn("llm.cache_hit_cost 不小于 cache_miss_cost：扩展缓存窗口永远不划算，"+
-			"决策会退化成每次都重置", "hit", s.CacheHitCost, "miss", s.CacheMissCost)
-	}
+	// 这里刻意**不**检查 cache_hit_cost < cache_miss_cost。
+	// 两者相等是合法且有意为之的配置（等价于"永远不扩展、每次重置"）——
+	// 实测本项目真实配置就是这么设的。对着一个刻意的选择每次启动都告警，
+	// 只会训练人忽略告警，反而让真正有用的那些被淹没。
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"good-review-master/cache"
+	"good-review-master/config"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
 )
@@ -13,22 +14,25 @@ import (
 // chatReview 异步锐评（通过 async 管理生命周期，自动继承 shutdown context）
 func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	logutil.Info("触发锐评", "group", groupID, "user", event.Nickname)
+	// 一次锐评是一个完整的业务动作，全程用同一份配置：
+	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
+	cfg := r.appCfg()
 	r.Go(func(ctx context.Context) error {
-		msgs := cache.GetGroupCache(groupID, r.appCfg.MaxCacheMsg).GetAll()
+		msgs := cache.GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
 		if len(msgs) == 0 {
 			r.obClient.SendGroupMessage(groupID, "暂无群聊记录，无法锐评~")
 			return nil
 		}
 
 		// 按 token 成本决定扩展/重置，得到本次要发送的窗口
-		chatLogMsgs := r.selectChatWindow(msgs, groupID, systemPrompt)
+		chatLogMsgs := r.selectChatWindow(msgs, groupID, systemPrompt, cfg)
 		chatLog := cache.BuildChatLog(chatLogMsgs)
 
-		ctx, cancel := context.WithTimeout(ctx, r.appCfg.LLMTimeout)
+		ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)
 		defer cancel()
 		userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra)
 		// agent「看图」：窗口内有图片且 view_image 工具在线时，附上候选图列表（懒加载，图不随文本常驻）
-		if r.appCfg.LLMConfig.ImageMax > 0 && r.mcp != nil && len(r.mcp.Tools()) > 0 {
+		if cfg.LLMConfig.ImageMax > 0 && r.mcp != nil && len(r.mcp.Tools()) > 0 {
 			if block := r.imageCandidatesBlock(chatLogMsgs); block != "" {
 				userMsg += "\n" + block
 			}
@@ -54,14 +58,14 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 // selectChatWindow 按 token 成本决定扩展还是重置，返回本次要发送的窗口消息。
 // 决策逻辑在 decideChatWindow（router/chat_window.go，纯函数，可单测穷举）；这里只做
 // 配置/锚点读取 + 日志输出。扩展条件：锚点可用、扩展成本 < 重置成本、未超上下文护栏。
-func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPrompt string) []cache.Message {
+func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPrompt string, cfg *config.Config) []cache.Message {
 	// systemTokens = 固定前缀 P（systemPrompt + 常量前缀 + MCP 工具清单）的 token 数：扩展/重置都会发送。
 	// 工具清单必须算进来：它是随请求一起下发的 tools 字段，既占上下文长度又属于缓存前缀，
 	// 漏算会低估总 token，把窗口扩到撞穿 max_context_tokens 护栏。
 	systemTokens := cache.EstimateTokens(systemPrompt) + r.mcpToolsTokens()
 	decision := decideChatWindow(msgs, cache.GetLLMAnchor(groupID),
-		r.appCfg.LLMConfig.CacheHitCost, r.appCfg.LLMConfig.CacheMissCost,
-		r.appCfg.LLMConfig.MaxContextTokens, r.appCfg.LLMSendCount, systemTokens)
+		cfg.LLMConfig.CacheHitCost, cfg.LLMConfig.CacheMissCost,
+		cfg.LLMConfig.MaxContextTokens, cfg.LLMSendCount, systemTokens)
 
 	if decision.Mode == "extend" {
 		logutil.Debug("缓存扩展", "group", groupID, "窗口", len(decision.Window),
@@ -126,7 +130,7 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	b.WriteString("\n【群内图片候选（共 ")
 	b.WriteString(fmt.Sprintf("%d", len(rows)))
 	b.WriteString(" 张）】候选只是文字，查看某张图才会真正载入像素。需要看图来回答（图片/表情/截图/图内文字）时，调用 view_image 工具并传对应 url；")
-	if viewMax := r.appCfg.LLMConfig.ImageMax; viewMax > 0 {
+	if viewMax := r.appCfg().LLMConfig.ImageMax; viewMax > 0 {
 		b.WriteString(fmt.Sprintf("本次最多实际查看 %d 张，达到上限后请直接基于已看到的内容作答；", viewMax))
 	}
 	b.WriteString("不要编造没实际看过的图片内容。\n")

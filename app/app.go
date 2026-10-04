@@ -6,12 +6,12 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"good-review-master/bot"
 	"good-review-master/config"
+	"good-review-master/config/store"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
 	"good-review-master/logutil"
@@ -24,7 +24,8 @@ import (
 
 // App 是全部运行时对象的聚合体：字段在 New 中一次性装配完成，之后只读。
 type App struct {
-	Config     *config.Config
+	// Config 取当前配置快照。**每次用到时调一次，不要缓存返回值**（见 config.Snapshot 的约定）。
+	Config     config.Snapshot
 	Prompt     *config.PromptConfig
 	LLM        llm.Client
 	FakeLLM    *testutil.FakeLLM // 仅测试模式非 nil
@@ -38,15 +39,30 @@ type App struct {
 	ctx       context.Context // 生命周期 context：收到 SIGINT/SIGTERM 或 Shutdown 时取消
 	stop      context.CancelFunc
 	closeOnce sync.Once
+
+	// 配置快照机制的内部件，以及"只有 app 知道"的派生值（见 build.go 的 derive）
+	sources          config.Sources
+	configStore      *store.Store[config.Config]
+	configInformer   *store.Informer[config.Config]
+	botNickname      string // 启动时从 NapCat 取到，之后不变
+	builtinImageAddr string // 内嵌看图 MCP 的地址；空表示本会话没启用
+	webURL           string // 启动时算好的面板地址，只用于启动日志
 }
 
 // Ctx 返回应用生命周期 context。
 func (a *App) Ctx() context.Context { return a.ctx }
 
-// Start 启动消息轮询与 Web 管理面板，不阻塞。
+// Start 启动消息轮询、Web 管理面板与配置监听，不阻塞。
 // MCP 建连已在 New 中完成（内嵌看图的地址必须参与装配），故这里不再启动它。
 func (a *App) Start() {
 	go a.Bot.RunPollingLoop(a.ctx)
+
+	// 配置监听的 goroutine 必须挂在这个 ctx 上：它不退出就会拖住优雅关闭
+	go func() {
+		if err := a.configInformer.Run(a.ctx); err != nil {
+			logutil.Error("配置监听退出", "err", err)
+		}
+	}()
 
 	if a.Web == nil {
 		return
@@ -56,7 +72,7 @@ func (a *App) Start() {
 			logutil.Error("Web 服务异常退出", "err", err)
 		}
 	}()
-	logutil.Info("Web 管理面板已启动", "addr", fmt.Sprintf("http://localhost:%d", a.Config.WebPort))
+	logutil.Info("Web 管理面板已启动", "addr", a.webURL)
 }
 
 // Run 启动全部组件并阻塞，直到收到退出信号；随后完成优雅关闭。

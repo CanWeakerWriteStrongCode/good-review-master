@@ -37,8 +37,11 @@ type BotStatus struct {
 	GroupCount  int    `json:"group_count"`
 }
 
-func handleAPIGroups(cfg *config.Config, obClient *onebot.Client, groupNames map[string]string, groupNamesMu *sync.RWMutex) gin.HandlerFunc {
+func handleAPIGroups(snapshot config.Snapshot, obClient *onebot.Client, groupNames map[string]string, groupNamesMu *sync.RWMutex) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 一个请求内取一次快照：群列表与 bot 信息必须来自同一份配置，
+		// 否则热更新插在中间会返回"群列表是新的、群数量是旧的"这种自相矛盾的响应
+		cfg := snapshot()
 		cachedIDs := cache.ListGroupIDs()
 		cachedSet := make(map[string]struct{}, len(cachedIDs))
 		for _, id := range cachedIDs {
@@ -133,8 +136,9 @@ func handleAPIMessages(groupNames map[string]string, groupNamesMu *sync.RWMutex)
 	}
 }
 
-func handleAPIStatus(cfg *config.Config) gin.HandlerFunc {
+func handleAPIStatus(snapshot config.Snapshot) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		cfg := snapshot()
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: BotStatus{

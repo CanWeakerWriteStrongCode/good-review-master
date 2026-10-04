@@ -56,13 +56,13 @@ func TestShutdown等待期间readyz转503且仍接受新连接(t *testing.T) {
 
 	const shutdownDelay = 1 * time.Second
 	port := freeTCPPort(t)
-	server := New(&config.Config{
+	server := New(staticSnapshot(&config.Config{
 		WebPort:       port,
 		WebUsername:   "admin",
 		WebPassword:   "pw",
 		JWTSecret:     "test-secret",
 		ShutdownDelay: shutdownDelay,
-	}, onebot.NewClient("http://127.0.0.1:1", ""))
+	}), onebot.NewClient("http://127.0.0.1:1", ""))
 
 	go func() { _ = server.Start() }()
 	waitForServer(t, port)
@@ -106,13 +106,13 @@ func TestShutdown默认等到在途请求收尾(t *testing.T) {
 	logutil.SetupLogger()
 
 	port := freeTCPPort(t)
-	server := New(&config.Config{
+	server := New(staticSnapshot(&config.Config{
 		WebPort:     port,
 		WebUsername: "admin",
 		WebPassword: "pw",
 		JWTSecret:   "test-secret",
 		// 不设 ShutdownDelay：默认 0
-	}, onebot.NewClient("http://127.0.0.1:1", ""))
+	}), onebot.NewClient("http://127.0.0.1:1", ""))
 
 	// 测试专用路由：卡在 handler 里直到测试放行，用来制造在途请求。
 	// 用 channel 协调而不是 sleep，时序是确定的。
@@ -219,4 +219,10 @@ func waitForStatus(t *testing.T, port int, path string, want int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("%s 在 5 秒内没有变成 %d，最后一次是 %d", path, want, last)
+}
+
+// staticSnapshot 把一份固定配置包成 config.Snapshot。
+// 这些用例测的是别的逻辑，配置不参与热更新，用固定值即可。
+func staticSnapshot(cfg *config.Config) config.Snapshot {
+	return func() *config.Config { return cfg }
 }

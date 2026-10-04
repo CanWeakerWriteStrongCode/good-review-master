@@ -53,14 +53,14 @@ func newToolLoopRouter(fakeLLM *testutil.FakeLLM, provider MCPProvider, maxRound
 	return &Router{
 		llmClient: fakeLLM,
 		mcp:       provider,
-		appCfg: &config.Config{
+		appCfg: staticSnapshot(&config.Config{
 			LLMTimeout: 5 * time.Second,
 			MCPConfig: config.MCPConf{
 				MaxToolRounds:     maxRounds,
 				MaxToolResultRune: maxResultRune,
 				ToolTimeout:       time.Second,
 			},
-		},
+		}),
 	}
 }
 
@@ -336,7 +336,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 	buildRouter := func(provider MCPProvider, maxContextTokens int) *Router {
 		return &Router{
 			mcp: provider,
-			appCfg: &config.Config{
+			appCfg: staticSnapshot(&config.Config{
 				LLMSendCount: 20,
 				MCPConfig:    config.MCPConf{MaxToolRounds: 5},
 				LLMConfig: config.LLMConf{
@@ -344,7 +344,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 					CacheMissCost:    1.0,
 					MaxContextTokens: maxContextTokens,
 				},
-			},
+			}),
 		}
 	}
 
@@ -352,7 +352,8 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 		cache.ResetAll()
 		cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: 1, LastSent: 5})
 		// 命中(前5条)+新增(后5条) ≈ 全部 10 条，<= 护栏 → 扩展
-		got := buildRouter(nil, guardTokens).selectChatWindow(msgs, groupID, "")
+		r := buildRouter(nil, guardTokens)
+		got := r.selectChatWindow(msgs, groupID, "", r.appCfg())
 		if len(got) != 10 {
 			t.Fatalf("期望扩展到全部 10 条，得到 %d 条", len(got))
 		}
@@ -364,7 +365,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 		// 同样的消息与锚点，只多 100 token 的工具清单 → 固定前缀远超护栏 → 必须重置并截断
 		mcpTokens := 100
 		r := buildRouter(&fakeMCP{tokens: mcpTokens}, guardTokens)
-		got := r.selectChatWindow(msgs, groupID, "")
+		got := r.selectChatWindow(msgs, groupID, "", r.appCfg())
 		if len(got) == 10 {
 			t.Fatal("工具 token 未计入护栏，窗口没有收缩")
 		}
@@ -381,4 +382,10 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 		}
 	})
 	cache.ResetAll()
+}
+
+// staticSnapshot 把一份固定配置包成 config.Snapshot。
+// 这些用例测的是别的逻辑，配置不参与热更新，用固定值即可。
+func staticSnapshot(cfg *config.Config) config.Snapshot {
+	return func() *config.Config { return cfg }
 }

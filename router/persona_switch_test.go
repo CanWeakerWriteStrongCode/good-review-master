@@ -86,7 +86,7 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 	}
 	fake := testutil.NewFakeLLM()
 	obClient := onebot.NewClient("http://127.0.0.1:1", "") // 死地址，SendGroupMessage 仅日志
-	router := NewRouter(cfg, promptCfg, fake, obClient, nil, context.Background())
+	router := NewRouter(staticSnapshot(cfg), promptCfg, fake, obClient, nil, context.Background())
 	return &switchTestEnv{router: router, fake: fake, groupID: "20001"}
 }
 

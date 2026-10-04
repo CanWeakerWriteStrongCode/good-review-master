@@ -80,7 +80,7 @@ type Router struct {
 	llmClient  llm.Client
 	obClient   *onebot.Client
 	promptCfg  *config.PromptConfig
-	appCfg     *config.Config
+	appCfg     config.Snapshot
 	mcp        MCPProvider // MCP 工具提供者，未启用时为 nil
 	starter    *async.Group
 
@@ -92,7 +92,7 @@ type Router struct {
 
 // NewRouter 创建路由器并初始化所有内部指令。
 // mcpProvider 可传 nil（MCP 未启用），此时对话一律走单轮无工具调用。
-func NewRouter(appCfg *config.Config, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client, mcpProvider MCPProvider, shutdownCtx context.Context) *Router {
+func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client, mcpProvider MCPProvider, shutdownCtx context.Context) *Router {
 	r := &Router{
 		llmClient:    llmClient,
 		obClient:     obClient,
@@ -169,15 +169,20 @@ func (r *Router) rebuild() {
 
 // RouteMessage 前缀树匹配并分发
 func (r *Router) RouteMessage(content string, event onebot.Event, groupID string) {
-	text := r.stripCQPrefix(content)
+	// 开头取一次快照、全程共用：拼 systemPrompt 要用到模型名/QQ/昵称/看图开关，
+	// 它们必须自洽。若每处都调 r.appCfg()，热更新正好插在中间就会拼出
+	// "新模型名 + 旧昵称"这种混合提示词。
+	cfg := r.appCfg()
+
+	text := r.stripCQPrefix(content, cfg)
 	if text == "" {
 		return
 	}
 
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
-		"你的QQ号是【%s】，昵称是【%s】。【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。", r.appCfg.LLMConfig.ModelName, r.appCfg.BotQQ, r.appCfg.BotNickname)
+		"你的QQ号是【%s】，昵称是【%s】。【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。", cfg.LLMConfig.ModelName, cfg.BotQQ, cfg.BotNickname)
 	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
-	if r.appCfg.LLMConfig.ImageMax > 0 {
+	if cfg.LLMConfig.ImageMax > 0 {
 		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用 view_image 工具（实际查看有数量上限，达到后请直接作答）。不要编造没实际看过的图片内容。"
 	}
 	route := trieMatch(r.routeTrie, text)
@@ -255,8 +260,9 @@ func (r *Router) replyDefault(text string, event onebot.Event, groupID string, s
 	r.chatReview(event, groupID, systemPrompt, "", event.Nickname, text)
 }
 
-// stripCQPrefix 去除消息开头的 CQ 码和 @昵称
-func (r *Router) stripCQPrefix(rawMsg string) string {
+// stripCQPrefix 去除消息开头的 CQ 码和 @昵称。
+// cfg 由调用方传入（就是它开头取的那一份），避免"清洗用旧昵称、拼提示词用新昵称"。
+func (r *Router) stripCQPrefix(rawMsg string, cfg *config.Config) string {
 	text := strings.TrimSpace(rawMsg)
 	// 去除 CQ at 码 [CQ:at,qq=xxx]
 	if strings.HasPrefix(text, "[CQ:at,qq=") {
@@ -265,8 +271,8 @@ func (r *Router) stripCQPrefix(rawMsg string) string {
 		}
 	}
 	// 去除 @机器人昵称
-	if r.appCfg.BotNickname != "" {
-		text = strings.TrimPrefix(text, "@"+r.appCfg.BotNickname)
+	if cfg.BotNickname != "" {
+		text = strings.TrimPrefix(text, "@"+cfg.BotNickname)
 		text = strings.TrimSpace(text)
 	}
 	return text
