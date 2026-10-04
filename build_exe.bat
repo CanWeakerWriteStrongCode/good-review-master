@@ -26,6 +26,13 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+REM Regenerate the Wire graph only if it changed (see sync_wire.bat for why it gates)
+call "%~dp0sync_wire.bat"
+if %errorlevel% neq 0 (
+    echo Wire generate failed
+    pause
+    exit /b 1
+)
 if not exist dist mkdir dist
 
 for /f "tokens=*" %%i in ('git describe --tags --always --dirty 2^>nul') do set VERSION=%%i

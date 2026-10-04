@@ -62,9 +62,26 @@ The frontend **must** be compiled before the Go binary — Go's `embed` resolves
 
 1. `pnpm run build:h5` (in `web/frontend/`) — builds uni-app H5 frontend
 2. Copy `dist/build/h5` → `web/server/static/frontend/`
-3. `go build` or `go run` — **always targeting `./cmd/good-review`**, since `main.go` no longer sits at the repo root
+3. `go build` or `go run` — **always targeting `./cmd/good-review`**, since `main.go` no longer sits at the repo root.
+   The first thing step 3 does is `call sync_wire.bat` / `"$SCRIPT_DIR/sync_wire.sh"` — see below.
 
 > The repo root is **not** a main package any more. A bare `go build .` at the root compiles nothing useful. `tests/e2e/scripts/prep.mjs` and all four scripts above were updated together with that move.
+
+**Wire is synced automatically, but only when the graph changed.** All four scripts call a shared
+`sync_wire.bat` / `sync_wire.sh`, which regenerates `app/wire_gen.go` if (and only if)
+`app/wire.go`, `app/providers.go` or `go.mod` is newer than it, and then propagates a failure so a
+broken graph **aborts the build** instead of shipping a stale one. Measured: skip ≈ 0.2 s,
+regenerate ≈ 2.2 s.
+
+The gate is by mtime, not by wire's own `wire diff` — diff costs the *same* ~2.3 s as generation,
+so gating on it would pay check + generate and be slower than not gating at all.
+
+**The gate's one blind spot, and why it's safe:** a constructor used by the graph changing its
+signature in *another* package (say `mcpclient.New` gains a parameter) touches none of the watched
+files, so the gate stays shut — but `wire_gen.go` then holds a call that no longer compiles, so
+`go build` fails loudly. The gate trades completeness for speed, never correctness for it.
+What no gate can catch: adding a `provideXxx` and forgetting to list it in `wire.Build` — that
+generates no diff at all, so `git status` after generating remains the only detector.
 
 **pnpm scripts** (in `web/frontend/`): `dev:h5`, `build:h5`, `dev:mp-weixin`, `build:mp-weixin`. Use `pnpm` for all package management; `npm` is blocked via a preinstall hook.
 
