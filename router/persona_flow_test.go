@@ -73,7 +73,7 @@ rules:
 	cache.GetGroupCache("10001", cfg.MaxCacheMsg).Add(cache.Message{
 		MsgID: 1, GroupID: "10001", UserID: "1", Nick: "张三", Content: "今天好累",
 	})
-	router.RouteMessage("[CQ:at,qq=123456] 锐评下", onebot.Event{
+	router.RouteMessage(context.Background(), "[CQ:at,qq=123456] 锐评下", onebot.Event{
 		PostType:    "message",
 		MessageType: "group",
 		GroupID:     "10001",

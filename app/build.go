@@ -19,6 +19,7 @@ import (
 	"good-review-master/mcpserver"
 	"good-review-master/onebot"
 	"good-review-master/router"
+	"good-review-master/telemetry"
 	webserver "good-review-master/web/server"
 )
 
@@ -66,13 +67,23 @@ func New(opts Options) (*App, error) {
 	} else {
 		switch cfg.LLMConfig.Provider {
 		case "openai":
-			application.LLM = llm.NewOpenAIAdapter(
+			adapter := llm.NewOpenAIAdapter(
 				cfg.LLMConfig.APIKey,
 				cfg.LLMConfig.APIBase,
 				cfg.LLMConfig.ModelName,
 				cfg.LLMConfig.Temperature,
 				cfg.LLMConfig.TopP,
 			)
+			// 出站保护（限速 + 熔断）包在适配器外面，而不是塞进适配器内部：
+			// 它管的是"要不要发这一趟"，与"怎么发"是两件事，分开后各自可测。
+			// 参数取的是一次启动快照——熔断器/限速器是有状态的，热更新数值
+			// 会让计数含义漂移，不值得。
+			application.LLM = llm.NewResilient(adapter, llm.ResilientOptions{
+				RatePerSecond:   cfg.LLMConfig.RateLimitPerSec,
+				RateLimitBurst:  cfg.LLMConfig.RateLimitBurst,
+				BreakerFailures: cfg.LLMConfig.BreakerFailures,
+				BreakerCooldown: cfg.LLMConfig.BreakerCooldown,
+			})
 		default:
 			// 理论上到不了这里：provider 白名单已在 llmSection.Validate 里拦下。
 			// 留着是为了让"加了 provider 却没加分支"立刻编译期/启动期可见，而不是静默走错。
@@ -102,6 +113,24 @@ func New(opts Options) (*App, error) {
 	application.configStore = store.NewStore(initial)
 	application.Config = application.configStore.Get // 方法值，类型恰为 config.Snapshot
 	application.webURL = fmt.Sprintf("http://localhost:%d", initial.WebPort)
+
+	// 可观测性：指标注册表与（可选）链路追踪都在这里建好，Shutdown 时一起收。
+	// 用 initial 而不是每次读快照：metrics_addr / otlp_endpoint 都是启动期决定
+	// （监听器已绑定、导出器已构造），改了要重启——warnRestartOnlyChanges 会提示。
+	application.registry = telemetry.NewRegistry()
+	shutdownTrace, err := telemetry.InitTracing(initial.OTLPEndpoint, "good-review")
+	switch {
+	case err != nil:
+		// 追踪配错了不该拦住启动：没有链路不影响机器人干活
+		logutil.Warn("链路追踪初始化失败，本次运行不采集链路", "err", err)
+	case initial.OTLPEndpoint != "":
+		// 只在真的开了的时候说一声：这条日志是"我配的 endpoint 到底生效没有"的唯一直接证据
+		logutil.Info("链路追踪已启用", "endpoint", initial.OTLPEndpoint)
+	}
+	application.shutdownTrace = shutdownTrace
+	if initial.MetricsAddr != config.MetricsAddrOff {
+		application.Metrics = telemetry.NewMetricsServer(initial.MetricsAddr, application.registry)
+	}
 
 	// MCP 工具服务：后台并发连接每个服务并自动拉取工具清单（tools/list），
 	// 拉到后原子更新快照，之后每次对话自动把 inject 服务的工具作为 function calling 注入。
@@ -180,6 +209,26 @@ func warnRestartOnlyChanges(previous, next *config.Config) {
 	}
 	if !sameMCPServers(previous.MCPConfig.Servers, next.MCPConfig.Servers) {
 		logutil.Warn("mcp.servers 已变化，但需要重启才能生效（MCP 客户端在启动时已按当时的列表构造）")
+	}
+	if previous.MetricsAddr != next.MetricsAddr {
+		logutil.Warn("metrics_addr 已变化，但需要重启才能生效（监听器在启动时已绑定）",
+			"原值", previous.MetricsAddr, "新值", next.MetricsAddr)
+	}
+	if previous.OTLPEndpoint != next.OTLPEndpoint {
+		logutil.Warn("otlp_endpoint 已变化，但需要重启才能生效（追踪导出器在启动时已构造）",
+			"原值", previous.OTLPEndpoint, "新值", next.OTLPEndpoint)
+	}
+	// 限速器与熔断器是**有状态**的（令牌桶、连续失败计数），中途换数值会让计数含义漂移，
+	// 所以它们和监听端口一样属于启动期决定。用户同样会以为改了就生效，照样要提示。
+	if previous.LLMConfig.RateLimitPerSec != next.LLMConfig.RateLimitPerSec ||
+		previous.LLMConfig.RateLimitBurst != next.LLMConfig.RateLimitBurst ||
+		previous.LLMConfig.BreakerFailures != next.LLMConfig.BreakerFailures ||
+		previous.LLMConfig.BreakerCooldown != next.LLMConfig.BreakerCooldown {
+		logutil.Warn("llm 的限速或熔断参数已变化，但需要重启才能生效（限速器与熔断器在启动时已构造）")
+	}
+	if previous.MCPConfig.BreakerFailures != next.MCPConfig.BreakerFailures ||
+		previous.MCPConfig.BreakerCooldown != next.MCPConfig.BreakerCooldown {
+		logutil.Warn("mcp 的熔断参数已变化，但需要重启才能生效（熔断器在启动时已按服务构造）")
 	}
 }
 

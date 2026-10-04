@@ -49,8 +49,11 @@ func New(cfg config.Snapshot, obClient *onebot.Client) *Server {
 	// 若将来确实放在反代后面，要改成 SetTrustedProxies([]string{"反代IP"}) 而不是放开全部。
 	_ = engine.SetTrustedProxies(nil)
 
-	// 全局中间件
+	// 全局中间件。顺序有讲究：
+	// Recovery 必须最外层——它得罩住后面所有中间件与处理器的 panic；
+	// Telemetry 排在 Logger 前面，日志才能带上 trace_id（ctx 由 Telemetry 注入）。
 	engine.Use(RecoveryMiddleware())
+	engine.Use(TelemetryMiddleware())
 	engine.Use(LoggerMiddleware())
 	engine.Use(CORSMiddleware(startup.CorsOrigins))
 

@@ -50,7 +50,7 @@ func (r *Router) registerInternalCommands() {
 	r.register(Command{Keyword: "#帮助", Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
 }
 
-func (r *Router) handleAddCommand(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 4 {
@@ -66,10 +66,12 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, systemProm
 		return
 	}
 
-	logutil.Info("使用 LLM 生成提示词+人格", "category", category, "keyword", keyword)
-	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg().LLMTimeout)
+	logutil.InfoCtx(ctx, "使用 LLM 生成提示词+人格", "category", category, "keyword", keyword)
+	// 以分发链路的 ctx 为父：既继承 trace span，也让关机信号能取消这次生成
+	// （改造前这里用的是 context.Background()，进程退出时这次调用会继续跑完）
+	genCtx, cancel := context.WithTimeout(ctx, r.appCfg().LLMTimeout)
 	defer cancel()
-	generated, err := r.llmClient.SingleChat(ctx, requirements, addCommandGenPrompt)
+	generated, err := r.llmClient.SingleChat(genCtx, requirements, addCommandGenPrompt)
 	if err != nil {
 		logutil.Error("LLM 生成提示词失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 生成提示词失败: "+err.Error())
@@ -92,7 +94,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, systemProm
 	r.obClient.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
 }
 
-func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+func (r *Router) handleDeleteCommand(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := delCmdRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
@@ -115,7 +117,7 @@ func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, systemP
 	r.obClient.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
 }
 
-func (r *Router) handleAddRule(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+func (r *Router) handleAddRule(ctx context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := addRuleRe.FindStringSubmatch(content)
 	if len(matches) != 3 {
@@ -130,10 +132,10 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, systemPrompt 
 		return
 	}
 
-	logutil.Info("使用 LLM 生成规则", "category", category)
-	ctx, cancel := context.WithTimeout(context.Background(), r.appCfg().LLMTimeout)
+	logutil.InfoCtx(ctx, "使用 LLM 生成规则", "category", category)
+	genCtx, cancel := context.WithTimeout(ctx, r.appCfg().LLMTimeout)
 	defer cancel()
-	generated, err := r.llmClient.SingleChat(ctx, requirements, ruleGenSystem)
+	generated, err := r.llmClient.SingleChat(genCtx, requirements, ruleGenSystem)
 	if err != nil {
 		logutil.Error("LLM 生成规则失败", "err", err)
 		r.obClient.SendGroupMessage(groupID, "❌ 生成规则失败: "+err.Error())
@@ -150,7 +152,7 @@ func (r *Router) handleAddRule(event onebot.Event, groupID string, systemPrompt 
 	r.obClient.SendGroupMessage(groupID, "✅ 规则已添加: "+category)
 }
 
-func (r *Router) handleDeleteRule(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+func (r *Router) handleDeleteRule(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := delRuleRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
@@ -172,7 +174,7 @@ func (r *Router) handleDeleteRule(event onebot.Event, groupID string, systemProm
 	r.obClient.SendGroupMessage(groupID, "✅ 规则已删除: "+category)
 }
 
-func (r *Router) handleListCommands(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+func (r *Router) handleListCommands(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	var buf strings.Builder
 	buf.WriteString("【指令帮助】\n\n")
 	buf.WriteString("使用方式：@机器人 + 关键词\n\n")
@@ -200,7 +202,7 @@ func (r *Router) handleListCommands(event onebot.Event, groupID string, systemPr
 // handleSwitchPersona #切换人格 <人格名>：在路由表里找"自带人格"的关键字，
 // 找到就把该人格值拷贝记为本群当前人格（#取消人格 清除，重启清空）。
 // 仅对未命中关键字的纯 @ 聊天生效，命中关键字的指令仍用自带人格。
-func (r *Router) handleSwitchPersona(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	name := strings.TrimSpace(extra)
 
 	// 不带参数：给出用法并列出可选人格
@@ -246,7 +248,7 @@ func (r *Router) handleSwitchPersona(event onebot.Event, groupID string, systemP
 }
 
 // handleCancelPersona #取消人格：清空本群当前人格，纯 @ 聊天恢复无人格。
-func (r *Router) handleCancelPersona(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+func (r *Router) handleCancelPersona(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	if _, ok := r.getGroupPersona(groupID); !ok {
 		r.obClient.SendGroupMessage(groupID, "ℹ️ 本群未设置人格")
 		return

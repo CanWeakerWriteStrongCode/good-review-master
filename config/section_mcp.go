@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 
 	"good-review-master/logutil"
@@ -11,12 +12,14 @@ import (
 // mcpSection MCP 工具服务配置（config.yaml 的 mcp 段）。
 // 原 config.go 里那 70 行 parseMCP 整体搬到这里——字段、默认值、合法性判定现在同住一个文件。
 type mcpSection struct {
-	Enabled           bool            `yaml:"enabled"`
-	ToolTimeoutSec    int             `yaml:"tool_timeout_sec"`
-	MaxToolRounds     int             `yaml:"max_tool_rounds"`
-	MaxToolResultRune int             `yaml:"max_tool_result_rune"`
-	RetryIntervalSec  int             `yaml:"retry_interval_sec"`
-	Servers           []mcpServerNode `yaml:"servers"`
+	Enabled            bool            `yaml:"enabled"`
+	ToolTimeoutSec     int             `yaml:"tool_timeout_sec"`
+	MaxToolRounds      int             `yaml:"max_tool_rounds"`
+	MaxToolResultRune  int             `yaml:"max_tool_result_rune"`
+	RetryIntervalSec   int             `yaml:"retry_interval_sec"`
+	BreakerFailures    int             `yaml:"breaker_failures"`
+	BreakerCooldownSec int             `yaml:"breaker_cooldown_sec"`
+	Servers            []mcpServerNode `yaml:"servers"`
 
 	// accepted 是过滤后的可用服务，供 convert 取用。与 Servers 分开是刻意的：
 	// Servers 是用户写了什么，accepted 是程序认了什么，后者才是运行时要用的
@@ -42,6 +45,12 @@ const (
 	defaultMCPMaxToolRounds     = 5
 	defaultMCPMaxToolResultRune = 2000
 	defaultMCPRetryIntervalSec  = 60
+
+	// 熔断缺省：连续 5 次调用失败就打开，冷却 60 秒。比大模型那边松一档——
+	// MCP 工具失败往往只影响某一次问答（模型可以改口直接作答），
+	// 而大模型失败意味着这次回复彻底没了。
+	defaultMCPBreakerFailures    = 5
+	defaultMCPBreakerCooldownSec = 60
 )
 
 func (s *mcpSection) Name() string { return "mcp" }
@@ -65,6 +74,12 @@ func (s *mcpSection) SetDefaults() {
 	}
 	if s.RetryIntervalSec == 0 {
 		s.RetryIntervalSec = defaultMCPRetryIntervalSec
+	}
+	if s.BreakerFailures == 0 {
+		s.BreakerFailures = defaultMCPBreakerFailures
+	}
+	if s.BreakerCooldownSec == 0 {
+		s.BreakerCooldownSec = defaultMCPBreakerCooldownSec
 	}
 
 	s.accepted = nil
@@ -122,6 +137,14 @@ func (s *mcpSection) Validate() error {
 	}
 	if s.Enabled && s.MaxToolRounds <= 0 {
 		return positiveInt("mcp.max_tool_rounds", s.MaxToolRounds, "单次对话最大工具调用轮数")
+	}
+	if s.BreakerFailures < -1 {
+		return fmt.Errorf("mcp.breaker_failures 只能为 -1（关闭熔断）、0（用缺省 %d）或正整数，当前是 %d",
+			defaultMCPBreakerFailures, s.BreakerFailures)
+	}
+	if s.BreakerCooldownSec < 0 {
+		return fmt.Errorf("mcp.breaker_cooldown_sec 不能为负（当前 %d）：它是熔断后进入半开试探前的冷却秒数",
+			s.BreakerCooldownSec)
 	}
 	return nil
 }

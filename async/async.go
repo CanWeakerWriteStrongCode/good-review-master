@@ -53,6 +53,28 @@ func (g *Group) Go(fn func(context.Context) error) {
 	}
 }
 
+// GoCtx 在**调用方 context** 的基础上提交任务。
+//
+// 和 Go 的区别只有一处，但很关键：Go 只把 Group 自己的生命周期 ctx 传进去，
+// 于是任务与"是谁触发的"彻底断开了联系——链路追踪走到这里就断链，
+// 调用方的超时也传不进来。GoCtx 让任务 ctx 同时继承两者：
+// 以 parent 为父（带上 trace span、调用方超时），并随 Group 关闭而取消。
+//
+// 两条取消路径缺一不可：只继承 parent 会让任务在进程关闭时继续跑，
+// 只继承 Group 又丢掉了调用方的上下文。
+func (g *Group) GoCtx(parent context.Context, fn func(context.Context) error) {
+	ctx, cancel := context.WithCancel(parent)
+	// Group 取消时立刻连带取消任务。AfterFunc 返回的 stop 用来在任务正常结束后
+	// 摘掉这个回调，避免 g.ctx 上堆积已经没用的回调。
+	stop := context.AfterFunc(g.ctx, cancel)
+
+	g.Go(func(context.Context) error {
+		defer stop()
+		defer cancel()
+		return fn(ctx)
+	})
+}
+
 // Wait 等待所有 goroutine 完成
 func (g *Group) Wait() error {
 	g.cancel()        // 阻止新任务提交

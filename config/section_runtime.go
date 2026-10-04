@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -22,10 +23,22 @@ type runtimeSection struct {
 	CorsOrigins      string `yaml:"cors_origins"`
 	EnablePprof      bool   `yaml:"enable_pprof"`
 	ShutdownDelaySec int    `yaml:"shutdown_delay_sec"`
+	MetricsAddr      string `yaml:"metrics_addr"`
+	OTLPEndpoint     string `yaml:"otlp_endpoint"`
 }
 
 // defaultLLMSendCount 与 llm_send_count 缺省值。
 const defaultLLMSendCount = 20
+
+// defaultMetricsAddr 是 /metrics 的缺省监听地址。
+//
+// 默认**开着**且只绑本机：指标关掉等于没有——没人会为了一个自己没配过的东西去开配置。
+// 绑 127.0.0.1 是安全底线（Prometheus 抓取要到得了才行，需要时改成 :9100 显式放开）。
+const defaultMetricsAddr = "127.0.0.1:9100"
+
+// MetricsAddrOff 是关闭指标端点的取值。
+// 需要一个哨兵值，是因为"留空"已经被用来表示"用缺省地址"了。
+const MetricsAddrOff = "off"
 
 // defaultCacheMsgMultiplier 环形缓冲条数上限相对 llm_send_count 的倍数。
 // 取 31 是为了让扩展窗口能一路走到盈亏平衡点（见 docs/cache-cost-analysis.md）。
@@ -50,6 +63,18 @@ func (s *runtimeSection) SetDefaults() {
 	s.WebPassword = strings.TrimSpace(s.WebPassword)
 	s.JWTSecret = strings.TrimSpace(s.JWTSecret)
 	s.McpBuiltinToken = strings.TrimSpace(s.McpBuiltinToken)
+
+	// metrics_addr 留空 = 用缺省地址（不是"关闭"）。要关闭得显式写 off ——
+	// 这样"没配过"的用户也能拿到指标，而想关的人有一句话可写。
+	// 顺带把 off / none / disabled / false 归一成同一个哨兵值，免得各写各的。
+	s.MetricsAddr = strings.TrimSpace(s.MetricsAddr)
+	switch strings.ToLower(s.MetricsAddr) {
+	case "":
+		s.MetricsAddr = defaultMetricsAddr
+	case MetricsAddrOff, "none", "disabled", "false":
+		s.MetricsAddr = MetricsAddrOff
+	}
+	s.OTLPEndpoint = strings.TrimSpace(s.OTLPEndpoint)
 }
 
 // Validate 判定本域是否"能工作"。
@@ -87,6 +112,19 @@ func (s *runtimeSection) Validate() error {
 	if s.ShutdownDelaySec < 0 {
 		return fmt.Errorf("runtime.shutdown_delay_sec 不能为负（当前 %d）：它表示优雅关闭前"+
 			"等待流量摘除的秒数，0 表示不等待", s.ShutdownDelaySec)
+	}
+	// metrics_addr 只做语法校验（是不是 host:port）。地址被占用之类的运行期问题
+	// 不在这里拦：指标端口起不来不该让机器人起不来，那时只记一条错误日志。
+	if s.MetricsAddr != MetricsAddrOff {
+		if _, _, err := net.SplitHostPort(s.MetricsAddr); err != nil {
+			return fmt.Errorf("runtime.metrics_addr 不是合法的 host:port（当前 %q）：%v；"+
+				"例如 127.0.0.1:9100，要关闭指标端点请写 %s", s.MetricsAddr, err, MetricsAddrOff)
+		}
+	}
+	if s.OTLPEndpoint != "" {
+		if err := validateEndpoint("runtime.otlp_endpoint", s.OTLPEndpoint); err != nil {
+			return err
+		}
 	}
 	return nil
 }

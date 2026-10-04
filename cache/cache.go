@@ -63,6 +63,11 @@ func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 }
 
 // Add 添加消息到环形缓存（满了直接覆盖，零拷贝）
+//
+// 这里刻意**没有**埋点。cache_messages 指标由轮询侧按群更新（见 bot/polling.go）：
+// 在 Add 里写 prometheus 会给每条消息都增加分配，直接毁掉本函数的
+// "零拷贝、0 allocs/op" 性质（cache/bench_test.go 把它钉住了），
+// 而按群每轮更新一次在精度上毫无损失——缓存条数本来就只有秒级的变化速度。
 func (gc *GroupMsgCache) Add(msg Message) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()

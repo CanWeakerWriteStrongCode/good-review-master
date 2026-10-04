@@ -1,6 +1,7 @@
 package logutil
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"good-review-master/apppath"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -114,4 +116,52 @@ func Warn(msg string, keysAndValues ...interface{}) {
 // Debug 输出 Debug 级别日志
 func Debug(msg string, keysAndValues ...interface{}) {
 	sugar.Debugw(msg, keysAndValues...)
+}
+
+// WithTrace 从 ctx 里取出 trace_id，返回可附加到日志字段末尾的 kv 片段。
+//
+// 没启用追踪、或 ctx 里本来就没有 span 时返回 nil。它是 Ctx 系列函数内部用的，
+// 也可以直接用于 sugar 风格的自定义调用；日常埋点请优先用 InfoCtx/ErrorCtx 那四个。
+//
+// 为什么要有这一族函数：Go 的可变参数不支持"前面几个 kv + 后面展开一个切片"混写，
+// 所以 `logutil.Info("...", "k", v, logutil.WithTrace(ctx)...)` 是编译不过的。
+func WithTrace(ctx context.Context) []interface{} {
+	if ctx == nil {
+		return nil
+	}
+	spanContext := trace.SpanContextFromContext(ctx)
+	if !spanContext.HasTraceID() {
+		return nil
+	}
+	return []interface{}{"trace_id", spanContext.TraceID().String()}
+}
+
+// withTrace 把 trace_id 追加到字段列表末尾（不变更入参切片的语义，只做一次 append）。
+func withTrace(ctx context.Context, keysAndValues []interface{}) []interface{} {
+	if extra := WithTrace(ctx); extra != nil {
+		return append(keysAndValues, extra...)
+	}
+	return keysAndValues
+}
+
+// InfoCtx 同 Info，但会从 ctx 里带上 trace_id。
+// 位置参数是 ctx 而不是可选的 kv：调用点写成 logutil.InfoCtx(ctx, "msg", "k", v)，
+// trace_id 一定在最后，日志里不会出现同一字段两处摆放的混乱。
+func InfoCtx(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	sugar.Infow(msg, withTrace(ctx, keysAndValues)...)
+}
+
+// ErrorCtx 同 Error，但会从 ctx 里带上 trace_id。
+func ErrorCtx(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	sugar.Errorw(msg, withTrace(ctx, keysAndValues)...)
+}
+
+// WarnCtx 同 Warn，但会从 ctx 里带上 trace_id。
+func WarnCtx(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	sugar.Warnw(msg, withTrace(ctx, keysAndValues)...)
+}
+
+// DebugCtx 同 Debug，但会从 ctx 里带上 trace_id。
+func DebugCtx(ctx context.Context, msg string, keysAndValues ...interface{}) {
+	sugar.Debugw(msg, withTrace(ctx, keysAndValues)...)
 }

@@ -2,13 +2,57 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"good-review-master/logutil"
+	"good-review-master/telemetry"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// TelemetryMiddleware 给每个 HTTP 请求开一个 span 并记录指标。
+//
+// 两件事放在同一个中间件里，是因为它们都必须读**同样的三个值**（路由模板、状态码、耗时），
+// 而这些值只有在 c.Next() 之后才齐。分成两个中间件就要把"开始时间"存进 gin.Context 传来传去，
+// 反而更绕。
+func TelemetryMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, span := telemetry.StartSpan(c.Request.Context(), "http.request",
+			trace.WithSpanKind(trace.SpanKindServer))
+		defer span.End()
+		// 把带 span 的 ctx 挂回请求：处理器里取 c.Request.Context() 就能拿到，
+		// 于是 HTTP 入口与它下游（如 debug trigger 触发的路由）是同一条链路。
+		c.Request = c.Request.WithContext(ctx)
+
+		startTime := time.Now()
+		c.Next()
+		duration := time.Since(startTime)
+
+		// 路由模板只有匹配完成后才拿得到，所以这一行必须在 c.Next() 之后。
+		route := telemetry.HTTPRouteLabel(c.FullPath())
+		status := c.Writer.Status()
+
+		telemetry.HTTPRequestsTotal.WithLabelValues(c.Request.Method, route, strconv.Itoa(status)).Inc()
+		telemetry.HTTPRequestDurationSeconds.WithLabelValues(route).Observe(duration.Seconds())
+
+		span.SetName(c.Request.Method + " " + route)
+		span.SetAttributes(
+			attribute.String("http.request.method", c.Request.Method),
+			attribute.String("http.route", route),
+			attribute.Int("http.response.status_code", status),
+		)
+		if status >= http.StatusInternalServerError {
+			// 只用状态码判错：4xx 是调用方的问题，把它标成 span error
+			// 会让"错误率"这条曲线失去意义（探测、过期 token 都会把它刷满）。
+			span.SetStatus(codes.Error, http.StatusText(status))
+		}
+	}
+}
 
 // LoggerMiddleware 请求日志中间件：记录 method、path、status code、耗时
 func LoggerMiddleware() gin.HandlerFunc {
@@ -16,7 +60,7 @@ func LoggerMiddleware() gin.HandlerFunc {
 		startTime := time.Now()
 		c.Next()
 		duration := time.Since(startTime)
-		logutil.Info("HTTP 请求",
+		logutil.InfoCtx(c.Request.Context(), "HTTP 请求",
 			"method", c.Request.Method,
 			"path", c.Request.URL.Path,
 			"status", c.Writer.Status(),

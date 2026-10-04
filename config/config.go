@@ -31,6 +31,8 @@ type Config struct {
 	CorsOrigins       []string      // 允许跨域访问管理面板的来源白名单；空=仅同源
 	EnablePprof       bool          // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
 	ShutdownDelay     time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
+	MetricsAddr       string        // Prometheus /metrics 的独立监听地址；等于 config.MetricsAddrOff 表示关闭
+	OTLPEndpoint      string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
 	LLMConfig         LLMConf
 	MCPConfig         MCPConf
 }
@@ -59,6 +61,8 @@ type MCPConf struct {
 	MaxToolRounds     int             // 单次对话最大工具调用轮数，达到后强制模型直接作答
 	MaxToolResultRune int             // 单个工具返回结果最大字符数，超出截断（防撑爆上下文）
 	RetryInterval     time.Duration   // 连接失败后的重连间隔，<=0 表示不自动重连
+	BreakerFailures   int             // 单个服务的工具连续失败多少次后熔断；-1=关闭
+	BreakerCooldown   time.Duration   // 熔断后进入半开试探前的冷却时长
 	Servers           []MCPServerConf // 已通过校验的服务列表
 }
 
@@ -74,6 +78,11 @@ type LLMConf struct {
 	ImageMax         int     // agent「看图」：单次回复最多实际查看(下载回传)的图片张数；>0 启用，0=关（纯文本）
 	Temperature      float64
 	TopP             float64
+
+	RateLimitPerSec float64       // 出站全局限速（每秒允许的调用数）；0=不限速
+	RateLimitBurst  int           // 令牌桶容量；0=按限速值向上取整、至少 1
+	BreakerFailures int           // 连续失败多少次后熔断；-1=关闭熔断
+	BreakerCooldown time.Duration // 熔断后进入半开试探前的冷却时长
 }
 
 // Validate 校验跨域的最终不变量——各域自己的规则在各自的 Validate 里，

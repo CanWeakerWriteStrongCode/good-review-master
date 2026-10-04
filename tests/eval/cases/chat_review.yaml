@@ -1,0 +1,68 @@
+# 提示词离线评测用例 —— chat_review 类别
+#
+# prompt.category / prompt.keyword 指向**你自己** prompt_system.yaml 里已经配好的指令，
+# 评测用的提示词就是从那里取出来的（不是这里再抄一份）。所以：
+#   - 换关键字就要改这里的 keyword；
+#   - 关键字在当前 prompt_system.yaml 里不存在时，runner 会直接把可选项列出来告诉你。
+# 本文件默认用 "猫娘"（config/prompt_system_example.yaml 里就有，从模板起步的配置直接能跑）。
+#
+# checks 里的每一条都是**硬失败**（退出码非 0）。模型输出本身不比对，只报告与基线的差异，
+# 因为"同样的输入换个种子就换个说法"是常态，把输出当成断言只会得到永远红的测试。
+
+cases:
+  - id: catgirl-basic
+    note: 短对话；验证基础可用性与长度上限（规则里写了 300 字以内，这里给一点余量）
+    prompt:
+      category: chat_review
+      keyword: "猫娘"
+    input: |
+      {"msg_id":1001,"user":"张三","user_id":123456,"content":"今天又加班到十点，累死了"}
+      {"msg_id":1002,"user":"李四","user_id":234567,"content":"辛苦了，明天请你喝奶茶"}
+      {"msg_id":1003,"user":"王五","user_id":345678,"content":"我也要！带我一个"}
+    checks:
+      - kind: min_runes
+        value: 10
+        note: 不能返回空串
+      - kind: max_runes
+        value: 400
+        note: 规则里要求 300 字以内，留一点余量
+      - kind: not_contains
+        value: "作为一个人工智能"
+        note: 不许出现助手腔
+
+  - id: catgirl-long-window
+    note: 20 条消息的窗口；长度上限在长上下文下仍然要守住（正文越长越容易超）
+    prompt:
+      category: chat_review
+      keyword: "猫娘"
+    input: |
+      {"msg_id":2001,"user":"张三","user_id":123456,"content":"早上好，今天天气不错"}
+      {"msg_id":2002,"user":"李四","user_id":234567,"content":"是啊，适合出去走走"}
+      {"msg_id":2003,"user":"王五","user_id":345678,"content":"我要上班，羡慕你们"}
+      {"msg_id":2004,"user":"张三","user_id":123456,"content":"上什么班，摸鱼不好吗"}
+      {"msg_id":2005,"user":"王五","user_id":345678,"content":"老板在我后面，别说了"}
+      {"msg_id":2006,"user":"李四","user_id":234567,"content":"哈哈哈哈哈"}
+      {"msg_id":2007,"user":"张三","user_id":123456,"content":"中午吃什么"}
+      {"msg_id":2008,"user":"李四","user_id":234567,"content":"楼下新开了家面馆"}
+      {"msg_id":2009,"user":"王五","user_id":345678,"content":"那家我知道，牛肉面不错"}
+      {"msg_id":2010,"user":"张三","user_id":123456,"content":"走走走，十二点楼下集合"}
+      {"msg_id":2011,"user":"李四","user_id":234567,"content":"带上我"}
+      {"msg_id":2012,"user":"王五","user_id":345678,"content":"我先把手头的活干完"}
+      {"msg_id":2013,"user":"张三","user_id":123456,"content":"那你快点啊"}
+      {"msg_id":2014,"user":"李四","user_id":234567,"content":"我先下去了占座"}
+      {"msg_id":2015,"user":"王五","user_id":345678,"content":"马上马上"}
+      {"msg_id":2016,"user":"张三","user_id":123456,"content":"面好咸"}
+      {"msg_id":2017,"user":"李四","user_id":234567,"content":"还行啊，我觉得正好"}
+      {"msg_id":2018,"user":"王五","user_id":345678,"content":"明天换一家吧"}
+      {"msg_id":2019,"user":"张三","user_id":123456,"content":"同意，明天去楼上那家盖饭"}
+      {"msg_id":2020,"user":"李四","user_id":234567,"content":"好，说定了"}
+    checks:
+      - kind: min_runes
+        value: 10
+        note: 不能返回空串
+      - kind: max_runes
+        value: 400
+        note: 长上下文下同样不许超长
+      - kind: not_contains
+        value: "作为一个人工智能"
+        note: 不许出现助手腔

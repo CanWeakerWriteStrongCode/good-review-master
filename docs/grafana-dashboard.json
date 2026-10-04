@@ -1,0 +1,277 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "指向抓取本程序 runtime.metrics_addr 的 Prometheus 数据源",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" }
+  ],
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "在跑的 goroutine",
+      "description": "协程池 + 轮询 + MCP 重连都在这里体现。持续单调上升说明有 goroutine 泄漏。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "refId": "A", "expr": "go_goroutines", "legendFormat": "goroutines" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "内存 / RSS",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "refId": "A", "expr": "process_resident_memory_bytes", "legendFormat": "RSS" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "最后一次配置重载",
+      "description": "距离上一次成功重载的秒数。配置改了却没变化时看这里——顺便留意 config_reload_errors_total。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "refId": "A", "expr": "time() - config_last_reload_timestamp", "legendFormat": "重载年龄" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "配置重读失败总数",
+      "description": "失败时会继续沿用旧快照，服务毫无异样——只有这条计数器和日志能发现它。非 0 就该去查 YAML 了。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "refId": "A", "expr": "config_reload_errors_total", "legendFormat": "失败次数" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "MCP 在线服务",
+      "description": "mcp_sessions_up 求和 / 服务总数。掉线会由重连循环按 retry_interval 接管。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(mcp_sessions_up)", "legendFormat": "在线" },
+        { "refId": "B", "expr": "count(mcp_sessions_up)", "legendFormat": "总数" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "累计相对成本",
+      "description": "llm_cost_total。配置里的单价是相对值，这条曲线是对比两种窗口模式的手段，不是账单。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 1 }, "overrides": [] },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        { "refId": "A", "expr": "llm_cost_total", "legendFormat": "相对成本" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "HTTP 请求速率（按路由模板）",
+      "description": "route 用的是 c.FullPath()（路由模板），不是原始 URL——否则 /api/groups/<群号> 会打爆标签基数。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (route, status) (rate(http_requests_total[5m]))", "legendFormat": "{{route}} {{status}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "HTTP 延迟 P95 / P99",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95 {{route}}" },
+        { "refId": "B", "expr": "histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))", "legendFormat": "p99 {{route}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "选窗决策：扩展 vs 重置",
+      "description": "本项目最核心的业务指标。extend 是吃缓存命中前缀、reset 是重发最近 llm_send_count 条。两者比例直接对应成本模型是否在按预期工作。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 20, "lineWidth": 2, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (mode) (rate(llm_window_mode_total[5m]))", "legendFormat": "{{mode}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "大模型调用：成功 / 失败 / 被本地保护拒绝",
+      "description": "llm_rejected_total 是「没进门」的那部分流量。只看 result=error 会把熔断期间算成「没有请求」，看起来像流量凭空消失了。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 20, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (model, result) (rate(llm_requests_total[5m]))", "legendFormat": "{{model}} {{result}}" },
+        { "refId": "B", "expr": "sum by (reason) (rate(llm_rejected_total[5m]))", "legendFormat": "拒绝 {{reason}}" }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "大模型延迟 P50 / P95",
+      "description": "失败也计入耗时（adapter 里两条路径都上报）。只统计成功请求会让超时从分布里消失，P99 看起来永远很健康。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le, model) (rate(llm_duration_seconds_bucket[5m])))", "legendFormat": "p50 {{model}}" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le, model) (rate(llm_duration_seconds_bucket[5m])))", "legendFormat": "p95 {{model}}" }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "缓存前缀命中 token / 大模型 token 用量",
+      "description": "llm_cache_hit_total 是「被缓存吃掉、按命中价计费的前缀」。llm_tokens_total 是服务端返回的真实用量（上游不回 usage 时是平的，说明上游没给，不是没有花费）。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "rate(llm_cache_hit_total[5m])", "legendFormat": "命中前缀 token/s" },
+        { "refId": "B", "expr": "sum by (kind) (rate(llm_tokens_total[5m]))", "legendFormat": "{{kind}} token/s" }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "轮询：周期耗时 / 消息延迟 / 拉取失败",
+      "description": "poll_lag_seconds 是「最新一条消息发出到被我们处理」的延迟，正常约等于一个轮询间隔；持续抬升说明我们落后群聊了（NapCat 卡住或返回了历史消息）。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 29 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(poll_cycle_duration_seconds_bucket[5m])))", "legendFormat": "周期 P95 (秒)" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(poll_lag_seconds_bucket[5m])))", "legendFormat": "消息延迟 P95 (秒)" },
+        { "refId": "C", "expr": "sum by (group) (rate(poll_fetch_errors_total[5m]))", "legendFormat": "拉取失败 {{group}}/s" }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "MCP 工具调用 / 各服务在线状态",
+      "description": "mcp_tool_calls_total{result=\"error\"} 持续增长说明某个工具在稳定地失败——熔断器会先替你把那个服务隔离掉。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 29 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (server, tool, result) (rate(mcp_tool_calls_total[5m]))", "legendFormat": "{{server}}.{{tool}} {{result}}" },
+        { "refId": "B", "expr": "mcp_sessions_up", "legendFormat": "在线 {{server}}" }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "协程池：排队 / 运行中 / 被拒绝",
+      "description": "pool_submit_rejected_total 一旦非 0，就意味着有锐评请求**没能发出去**——这是该扩容或降频的硬信号，不是可以放着不管的噪音。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "pool_queue_len", "legendFormat": "队列长度" },
+        { "refId": "B", "expr": "pool_tasks_running", "legendFormat": "运行中" },
+        { "refId": "C", "expr": "increase(pool_submit_rejected_total[$__rate_interval])", "legendFormat": "被拒绝（区间内）" }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "各群缓存消息数",
+      "description": "cache_messages 只在白名单群上产生时间线（基数有界）。它贴着 max_cache_msg 就是环形缓冲在正常覆盖。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "cache_messages", "legendFormat": "群 {{group}}" }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["good-review", "qq-bot"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "不是好评大师 · 总览",
+  "uid": "good-review-overview",
+  "version": 1
+}

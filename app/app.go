@@ -19,6 +19,7 @@ import (
 	"good-review-master/mcpserver"
 	"good-review-master/onebot"
 	"good-review-master/router"
+	"good-review-master/telemetry"
 	webserver "good-review-master/web/server"
 )
 
@@ -34,7 +35,8 @@ type App struct {
 	BuiltinMCP *mcpserver.Server // 未启用看图（image_max<=0）或启动失败时为 nil
 	Router     *router.Router
 	Bot        *bot.Bot
-	Web        *webserver.Server // web_port<=0 时为 nil
+	Web        *webserver.Server        // web_port<=0 时为 nil
+	Metrics    *telemetry.MetricsServer // metrics_addr=off 时为 nil
 
 	ctx       context.Context // 生命周期 context：收到 SIGINT/SIGTERM 或 Shutdown 时取消
 	stop      context.CancelFunc
@@ -48,6 +50,11 @@ type App struct {
 	botNickname      string // 启动时从 NapCat 取到，之后不变
 	builtinImageAddr string // 内嵌看图 MCP 的地址；空表示本会话没启用
 	webURL           string // 启动时算好的面板地址，只用于启动日志
+
+	// 可观测性：注册表只在这里持有（指标定义在 telemetry 包），
+	// shutdownTrace 在追踪未启用时是一个 no-op 函数，永远非 nil。
+	registry      *telemetry.Registry
+	shutdownTrace func(context.Context) error
 }
 
 // Ctx 返回应用生命周期 context。
@@ -71,6 +78,17 @@ func (a *App) Start() {
 			logutil.Error("提示词监听退出", "err", err)
 		}
 	}()
+
+	// 指标端点：绑不上不该拖垮主流程（指标是附加能力），只记一条错误。
+	// 真实场景：9100 被别的进程占了，此时机器人照常干活，只是没有指标可抓。
+	if a.Metrics != nil {
+		go func() {
+			if err := a.Metrics.Start(); err != nil {
+				logutil.Error("指标端点异常退出", "addr", a.Metrics.Addr(), "err", err)
+			}
+		}()
+		logutil.Info("指标端点已启动", "addr", "http://"+a.Metrics.Addr()+"/metrics")
+	}
 
 	if a.Web == nil {
 		return
@@ -108,6 +126,12 @@ func (a *App) Shutdown(ctx context.Context) {
 			}
 		}
 
+		if a.Metrics != nil {
+			if err := a.Metrics.Shutdown(ctx); err != nil {
+				logutil.Warn("指标端点关闭失败", "err", err)
+			}
+		}
+
 		if err := a.Router.Wait(); err != nil {
 			logutil.Error("等待 goroutine 退出失败", "err", err)
 		}
@@ -120,6 +144,14 @@ func (a *App) Shutdown(ctx context.Context) {
 		if a.BuiltinMCP != nil {
 			if err := a.BuiltinMCP.Close(); err != nil {
 				logutil.Warn("关闭内嵌 MCP 服务失败", "err", err)
+			}
+		}
+
+		// 追踪放最后收：它要把批处理里还没上报的 span 冲刷出去，
+		// 前面那些组件的关闭动作本身也可能产生 span。
+		if a.shutdownTrace != nil {
+			if err := a.shutdownTrace(ctx); err != nil {
+				logutil.Warn("链路追踪关闭失败（末尾一批 span 可能丢失）", "err", err)
 			}
 		}
 

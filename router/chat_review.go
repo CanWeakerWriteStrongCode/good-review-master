@@ -9,15 +9,19 @@ import (
 	"good-review-master/config"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
+	"good-review-master/telemetry"
 )
 
-// chatReview 异步锐评（通过 async 管理生命周期，自动继承 shutdown context）
-func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
-	logutil.Info("触发锐评", "group", groupID, "user", event.Nickname)
+// chatReview 异步锐评（通过 async 管理生命周期，自动继承 shutdown context）。
+//
+// parent 是分发链路的 ctx：用 GoCtx 而不是 Go，任务才能同时继承
+// 调用方的 trace span 与 Group 的关闭信号（详见 async.Group.GoCtx）。
+func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
+	logutil.InfoCtx(parent, "触发锐评", "group", groupID, "user", event.Nickname)
 	// 一次锐评是一个完整的业务动作，全程用同一份配置：
 	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
 	cfg := r.appCfg()
-	r.Go(func(ctx context.Context) error {
+	r.GoCtx(parent, func(ctx context.Context) error {
 		msgs := cache.GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
 		if len(msgs) == 0 {
 			r.obClient.SendGroupMessage(groupID, "暂无群聊记录，无法锐评~")
@@ -30,7 +34,7 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 
 		ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)
 		defer cancel()
-		userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra)
+		userMsg := BuildUserMsg(chatLog, keywordPrompt)
 		// agent「看图」：窗口内有图片且 view_image 工具在线时，附上候选图列表（懒加载，图不随文本常驻）
 		if cfg.LLMConfig.ImageMax > 0 && r.mcp != nil && len(r.mcp.Tools()) > 0 {
 			if block := r.imageCandidatesBlock(chatLogMsgs); block != "" {
@@ -66,6 +70,18 @@ func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPr
 	decision := decideChatWindow(msgs, cache.GetLLMAnchor(groupID),
 		cfg.LLMConfig.CacheHitCost, cfg.LLMConfig.CacheMissCost,
 		cfg.LLMConfig.MaxContextTokens, cfg.LLMSendCount, systemTokens)
+
+	// 选窗是这套缓存成本模型里唯一的决策点，指标就埋在这里。
+	// llm_cost_total 记的是**决策时的估算成本**，不是账单：真实计费口径只有服务端知道，
+	// 而本项目配置里的单价本来就是相对值（见 docs/cache-cost-analysis.md）。
+	// 它的用途是对比两种窗口模式的走势，不是算钱。
+	telemetry.LLMWindowModeTotal.WithLabelValues(decision.Mode).Inc()
+	if decision.Mode == "extend" {
+		telemetry.LLMCacheHitTotal.Add(float64(decision.HitTokens))
+		telemetry.LLMCostTotal.Add(decision.ExtendCost)
+	} else {
+		telemetry.LLMCostTotal.Add(decision.ResetCost)
+	}
 
 	if decision.Mode == "extend" {
 		logutil.Debug("缓存扩展", "group", groupID, "窗口", len(decision.Window),
@@ -140,9 +156,17 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	return strings.TrimSpace(b.String())
 }
 
-// buildUserMsg 组装发给大模型的 user message：聊天记录 + @者信息 + 关键词 prompt。
+// BuildUserMsg 组装发给大模型的 user message：聊天记录 + 固定要求 + 该指令的提示词。
 // 人格块不在 user 消息里：由调用方渲染后拼进 systemPrompt（RouteMessage 关键字路由 / replyDefault 群人格）。
-func buildUserMsg(chatLog string, mentionerNick string, keywordPrompt string, extra string) string {
+//
+// 导出是给 tests/eval 用的（与 ComposeSystemPrompt 同理）：离线评测必须看到与线上逐字相同的输入。
+//
+// **注意一处与文档不符的现状**：本函数原先还接收 `mentionerNick` 与 `extra` 两个参数，
+// 但函数体从未用过它们——也就是说"关键字后面的补充文本"目前**没有**拼进提示词里，
+// 而 CLAUDE.md 把"extra 会作为「用户补充,优先级很高」追加"写成了既有行为。
+// 这次只是把两个死参数删掉（纯机械清理，行为零变化），没有顺手把它加回去：
+// 那会改变发给大模型的内容，属于产品决定，该由人来拍板。
+func BuildUserMsg(chatLog string, keywordPrompt string) string {
 	userMsg := chatLog + "\n"
 	userMsg += "【重点】优先回复或者执行最后一条信息【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案或推脱"
 	userMsg += keywordPrompt + "\n"

@@ -9,6 +9,7 @@ import (
 	"good-review-master/config"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
+	"good-review-master/telemetry"
 )
 
 // RunPollingLoop HTTP轮询主循环
@@ -39,7 +40,9 @@ func (b *Bot) RunPollingLoop(ctx context.Context) {
 				ticker.Reset(interval)
 				logutil.Info("轮询间隔已更新", "新间隔", interval.String())
 			}
-			pollOnce(cfg, b.ob, historyCount, b.ProcessMessage)
+			cycleStart := time.Now()
+			pollOnce(ctx, cfg, b.ob, historyCount, b.ProcessMessage)
+			telemetry.PollCycleDurationSeconds.Observe(time.Since(cycleStart).Seconds())
 		}
 	}
 }
@@ -49,6 +52,7 @@ func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
 	for _, groupID := range cfg.AllowGroups {
 		msgs, err := ob.FetchGroupMsgHistory(groupID, count)
 		if err != nil {
+			telemetry.PollFetchErrorsTotal.WithLabelValues(groupID).Inc()
 			logutil.Error("首次拉取群消息失败", "group", groupID, "err", err)
 			continue
 		}
@@ -67,6 +71,7 @@ func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
 			})
 		}
 		logutil.Info("群消息缓存初始化完成", "group", groupID, "条数", len(msgs))
+		telemetry.CacheMessages.WithLabelValues(groupID).Set(float64(gc.Len()))
 	}
 }
 
@@ -74,23 +79,28 @@ func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
 //
 // cfg 与 handle 都由调用方传入，而不是从 b 上取：这样"这一轮用的配置"
 // 与"处理消息时用的配置"是同一份，不会一轮之内换掉。
-func pollOnce(cfg *config.Config, ob *onebot.Client, count int, handle func(onebot.Event)) {
+func pollOnce(ctx context.Context, cfg *config.Config, ob *onebot.Client, count int, handle func(context.Context, onebot.Event)) {
 	for _, groupID := range cfg.AllowGroups {
 		msgs, err := ob.FetchGroupMsgHistory(groupID, count)
 		if err != nil {
+			telemetry.PollFetchErrorsTotal.WithLabelValues(groupID).Inc()
 			logutil.Error("轮询群消息失败", "group", groupID, "err", err)
 			continue
 		}
 
 		gc := cache.GetGroupCache(groupID, cfg.MaxCacheMsg)
 		newCount := 0
+		var newestMsgTime int64
 		for _, msg := range msgs {
 			if gc.HasMsgID(msg.MessageID) {
 				continue
 			}
 			newCount++
+			if msg.Time > newestMsgTime {
+				newestMsgTime = msg.Time
+			}
 			logutil.Info("收到新消息", "group", groupID, "msgID", msg.MessageID, "user", msg.Sender.Nickname, "content", msg.RawMessage)
-			handle(onebot.Event{
+			handle(ctx, onebot.Event{
 				PostType:    "message",
 				MessageType: "group",
 				GroupID:     onebot.FormatGroupID(msg.GroupID),
@@ -100,7 +110,16 @@ func pollOnce(cfg *config.Config, ob *onebot.Client, count int, handle func(oneb
 				MessageID:   msg.MessageID,
 			})
 		}
+		// 按群、每轮更新一次（不是每条消息一次）：见 cache.Add 的说明——
+		// 在缓存内部的写入路径上埋点会破坏它的零拷贝性质。
+		telemetry.CacheMessages.WithLabelValues(groupID).Set(float64(gc.Len()))
 		if newCount > 0 {
+			// 只按**最新一条**记延迟：本轮所有新消息的年龄各不相同，
+			// 逐条打点会让这个直方图变成"消息新旧分布"，而不是"我们落后多少"。
+			if newestMsgTime > 0 {
+				lag := time.Since(time.Unix(newestMsgTime, 0))
+				telemetry.PollLagSeconds.Observe(lag.Seconds())
+			}
 			logutil.Debug("本轮轮询结果", "group", groupID, "新消息数", newCount)
 		}
 	}

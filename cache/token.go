@@ -17,8 +17,16 @@ func EstimateTokens(s string) int {
 }
 
 // ChatLogTokens 按 BuildChatLog 的实际输出估算一组消息的 token 数（跳过空内容）。
-// 直接复用 BuildChatLog 的格式，成本口径与实际发给模型的内容始终一致，改格式不会两边漂移；
-// 代价是计数时构建一次 chat log 字符串——窗口只有几十条消息，可忽略。
+// 直接复用 BuildChatLog 的格式，成本口径与实际发给模型的内容始终一致，改格式不会两边漂移。
+//
+// 代价是计数时真的构建一遍 chat log 字符串（每条消息一次 json.Marshal），
+// 而且调用方**传进来的往往不是"窗口"而是整个环缓存的切片**
+// （见 decideChatWindow：命中前缀、新增部分、候选重置窗口各算一次）。
+// 实测（router/bench_test.go）在 max_cache_msg=3100 时一次选窗约 1.9ms、6387 次分配。
+//
+// 这个量级对"每次锐评走一遍"完全够用，所以刻意保持现状而不是改成增量计数——
+// 增量计数意味着两套口径（估算用的与实际发的格式）要各自维护，
+// 改一次格式就可能悄悄漂移，而那正是这个函数要避免的事。
 func ChatLogTokens(msgs []Message) int {
 	return EstimateTokens(BuildChatLog(msgs))
 }

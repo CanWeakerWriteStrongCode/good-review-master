@@ -24,10 +24,32 @@ import (
 	"good-review-master/config"
 	"good-review-master/llm"
 	"good-review-master/logutil"
+	"good-review-master/telemetry"
 	"good-review-master/version"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sony/gobreaker/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// toolResultLabel 把"工具执行是否报错"转成指标标签。
+// 单独一个函数是为了让两个 CallTool 变体用同一套判定，不会一处写 ok 一处写 success。
+func toolResultLabel(isError bool) string {
+	if isError {
+		return telemetry.ResultError
+	}
+	return telemetry.ResultOK
+}
+
+// boolToGauge 布尔转 0/1，给 Gauge 用。
+func boolToGauge(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
+}
 
 // implName initialize 握手里报给对端的客户端标识
 const implName = "good-review"
@@ -65,6 +87,10 @@ type serverConn struct {
 	session *mcp.ClientSession // nil 表示当前未连接
 	tools   []*mcp.Tool        // 最近一次成功拉到的工具清单
 	lastErr error
+
+	// breaker 按**服务**熔断（nil = 不熔断）。按服务而不是全局：
+	// 一个服务挂了不该让另一个本来好用的服务的工具也一起被拒。
+	breaker *gobreaker.CircuitBreaker[any]
 }
 
 // binding 暴露给模型的工具名 → 归属服务与 MCP 原始工具名
@@ -105,7 +131,23 @@ func New(cfg config.MCPConf, shutdownCtx context.Context) *Manager {
 		return m
 	}
 	for i := range cfg.Servers {
-		m.servers = append(m.servers, &serverConn{cfg: cfg.Servers[i], mgr: m})
+		conn := &serverConn{cfg: cfg.Servers[i], mgr: m}
+		if cfg.BreakerFailures > 0 {
+			conn.breaker = gobreaker.NewCircuitBreaker[any](gobreaker.Settings{
+				Name:        "mcp:" + cfg.Servers[i].Name,
+				MaxRequests: 1,
+				Timeout:     cfg.BreakerCooldown,
+				ReadyToTrip: func(counts gobreaker.Counts) bool {
+					return counts.ConsecutiveFailures >= uint32(cfg.BreakerFailures)
+				},
+				// 关机取消不算故障（同 llm 那边的理由）
+				IsExcluded: func(err error) bool { return errors.Is(err, context.Canceled) },
+				OnStateChange: func(name string, from, to gobreaker.State) {
+					logutil.Warn("MCP 熔断器状态变化", "name", name, "从", from.String(), "到", to.String())
+				},
+			})
+		}
+		m.servers = append(m.servers, conn)
 	}
 	m.snap.Store(&snapshot{bindings: map[string]*binding{}})
 	return m
@@ -273,9 +315,22 @@ func (m *Manager) CallTool(ctx context.Context, exposedName, argsJSON string) (s
 		return "", fmt.Errorf("MCP 服务 %s 当前未连接", b.server.cfg.Name)
 	}
 
+	// 工具名用**暴露名**（模型看到的那个）：链路图与指标要能直接和模型侧的调用对上，
+	// 服务名单独打一个属性，用它做维度区分。
+	ctx, span := telemetry.StartSpan(ctx, "mcp.tools/call",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("mcp.server", b.server.cfg.Name),
+			attribute.String("mcp.tool", exposedName),
+		))
+	defer span.End()
+
 	start := time.Now()
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: b.tool, Arguments: args})
+	res, err := b.server.callRawTool(ctx, session, &mcp.CallToolParams{Name: b.tool, Arguments: args})
 	if err != nil {
+		telemetry.MCPToolCallsTotal.WithLabelValues(b.server.cfg.Name, exposedName, telemetry.ResultError).Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		// 连接已断：摘掉会话让重连循环接手，同时把它的工具从快照里撤下
 		if errors.Is(err, mcp.ErrConnectionClosed) {
 			b.server.markDead(err)
@@ -284,9 +339,13 @@ func (m *Manager) CallTool(ctx context.Context, exposedName, argsJSON string) (s
 	}
 
 	text, toolErr := flattenContent(res)
+	telemetry.MCPToolCallsTotal.WithLabelValues(b.server.cfg.Name, exposedName, toolResultLabel(toolErr)).Inc()
 	logutil.Debug("MCP 工具返回", "server", b.server.cfg.Name, "tool", b.tool,
 		"耗时", time.Since(start).String(), "字符数", len([]rune(text)), "isError", toolErr)
 	if toolErr {
+		// 工具自己报的错（isError=true）也算失败：模型拿到的是错误文本，
+		// 这条曲线要能反映"工具到底有没有在好好干活"。
+		span.SetStatus(codes.Error, text)
 		return text, fmt.Errorf("工具执行报错: %s", text)
 	}
 	return text, nil
@@ -318,8 +377,19 @@ func (m *Manager) CallToolImage(ctx context.Context, exposedName, argsJSON strin
 		return "", nil, fmt.Errorf("MCP 服务 %s 当前未连接", b.server.cfg.Name)
 	}
 
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: b.tool, Arguments: args})
+	ctx, span := telemetry.StartSpan(ctx, "mcp.tools/call",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("mcp.server", b.server.cfg.Name),
+			attribute.String("mcp.tool", exposedName),
+		))
+	defer span.End()
+
+	res, err := b.server.callRawTool(ctx, session, &mcp.CallToolParams{Name: b.tool, Arguments: args})
 	if err != nil {
+		telemetry.MCPToolCallsTotal.WithLabelValues(b.server.cfg.Name, exposedName, telemetry.ResultError).Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		if errors.Is(err, mcp.ErrConnectionClosed) {
 			b.server.markDead(err)
 		}
@@ -327,12 +397,36 @@ func (m *Manager) CallToolImage(ctx context.Context, exposedName, argsJSON strin
 	}
 
 	text, toolErr, imgs := flattenWithImages(res)
+	telemetry.MCPToolCallsTotal.WithLabelValues(b.server.cfg.Name, exposedName, toolResultLabel(toolErr)).Inc()
 	logutil.Debug("MCP 工具返回", "server", b.server.cfg.Name, "tool", b.tool,
 		"字符数", len([]rune(text)), "图片数", len(imgs), "isError", toolErr)
 	if toolErr {
+		span.SetStatus(codes.Error, text)
 		return text, imgs, fmt.Errorf("工具执行报错: %s", text)
 	}
 	return text, imgs, nil
+}
+
+// callRawTool 经该服务的熔断器发起一次 tools/call。
+//
+// 工具这条路尤其需要熔断：坏掉的服务仍会留在工具清单里（会话没断，只是调用报错），
+// 模型看到它就会反复调，每次都要等满 tool_timeout（默认 30 秒），而一次对话可能有好几轮。
+// 熔断打开后直接失败，模型能更快改口用别的方式作答。
+func (s *serverConn) callRawTool(ctx context.Context, session *mcp.ClientSession, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	if s.breaker == nil {
+		return session.CallTool(ctx, params)
+	}
+	result, err := s.breaker.Execute(func() (any, error) {
+		return session.CallTool(ctx, params)
+	})
+	if err != nil {
+		return nil, err
+	}
+	typed, ok := result.(*mcp.CallToolResult)
+	if !ok {
+		return nil, fmt.Errorf("MCP 调用返回了意料之外的结果类型 %T", result)
+	}
+	return typed, nil
 }
 
 // Close 关闭所有会话并停止重连循环。
@@ -354,6 +448,7 @@ func (m *Manager) Close() error {
 			session := s.session
 			s.session = nil
 			s.mu.Unlock()
+			telemetry.MCPSessionsUp.WithLabelValues(s.cfg.Name).Set(0)
 			if session == nil {
 				continue
 			}
@@ -397,7 +492,11 @@ func (s *serverConn) dial() {
 		s.tools = tools
 		s.lastErr = nil
 	}
+	online := s.session != nil
 	s.mu.Unlock()
+
+	// 在线状态是 Gauge 而不是计数器：它就是"此刻连上没有"，重启后回落是正确的语义。
+	telemetry.MCPSessionsUp.WithLabelValues(s.cfg.Name).Set(boolToGauge(online))
 
 	if err != nil {
 		logutil.Warn("MCP 服务连接失败，等待重连", "server", s.cfg.Name,
@@ -486,6 +585,7 @@ func (s *serverConn) markDead(cause error) {
 	s.session = nil
 	s.lastErr = cause
 	s.mu.Unlock()
+	telemetry.MCPSessionsUp.WithLabelValues(s.cfg.Name).Set(0)
 	if session != nil {
 		_ = session.Close()
 	}

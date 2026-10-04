@@ -11,8 +11,13 @@ go build ./...        # verify all packages compile
 go vet ./...          # 必须绿
 go test ./...         # 必须绿
 go tool golangci-lint run    # 参考，不是门禁（红了挑着修，别为它改无意义的代码）
-cd tests/e2e && pnpm test    # 行为回归，每阶段收尾必跑（基线 7 过 / 2 既有失败 bot-flow、persona）
+cd tests/e2e && pnpm test    # 行为回归，每阶段收尾必跑（基线 12 过 / 2 既有失败 bot-flow、persona）
 go build -o good-review-master.exe ./cmd/good-review  # 出二进制
+
+# 只在动了热点代码 / 提示词时跑：
+go test -bench . -benchmem ./cache/ ./router/   # 基准；BenchmarkAdd 的 allocs/op 必须是 0
+go run ./tests/eval                             # 提示词离线评测（要真实 API Key，见 tests/eval/README.md）
+curl -s 127.0.0.1:9100/metrics | head           # 指标端点自检
 ```
 
 **不跑 `go test -race`**：race detector 需要 cgo + C 编译器，本机没装 gcc。
@@ -83,22 +88,32 @@ Browser / MiniProgram ←→ Gin web server (:web_port) ←→ OneBot + Cache (r
 
 ```
 main → app, config, logutil, apppath, version
-app → config, config/store, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
-bot → config, cache, onebot, router
-router → config, cache, llm, onebot, async
-web/server → config, logutil, onebot, cache, version
+app → config, config/store, llm, onebot, router, bot, web/server, mcpclient, mcpserver, telemetry, logutil, internal/testutil
+bot → config, cache, onebot, router, telemetry
+router → config, cache, llm, onebot, async, telemetry
+web/server → config, logutil, onebot, cache, version, telemetry
 async → logutil, pool
-pool → (仅标准库 sync)
+pool → telemetry（仅此外只有标准库）
 onebot → (no internal deps)
 cache → (no internal deps)
-llm → (no internal deps)
+llm → telemetry
 config → apppath, logutil
-config/store → logutil
-logutil → apppath
+config/store → logutil, telemetry
+logutil → apppath, otel/trace
+telemetry → (仅 prometheus / otel，无任何内部依赖)
 apppath → (no internal deps)
 ```
 
-`app` is the composition root (see below); `bot` is the runtime poller; `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based) **plus CQ-code parsing** (`cqimage.go`); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`app` is the composition root (see below); `bot` is the runtime poller; `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based) **plus CQ-code parsing** (`cqimage.go`); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK) wrapped in an outbound rate-limit/circuit-breaker decorator; `telemetry` owns every metric and trace; `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+
+**`telemetry` is a deliberate hole in the "no cross-package imports" rule.** It is a leaf
+(only prometheus + otel), and low-level packages (`pool`, `cache`, `llm`, …) import it directly
+to record metrics rather than receiving a metric handle through injection. Metrics are
+process-wide singletons by nature, and threading an interface through a dozen constructors to
+reach what is effectively `telemetry.PoolQueueLen.Inc()` buys no real decoupling. The trade-off
+is recorded here so it is a decision rather than an accident — and so the next person knows that
+`cache → (no internal deps)` still holds **because** the cache gauge is updated from
+`bot/polling.go` (per group, per cycle), not from inside `cache.Add`, which must stay zero-alloc.
 
 Two structural conventions behind that layout:
 
@@ -205,7 +220,11 @@ cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X througho
 | --- | --- |
 | `prompt_system.yaml` / `prompt_custom.yaml` | within ~2s (`PromptConfig.Reload()` **and** `Router.Rebuild()`) |
 | `allow_groups`, thresholds, cost params, model name, `max_msg_rune`, poll interval | on the next read (next tick / next request) |
-| `web_port`, credentials, `jwt_secret`, `mcp.servers` | **restart required** — a WARN says so on reload |
+| `web_port`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
+
+The limiter and breaker are **stateful** (a token bucket, a consecutive-failure counter), so
+re-reading their numbers mid-flight would silently change what the counters mean. That's why
+they belong in the same category as the bound listener — not because they're expensive to rebuild.
 
 The prompt path needs *both* steps: `Reload` only swaps the data, while the route table is **derived** from it. Skipping `Rebuild` yields the worst kind of bug — the file clearly contains the new keyword, and nothing happens when you use it.
 
@@ -252,11 +271,16 @@ type Router struct {
     starter          *async.Group               // goroutine 生命周期管理
 }
 func NewRouter(appCfg, promptCfg, llmClient, obClient, shutdownCtx) *Router
-func (r *Router) RouteMessage(content, event, groupID)
+func (r *Router) RouteMessage(ctx, content, event, groupID)
 func (r *Router) Rebuild()                            // 提示词变了之后重建路由表
 func (r *Router) Go(fn func(context.Context) error)   // 安全启动 goroutine
+func (r *Router) GoCtx(parent, fn)                    // 同上，但继承调用方 ctx（trace 靠它跨 goroutine）
 func (r *Router) Wait() error                         // 等待所有 goroutine 退出
 ```
+
+`RouteMessage` 收 ctx、`HandlerFunc` 的第一个参数也是 ctx：分发链路的上下文要一路传到
+处理器里的大模型与 MCP 调用，否则一次"消息 → 路由 → 大模型 → 工具"在链路图上是散的。
+`chatReview` 因此用 `GoCtx`（而不是 `Go`）提交异步任务——见 `async.Group.GoCtx` 的说明。
 
 `trie` and `routes` live in **one** atomically-swapped struct on purpose: with two separate atomics, a dispatch could pair a new trie with an old help list, so what `帮助` lists and what actually matches would disagree — the kind of inconsistency that is miserable to debug. `Rebuild` needs no lock: it builds a fresh table and stores it, so concurrent rebuilds converge and readers never see half a table.
 
@@ -274,9 +298,16 @@ func trieMatch(root *trieNode, text string) *Route   // O(k), k = len(text)
 
 1. `stripCQPrefix()` — strips `[CQ:at,qq=xxx]` codes and `@Nickname` text
 2. `trieMatch()` — longest prefix match on cleaned text
-3. Extra text after keyword becomes `"用户补充,优先级很高:{extra}"` appended to prompt
-4. Prompt is wrapped with bot identity: QQ, nickname, and mentioner's nickname
-5. Handler receives `(event, groupID, enrichedPrompt)`
+3. `ComposeSystemPrompt()` builds the system prompt (bot identity + optional image hint + optional persona block)
+4. `BuildUserMsg()` builds the user message (chat log + fixed instruction + the keyword's prompt)
+5. Handler receives `(ctx, event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)`
+
+> ⚠️ **文档与代码的一处已知不符（阶段性 5 发现，未修）**：`extra`（关键字后面的补充文本）
+> 目前**没有**被拼进提示词——它一路传到处理器，但 `BuildUserMsg` 从未使用过它
+> （`mentionerNick` 同样）。早先的文档把它写成"`用户补充,优先级很高:{extra}` 追加"，
+> 那是更早版本的行为。这是一处需要产品决策的回归：把它加回去会改变发给大模型的内容，
+> 所以阶段 5 只删掉了两个死参数、没有擅自恢复。`tests/eval` 走的是同一对函数，
+> 恢复时评测会自动跟着变。
 
 ### Message flow
 
@@ -429,6 +460,12 @@ type GroupMsgCache struct {
 
 Single-writer architecture (only the polling goroutine calls `Add`) — no lock contention in practice.
 
+**`Add` must stay allocation-free, and `cache/bench_test.go` enforces it.** `BenchmarkAdd`'s
+`allocs/op` is 0 — that number *is* the "zero-copy" claim made executable. Anything that escapes
+to the heap on that path (a metrics call, a log field, a closure) turns it into 1 and the
+benchmark says so. The `cache_messages` gauge is therefore updated from `bot/polling.go`
+(per group, per cycle), never from inside `Add`.
+
 **Global functions used by the web API:**
 
 ```go
@@ -465,6 +502,47 @@ func (g *Group) Wait() error
 
 基于 `pool` 封装，提供：context 自动传递、panic recover + 日志、阻塞式任务提交（队列满时等待或取消）。`Router` 持有 `*async.Group` 并暴露 `Go(fn)` / `Wait()` 代理方法。Handler 通过 `r.Go(func(ctx) ...)` 提交异步任务 —— ctx 自动从 shutdown context 派生，Ctrl+C 可取消进行中的 LLM 调用。
 
+## Observability (`telemetry/`)
+
+指标与链路同住一个包，因为它们的生命周期完全一致：同一份配置开关、同一次初始化、同一次 Shutdown。
+
+```go
+telemetry.NewRegistry()                                  // 私有注册表（不用 Prometheus 全局单例）
+telemetry.NewMetricsServer(addr, registry)               // /metrics 独立监听，默认 127.0.0.1:9100
+telemetry.InitTracing(endpoint, serviceName) (stop, err) // 空 endpoint = 关闭（默认）
+telemetry.StartSpan(ctx, name, opts...)                  // 关闭时是 no-op，调用点不必判开关
+```
+
+**`/metrics` 独立监听、不挂业务端口**：面板要过 JWT 而 Prometheus 抓取带不了，而且
+`web_port<=0` 时本进程依然是一个在跑的机器人，依然值得被观测。绑不上端口只记一条错误，
+不拦启动——指标是附加能力。
+
+**标签基数两条硬规矩**（见 `telemetry/metrics.go` 的 `HTTPRouteLabel`）：
+`route` 用 `c.FullPath()` 路由模板、未命中路由统一归 `unmatched`，**绝不用原始 URL**
+（`/api/groups/<群号>` 会随群号数量无限增长）；全仓库唯一按业务 ID 打标签的是
+`cache_messages{group}`，其基数被 `allow_groups` 这个显式短名单限制住。
+
+**`llm_rejected_total` 与 `llm_requests_total` 的分工**：前者是"被本地限速/熔断拦下、
+根本没发出去"的调用。只看 `result=error` 会把熔断期间算成"没有请求"，
+看起来像流量凭空消失。排障时两条要一起看。
+
+**OTLP 导出器是自己写的**（`telemetry/otlp.go`，约 150 行）。官方的 `otlptracehttp` 会拖进
+gRPC + genproto + protobuf + grpc-gateway + backoff 一整棵子树，而当前 grpc/genproto 要求
+`go >= 1.26`（本仓库是 1.25）。为一个**默认关闭**的功能长期钉死一棵依赖、或抬高主模块
+go 指令，都不划算。OTLP/HTTP 的 JSON 编码是规范定义的标准形态，Jaeger / Collector / Tempo
+在 `/v1/traces` 上收的就是它，所以协议侧没有打折——`telemetry_test.go` 对着 httptest
+把请求体解回来逐字段核对（traceId 32 位十六进制、int64 用字符串、**status 码的两套枚举顺序相反**）。
+
+**日志关联是追踪在"没有后端"时也成立的收益**：`logutil.InfoCtx(ctx, ...)` 一族会把
+`trace_id` 打进日志字段；追踪关着时该字段直接不出现，成本是一次 ctx 取值。
+
+**出站保护（限速 + 熔断）** 是包在 `llm.Client` 外面的装饰器（`llm.NewResilient`），
+不塞进适配器内部——"要不要发这一趟"与"怎么发"是两件事。缺省刻意不对称：
+**限速默认关**（它会在正常流量下拒请求），**熔断默认开**（只有已经连续失败 5 次才动作，
+而那时每次放开调用都要等满 `llm_timeout_sec`）。`context.Canceled` 通过 gobreaker 的
+`IsExcluded` 排除在外——否则每次 Ctrl+C 都会给熔断器记一笔失败，重启后头几个请求
+可能直接撞上"熔断中"，一个纯粹由正常操作制造出来的假故障。MCP 侧按**服务**分别熔断。
+
 ## Logging (`logutil/`)
 
 Uses `zap` + `lumberjack`. Dual output: console (colored) + file. `lumberjack` handles rotation: 20MB max, 30 backups, 30-day retention, gzip compression. `zap.AddCallerSkip(1)` makes caller field point to actual call site, not the `logutil` wrapper.
@@ -484,6 +562,11 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 - `runtime.cors_origins` — comma-separated origin allowlist; empty = same-origin only. `*` allows any origin
 - `runtime.enable_pprof` — exposes `net/http/pprof` under the authenticated `/api/debug/pprof/`
 - `runtime.shutdown_delay_sec` — pre-stop wait: mark not-ready, wait this long, *then* stop the listener. Default 0 (stop immediately). Only meaningful behind an LB / k8s / nginx that polls `/readyz`; must stay under the 10s shutdown budget in `app.Run`
+- `runtime.metrics_addr` — `/metrics` listener. **Defaults to `127.0.0.1:9100`** (loopback only); `off`/`none`/`disabled` turns it off. Empty means "use the default", which is why an explicit sentinel is needed. Restart required
+- `runtime.otlp_endpoint` — OTLP/HTTP traces endpoint (e.g. `http://localhost:4318`). Empty = tracing off (default). Restart required
+- `llm.rate_limit_per_sec` / `llm.rate_limit_burst` — outbound rate limit; default 0 = off. Over-limit calls are **rejected**, not queued
+- `llm.breaker_failures` / `llm.breaker_cooldown_sec` — circuit breaker; defaults 5 / 30s, `-1` disables. Same pair under `mcp.` (defaults 5 / 60s, counted **per server**)
+- `mcp.retry_interval_sec` / `llm.breaker_failures` use `-1` as the "explicitly disabled" sentinel — `0` means "unset, use the default". Same idiom, keep it consistent
 - `Config.MaskedAPIKey()` — returns API key with only first 4 and last 4 chars visible (e.g., `sk-9a****d8`), used by web API
 - `apppath.ResolvePath(filename)` searches `./` then `exeDir/`
 - `config.CustomPromptPath(systemPath)` gives `prompt_custom.yaml` path in the same directory as `prompt_system.yaml`

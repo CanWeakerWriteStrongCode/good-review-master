@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"good-review-master/logutil"
+	"good-review-master/telemetry"
 )
 
 // Informer 把"来源"与"快照"接起来，对标 client-go 的 SharedInformer：
@@ -88,6 +89,9 @@ func (i *Informer[T]) Reload() {
 func (i *Informer[T]) reload(trigger string) {
 	next, err := i.list()
 	if err != nil {
+		// 失败时沿用旧快照继续跑，服务本身毫无异样——没有这条计数器，
+		// "配置改了但一直没生效"就只能靠人盯着日志发现。
+		telemetry.ConfigReloadErrorsTotal.Inc()
 		logutil.Warn("配置重读失败，继续沿用上一份快照", "触发方式", trigger, "err", err)
 		return
 	}
@@ -97,6 +101,8 @@ func (i *Informer[T]) reload(trigger string) {
 	for _, handler := range i.handlers {
 		i.callHandler(handler, previous, next)
 	}
+	telemetry.ConfigReloadTotal.WithLabelValues(trigger).Inc()
+	telemetry.ConfigLastReloadTimestamp.SetToCurrentTime()
 	logutil.Info("配置已重新加载", "触发方式", trigger)
 }
 

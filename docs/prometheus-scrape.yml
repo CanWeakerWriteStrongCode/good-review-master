@@ -1,0 +1,13 @@
+# 给 docs/monitoring.md 里那条 docker run 用的最小 Prometheus 配置。
+# 它只做一件事：每 15 秒抓一次本程序的 /metrics。
+#
+# host.docker.internal 是容器里回指宿主机的名字（Docker Desktop 自带）。
+# Linux 上换成宿主机的实际 IP，或者用 --network host 起 Prometheus。
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: good-review
+    static_configs:
+      - targets: ["host.docker.internal:9100"]

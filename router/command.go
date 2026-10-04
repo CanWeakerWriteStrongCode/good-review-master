@@ -11,12 +11,21 @@ import (
 	"good-review-master/config"
 	"good-review-master/llm"
 	"good-review-master/onebot"
+	"good-review-master/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // HandlerFunc 指令处理函数类型
-// (event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)
+// (ctx, event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)
 // systemPrompt 已含渲染好的人格块（若该路由有自带人格）；extra 是关键字后的补充文本。
-type HandlerFunc func(onebot.Event, string, string, string, string, string)
+//
+// ctx 是分发链路的上下文：它承载 trace span，并且随应用关闭而取消。
+// 处理器里发起的所有出站调用（大模型、MCP）都该挂在它下面——
+// 既能让一次"消息 → 路由 → 大模型 → 工具"成为一条完整链路，
+// 也能让 Ctrl+C 取消掉正在跑的那次调用。
+type HandlerFunc func(context.Context, onebot.Event, string, string, string, string, string)
 
 // Command 指令定义
 type Command struct {
@@ -198,8 +207,18 @@ func (r *Router) routesSnapshot() []Command {
 	return r.table.Load().routes
 }
 
-// RouteMessage 前缀树匹配并分发
-func (r *Router) RouteMessage(content string, event onebot.Event, groupID string) {
+// RouteMessage 前缀树匹配并分发。
+//
+// ctx 由调用方传入（轮询循环的应用 ctx，或 debug trigger 的 HTTP 请求 ctx），
+// 一路传到处理器里的大模型与 MCP 调用——这条链是链路追踪的主干。
+func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.Event, groupID string) {
+	// 路由本身也记一个 span：它是"一条群消息"与"一次大模型调用"之间的那一跳，
+	// 少了它，链路图上就看不出是哪条消息触发的、命中了哪个关键字。
+	ctx, span := telemetry.StartSpan(ctx, "router.route",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(attribute.String("messaging.group_id", groupID)))
+	defer span.End()
+
 	// 开头取一次快照、全程共用：拼 systemPrompt 要用到模型名/QQ/昵称/看图开关，
 	// 它们必须自洽。若每处都调 r.appCfg()，热更新正好插在中间就会拼出
 	// "新模型名 + 旧昵称"这种混合提示词。
@@ -210,15 +229,10 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 		return
 	}
 
-	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
-		"你的QQ号是【%s】，昵称是【%s】。【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。", cfg.LLMConfig.ModelName, cfg.BotQQ, cfg.BotNickname)
-	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
-	if cfg.LLMConfig.ImageMax > 0 {
-		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用 view_image 工具（实际查看有数量上限，达到后请直接作答）。不要编造没实际看过的图片内容。"
-	}
 	route := trieMatch(r.table.Load().trie, text)
 	if route == nil {
-		r.replyDefault(text, event, groupID, systemPrompt)
+		// 未命中：走普通问答（replyDefault 会视群人格再补一段）
+		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, ""))
 		return
 	}
 
@@ -229,13 +243,41 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	if route.Persona != nil {
 		persona = RenderPersona(*route.Persona, route.SharedRules)
 	}
-	systemPrompt += "\n" + persona
-	route.Handler(event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
+	systemPrompt := ComposeSystemPrompt(cfg, persona)
+	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
+		attribute.String("router.category", route.Category))
+	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
+}
+
+// ComposeSystemPrompt 拼装发给大模型的 system prompt：
+// 机器人身份（模型名 / QQ / 昵称）+（启用看图时的图片说明）+ 可选的人格块。
+//
+// 导出是给 tests/eval 用的：离线评测必须拿到与线上**逐字相同**的提示词。
+// 评测集若自己再拼一份，防的就是"评测全绿但线上照样回归"这种最没用的结果——
+// 而 5 处字符串拼接正是最容易各改各的那种代码。
+func ComposeSystemPrompt(cfg *config.Config, personaBlock string) string {
+	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
+		"你的QQ号是【%s】，昵称是【%s】。【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。",
+		cfg.LLMConfig.ModelName, cfg.BotQQ, cfg.BotNickname)
+	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
+	if cfg.LLMConfig.ImageMax > 0 {
+		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用 view_image 工具（实际查看有数量上限，达到后请直接作答）。不要编造没实际看过的图片内容。"
+	}
+	if personaBlock != "" {
+		systemPrompt += "\n" + personaBlock
+	}
+	return systemPrompt
 }
 
 // Go 安全启动 goroutine（代理 async.Group）
 func (r *Router) Go(fn func(context.Context) error) {
 	r.starter.Go(fn)
+}
+
+// GoCtx 在调用方 ctx 基础上安全启动 goroutine（代理 async.Group.GoCtx）。
+// 分发链路上的异步任务用这个，才能把 trace span 带进 goroutine。
+func (r *Router) GoCtx(parent context.Context, fn func(context.Context) error) {
+	r.starter.GoCtx(parent, fn)
 }
 
 // Wait 等待所有 goroutine 完成（代理 async.Group）
@@ -282,13 +324,13 @@ func (r *Router) availablePersonaNames() []string {
 // 则在末尾追加渲染好的人格块（仅纯 @ 聊天生效）；否则显式声明当前是普通问答、
 // 不代入任何人格，避免模型在曾被切换过人格的群里继续沿用旧人设。
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑。
-func (r *Router) replyDefault(text string, event onebot.Event, groupID string, systemPrompt string) {
+func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Event, groupID string, systemPrompt string) {
 	if b, ok := r.getGroupPersona(groupID); ok {
 		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
-	r.chatReview(event, groupID, systemPrompt, "", event.Nickname, text)
+	r.chatReview(ctx, event, groupID, systemPrompt, "", event.Nickname, text)
 }
 
 // stripCQPrefix 去除消息开头的 CQ 码和 @昵称。

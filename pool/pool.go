@@ -3,6 +3,8 @@ package pool
 import (
 	"runtime"
 	"sync"
+
+	"good-review-master/telemetry"
 )
 
 // Pool 通用协程池，固定 worker 数量，有界任务队列
@@ -31,7 +33,10 @@ func New(size int) *Pool {
 func (p *Pool) worker() {
 	defer p.wg.Done()
 	for task := range p.tasks {
+		telemetry.PoolTasksRunning.Inc()
+		telemetry.PoolQueueLen.Set(float64(len(p.tasks)))
 		task()
+		telemetry.PoolTasksRunning.Dec()
 	}
 }
 
@@ -39,8 +44,12 @@ func (p *Pool) worker() {
 func (p *Pool) Submit(task func()) bool {
 	select {
 	case p.tasks <- task:
+		telemetry.PoolQueueLen.Set(float64(len(p.tasks)))
 		return true
 	default:
+		// 队列满 = 这一次提交被丢弃。本项目里一次丢弃就是一次锐评没能发出，
+		// 所以它必须是可见的计数器，而不是只体现在"用户说机器人没反应"。
+		telemetry.PoolSubmitRejectedTotal.Inc()
 		return false
 	}
 }

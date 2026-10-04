@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"sync"
 	"time"
@@ -15,7 +16,7 @@ import (
 
 // MessageRouter 供 debug trigger 触发指令路由（由 router.Router 实现，避免 web 依赖 router）
 type MessageRouter interface {
-	RouteMessage(content string, event onebot.Event, groupID string)
+	RouteMessage(ctx context.Context, content string, event onebot.Event, groupID string)
 }
 
 // debugState 测试模式的调试状态（msg_id 自增序列等）
@@ -166,7 +167,9 @@ func (s *Server) handleDebugTrigger(router MessageRouter) gin.HandlerFunc {
 			MessageID:   time.Now().UnixNano(),
 		}
 		anchorBefore := cache.GetLLMAnchor(body.GroupID)
-		router.RouteMessage(body.Content, event, body.GroupID)
+		// 用请求的 ctx：debug trigger 触发的这条链路会与 HTTP 入口的 span 接上，
+		// 于是 /api/debug/trigger 到一次大模型调用能在同一条 trace 里看完。
+		router.RouteMessage(c.Request.Context(), body.Content, event, body.GroupID)
 		// 等 handler 完全收尾：锚点已存在（首次触发）或 LastSent 已前进（重复触发）。
 		// 超时（如空缓存不设锚点）则直接返回，由测试侧轮询兜底。
 		deadline := time.Now().Add(5 * time.Second)

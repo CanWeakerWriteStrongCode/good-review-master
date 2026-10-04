@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ func NewBot(cfg config.Snapshot, ob *onebot.Client, messageRouter *router.Router
 // 开头取一次快照、全程用同一个局部变量：这样一条消息的整个处理过程
 // （白名单判定、截断长度、缓冲上限、@检测）看到的是**同一份**配置。
 // 若每处都调 b.cfg()，热更新可能正好插在中间，导致一半按旧配置一半按新配置执行。
-func (b *Bot) ProcessMessage(event onebot.Event) {
+func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event) {
 	cfg := b.cfg()
 	groupID := event.GroupID
 	if !cfg.HasGroup(groupID) {
@@ -54,7 +55,9 @@ func (b *Bot) ProcessMessage(event onebot.Event) {
 	cache.GetGroupCache(groupID, cfg.MaxCacheMsg).Add(msg)
 
 	if isAtBot(content, cfg) {
-		b.messageRouter.RouteMessage(content, event, groupID)
+		// 把轮询循环的 ctx 传下去：一次"消息 → 路由 → 大模型 → 工具调用"
+		// 因此成为同一条链路（trace span 能串起来），关机也能取消在途调用。
+		b.messageRouter.RouteMessage(ctx, content, event, groupID)
 	}
 }
 

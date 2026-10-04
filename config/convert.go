@@ -44,6 +44,8 @@ func assemble(sections *sections) *Config {
 		CorsOrigins:       sections.Runtime.CorsOriginList(),
 		EnablePprof:       sections.Runtime.EnablePprof,
 		ShutdownDelay:     time.Duration(sections.Runtime.ShutdownDelaySec) * time.Second,
+		MetricsAddr:       sections.Runtime.MetricsAddr,
+		OTLPEndpoint:      sections.Runtime.OTLPEndpoint,
 		LLMConfig: LLMConf{
 			Provider:         sections.LLM.Provider,
 			APIKey:           apiKey,
@@ -55,6 +57,11 @@ func assemble(sections *sections) *Config {
 			ImageMax:         sections.LLM.ImageMax,
 			Temperature:      sections.LLM.Temperature,
 			TopP:             sections.LLM.TopP,
+
+			RateLimitPerSec: sections.LLM.RateLimitPerSec,
+			RateLimitBurst:  sections.LLM.RateLimitBurst,
+			BreakerFailures: sections.LLM.BreakerFailures,
+			BreakerCooldown: time.Duration(sections.LLM.BreakerCooldownSec) * time.Second,
 		},
 		MCPConfig: MCPConf{
 			Enabled:           sections.MCP.Enabled,
@@ -62,6 +69,8 @@ func assemble(sections *sections) *Config {
 			MaxToolRounds:     sections.MCP.MaxToolRounds,
 			MaxToolResultRune: sections.MCP.MaxToolResultRune,
 			RetryInterval:     time.Duration(sections.MCP.RetryIntervalSec) * time.Second,
+			BreakerFailures:   sections.MCP.BreakerFailures,
+			BreakerCooldown:   time.Duration(sections.MCP.BreakerCooldownSec) * time.Second,
 			Servers:           servers,
 		},
 	}

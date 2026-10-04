@@ -6,10 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"good-review-master/logutil"
+	"good-review-master/telemetry"
 
 	openai "github.com/sashabaranov/go-openai"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // DataURL 把图片字节编码成 data URL（视觉模型的 image_url 内联标准形态）。
@@ -71,6 +76,11 @@ type ChatResponse struct {
 	// FinishReason 模型这轮的结束原因：stop=正常作答 | tool_calls=要调工具 | length=超长被截断。
 	// 诊断「模型为什么死活不调工具」时很关键：若工具已下发却一直是 stop，多半是中转没透传 tools。
 	FinishReason string
+	// PromptTokens / CompletionTokens 是服务端返回的用量（有些中转不返回，那时为 0）。
+	// 带出来是为了让离线评测集（tests/eval）能报出真实花费，
+	// 而不用本地估算去猜——本地估算只服务于选窗决策，口径不同。
+	PromptTokens     int
+	CompletionTokens int
 }
 
 // Client 大模型统一接口
@@ -117,6 +127,16 @@ func (adapter *OpenAIAdapter) SingleChat(ctx context.Context, chatLog, systemPro
 
 // Chat 多轮对话；tools 非空时下发原生 function calling 工具清单
 func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error) {
+	// 大模型调用是整条链路里最慢、最贵、最可能失败的一跳，span 与指标都埋在这里。
+	// 放在适配器而不是调用方：SingleChat 也走这个函数，两处入口都能覆盖到。
+	ctx, span := telemetry.StartSpan(ctx, "llm.chat",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("llm.model", adapter.model),
+			attribute.Int("llm.tool_count", len(tools)),
+		))
+	defer span.End()
+
 	req := openai.ChatCompletionRequest{
 		Model:       adapter.model,
 		Messages:    toOpenAIMessages(messages),
@@ -133,10 +153,30 @@ func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []M
 		logutil.Debug("发给大模型的完整请求JSON序列化失败", "err", err)
 	}
 
+	callStart := time.Now()
 	resp, err := adapter.client.CreateChatCompletion(ctx, req)
+	elapsed := time.Since(callStart)
+
+	// 成败两条路径都要记耗时：只统计成功请求会把"超时"这类最该看见的情况
+	// 从耗时分布里抹掉，于是 P99 看起来永远很健康。
+	telemetry.LLMDurationSeconds.WithLabelValues(adapter.model).Observe(elapsed.Seconds())
 	if err != nil {
+		telemetry.LLMRequestsTotal.WithLabelValues(adapter.model, telemetry.ResultError).Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("大模型调用失败: %w", err)
 	}
+	telemetry.LLMRequestsTotal.WithLabelValues(adapter.model, telemetry.ResultOK).Inc()
+	// token 用量取服务端返回的 usage，不是本地估算——本地估算（cache.EstimateTokens）
+	// 只服务于选窗决策，两者口径不同，不要混用。
+	// 有些中转不返回 usage（全 0），那种情况下这两条曲线会是平的，属于上游缺失而非统计错误。
+	telemetry.LLMTokensTotal.WithLabelValues("prompt").Add(float64(resp.Usage.PromptTokens))
+	telemetry.LLMTokensTotal.WithLabelValues("completion").Add(float64(resp.Usage.CompletionTokens))
+	span.SetAttributes(
+		attribute.Int("llm.usage.prompt_tokens", resp.Usage.PromptTokens),
+		attribute.Int("llm.usage.completion_tokens", resp.Usage.CompletionTokens),
+	)
+
 	// Debug 级把模型返回的完整原始 JSON 整段打出，与上面的请求 JSON 对照：
 	// 能直接看到 finish_reason 是 stop 还是 tool_calls、message.tool_calls 里有没有函数名。
 	if raw, err := json.Marshal(resp); err == nil {
@@ -149,7 +189,12 @@ func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []M
 	}
 	choice := resp.Choices[0]
 	msg := choice.Message
-	out := &ChatResponse{Content: msg.Content, FinishReason: string(choice.FinishReason)}
+	out := &ChatResponse{
+		Content:          msg.Content,
+		FinishReason:     string(choice.FinishReason),
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+	}
 	for _, tc := range msg.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{
 			ID:        tc.ID,

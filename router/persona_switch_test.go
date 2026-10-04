@@ -87,6 +87,13 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 	fake := testutil.NewFakeLLM()
 	obClient := onebot.NewClient("http://127.0.0.1:1", "") // 死地址，SendGroupMessage 仅日志
 	router := NewRouter(staticSnapshot(cfg), promptCfg, fake, obClient, nil, context.Background())
+
+	// 收尾顺序（t.Cleanup 是 LIFO，所以先登记日志、后登记排空 = 先排空、后关日志）：
+	// 必须等在途的异步任务彻底跑完再关日志文件。异步 handler 的收尾日志若晚于
+	// logutil.Close 落地，lumberjack 会把刚关掉的文件重新打开，于是 Windows 上
+	// TempDir 的 RemoveAll 会因为"文件被占用"失败（间歇性红，且看起来与用例本身无关）。
+	t.Cleanup(func() { _ = router.Wait() })
+
 	return &switchTestEnv{router: router, fake: fake, groupID: "20001"}
 }
 
@@ -100,7 +107,7 @@ func (e *switchTestEnv) seedMsg(t *testing.T) {
 
 func (e *switchTestEnv) route(t *testing.T, text string, msgID int64) {
 	t.Helper()
-	e.router.RouteMessage(text, onebot.Event{
+	e.router.RouteMessage(context.Background(), text, onebot.Event{
 		PostType:    "message",
 		MessageType: "group",
 		GroupID:     e.groupID,

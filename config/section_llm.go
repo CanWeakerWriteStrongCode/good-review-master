@@ -23,6 +23,11 @@ type llmSection struct {
 	ImageMax         int     `yaml:"image_max"`
 	Temperature      float64 `yaml:"temperature"`
 	TopP             float64 `yaml:"top_p"`
+
+	RateLimitPerSec    float64 `yaml:"rate_limit_per_sec"`
+	RateLimitBurst     int     `yaml:"rate_limit_burst"`
+	BreakerFailures    int     `yaml:"breaker_failures"`
+	BreakerCooldownSec int     `yaml:"breaker_cooldown_sec"`
 }
 
 // 缺省值。cache_hit_cost / cache_miss_cost 是相对值，用于自动计算扩展阈值；
@@ -31,6 +36,16 @@ const (
 	defaultCacheHitCost     = 0.033
 	defaultCacheMissCost    = 1.0
 	defaultMaxContextTokens = 50000
+
+	// defaultBreakerFailures / defaultBreakerCooldownSec 熔断缺省：
+	// 连续 5 次失败就打开，冷却 30 秒后进入半开试探。
+	//
+	// 熔断默认**开着**（限速默认关着），因为两者的风险不对称：
+	// 限速会在正常流量下拒掉请求，必须在用户明确知道自己在干什么时才开；
+	// 而熔断只在"已经连续失败 5 次"时才动作——那时每一次放开调用都要等满
+	// llm_timeout_sec（默认 120 秒），开着它反而是在保护群里的体验。
+	defaultBreakerFailures    = 5
+	defaultBreakerCooldownSec = 30
 )
 
 // supportedProviders 支持的 provider 白名单。加新 provider 时要同时改 app/build.go 的分支。
@@ -57,6 +72,13 @@ func (s *llmSection) SetDefaults() {
 	}
 	if s.MaxContextTokens <= 0 {
 		s.MaxContextTokens = defaultMaxContextTokens
+	}
+	if s.BreakerFailures == 0 {
+		// 只把"没写"（0）当作缺省；负数留给用户显式关闭（见 Validate 的说明）
+		s.BreakerFailures = defaultBreakerFailures
+	}
+	if s.BreakerCooldownSec == 0 {
+		s.BreakerCooldownSec = defaultBreakerCooldownSec
 	}
 }
 
@@ -89,6 +111,18 @@ func (s *llmSection) Validate() error {
 	}
 	if s.TopP < 0 || s.TopP > 1 {
 		logutil.Warn("llm.top_p 超出区间 0~1", "值", s.TopP)
+	}
+	if s.RateLimitPerSec < 0 {
+		return fmt.Errorf("llm.rate_limit_per_sec 不能为负（当前 %v）：0 表示不限速，正数表示每秒允许的调用数", s.RateLimitPerSec)
+	}
+	// -1 是"关闭熔断"的哨兵值，沿用本配置里 retry_interval_sec 已有的写法。
+	if s.BreakerFailures < -1 {
+		return fmt.Errorf("llm.breaker_failures 只能为 -1（关闭熔断）、0（用缺省 %d）或正整数（连续失败多少次后熔断），当前是 %d",
+			defaultBreakerFailures, s.BreakerFailures)
+	}
+	if s.BreakerCooldownSec < 0 {
+		return fmt.Errorf("llm.breaker_cooldown_sec 不能为负（当前 %d）：它是熔断后进入半开试探前的冷却秒数",
+			s.BreakerCooldownSec)
 	}
 	// 这里刻意**不**检查 cache_hit_cost < cache_miss_cost。
 	// 两者相等是合法且有意为之的配置（等价于"永远不扩展、每次重置"）——
