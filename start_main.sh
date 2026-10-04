@@ -16,4 +16,4 @@ echo "[3/3] Starting server..."
 echo "Downloading Go dependencies (first run may take a while)..."
 cd "$SCRIPT_DIR"
 go mod download
-go run main.go
+go run ./cmd/good-review

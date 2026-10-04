@@ -70,6 +70,6 @@ spec 用例只打 HTTP 接口，**不写任何进程管理代码**。测试二�
 
 1. **启动**：`pnpm test` 先由 `scripts/prep.mjs` 构建二进制并写配置（见「运行」节，准备必须早于 playwright），随后 Playwright 直接 spawn 该二进制（`command` 指向 exe，`cwd=.workdir`），轮询 `url`（`http://localhost:9090/`）直到返回 200 视为就绪，才开始执行 spec。
 2. **执行**：spec 只请求 `/api/debug/*` 与面板接口；进程内缓存/锚点是全局的，因此用例串行（`workers: 1`）且用 `/api/debug/reset` 隔离。`debug/trigger` 同步等待 handler 收尾，异步副作用（锚点写入）在用例内完成，不跨用例泄漏。
-3. **收尾**：全部用例结束（无论成败），Playwright 自动 terminate 它自己启动的子进程并等待退出。Go 侧 `main.go` 的 `signal.NotifyContext` 收到终止信号走优雅关闭（web server 10s 超时、等 in-flight goroutine）；不退出则强制终止进程树（`taskkill /pid X /T /F`），确保 9090 释放。
+3. **收尾**：全部用例结束（无论成败），Playwright 自动 terminate 它自己启动的子进程并等待退出。Go 侧的 `signal.NotifyContext`（在 `app/build.go`，不在 `main.go`）收到终止信号走优雅关闭（web server 10s 超时、等 in-flight goroutine）；不退出则强制终止进程树（`taskkill /pid X /T /F`），确保 9090 释放。
 
 **为什么不留孤儿进程**：`command` 直接指向 exe（而非经 shell/node 桥接），Playwright 持有子进程句柄，teardown 能直接终止它。若中间隔一层启动脚本，杀掉的只是脚本，Go 进程会变孤儿继续占端口。

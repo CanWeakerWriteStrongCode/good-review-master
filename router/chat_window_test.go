@@ -1,4 +1,4 @@
-package cmd
+package router
 
 import (
 	"fmt"

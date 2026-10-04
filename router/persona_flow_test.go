@@ -1,4 +1,4 @@
-package cmd
+package router
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 // → 发给 LLM 的 systemPrompt 必须携带【人格】块（身份/情绪维度/授权指令）。
 // 覆盖用户关心的"发送时带没带人格"问题。
 func TestPersonaReachesLLM(t *testing.T) {
-	// 切到临时目录：SetupLogger 把日志写到 cwd/log/bot.log，避免污染仓库 cmd/log/
+	// 切到临时目录：SetupLogger 把日志写到 cwd/log/bot.log，避免污染仓库 router/log/
 	t.Chdir(t.TempDir())
 	logutil.SetupLogger() // 初始化 zap，否则 handler 里的日志调用会 panic
 	defer logutil.Close() // 关闭日志文件句柄，释放临时目录供清理

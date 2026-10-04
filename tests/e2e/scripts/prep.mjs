@@ -43,6 +43,6 @@ copyFileSync(path.join(e2eDir, 'fixtures/prompt_system.yaml'), path.join(workdir
 rmSync(path.join(workdir, 'prompt_custom.yaml'), { force: true })
 
 // 4. 构建测试二进制（内嵌当前前端）
-execSync(`go build -o "${exePath}" .`, { cwd: repoRoot, stdio: 'inherit' })
+execSync(`go build -o "${exePath}" ./cmd/good-review`, { cwd: repoRoot, stdio: 'inherit' })
 
 console.log(`[prep] binary ready at ${exePath}`)

@@ -5,21 +5,23 @@ import (
 	"time"
 
 	"good-review-master/cache"
-	"good-review-master/cmd"
+	"good-review-master/router"
 	"good-review-master/config"
 	"good-review-master/onebot"
 )
 
 // Bot 机器人运行时，管理消息处理与轮询
 type Bot struct {
-	cfg    *config.Config
-	ob     *onebot.Client
-	router *cmd.Router
+	cfg           *config.Config
+	ob            *onebot.Client
+	messageRouter *router.Router
 }
 
 // NewBot 创建机器人实例
-func NewBot(cfg *config.Config, ob *onebot.Client, router *cmd.Router) *Bot {
-	return &Bot{cfg: cfg, ob: ob, router: router}
+// 字段名用 messageRouter 而不是 router：包本身就叫 router，
+// 写成 router *router.Router 虽然合法，但读的人要停顿一下才分得清哪个是包。
+func NewBot(cfg *config.Config, ob *onebot.Client, messageRouter *router.Router) *Bot {
+	return &Bot{cfg: cfg, ob: ob, messageRouter: messageRouter}
 }
 
 // ProcessMessage 处理单条群消息
@@ -29,7 +31,7 @@ func (b *Bot) ProcessMessage(event onebot.Event) {
 		return
 	}
 
-	content, images := cache.NormalizeContent(event.RawMessage, b.cfg.MaxMsgRune)
+	content, images := onebot.NormalizeContent(event.RawMessage, b.cfg.MaxMsgRune)
 	if content == "" {
 		return
 	}
@@ -47,7 +49,7 @@ func (b *Bot) ProcessMessage(event onebot.Event) {
 	cache.GetGroupCache(groupID, b.cfg.MaxCacheMsg).Add(msg)
 
 	if b.isAtBot(content) {
-		b.router.RouteMessage(content, event, groupID)
+		b.messageRouter.RouteMessage(content, event, groupID)
 	}
 }
 

@@ -76,7 +76,7 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 # 脚本会自动完成 3 步：
 #   1. 安装前端依赖 + 构建前端
 #   2. 拷贝到嵌入目录
-#   3. go run main.go 启动服务
+#   3. go run ./cmd/good-review 启动服务
 # 首次运行会自动创建 config.yaml 并退出
 # 编辑 config.yaml 填入你的配置，重新运行即可
 ```
@@ -197,7 +197,9 @@ rules:
 
 ```
 good-review-master/
-├── main.go                  # 入口：日志初始化、首跑提示、app.Run + 退出码
+├── cmd/
+│   └── good-review/
+│       └── main.go           # 入口：日志初始化、首跑提示、app.Run + 退出码
 ├── app/                     # 组合根：装配全部组件（App）、启动与优雅关闭
 ├── go.mod / go.sum           # Go 模块依赖
 ├── config.yaml               # 运行时配置（gitignore）
@@ -228,11 +230,12 @@ good-review-master/
 │   └── logger.go             # 日志（zap + lumberjack，20MB 切割，30 天保留）
 ├── onebot/
 │   ├── client.go             # NapCatQQ HTTP API 客户端（resty，自动序列化+重试）
+│   ├── cqimage.go            # CQ 码解析（图片提取、[图片]占位、入库截断）
 │   └── types.go              # API 数据类型定义
 ├── bot/
 │   ├── polling.go            # 轮询拉取消息 + 去重（context 支持优雅退出）
 │   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
-├── cmd/
+├── router/                   # 指令系统：前缀树匹配 + 分发（原 cmd/，包名改为 router）
 │   ├── command.go            # Router + 前缀树(trie)路由匹配 + 未匹配兜底 + 安全 goroutine
 │   ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、添加/删除指令规则、帮助）
 │   ├── chat_review.go         # chat_review 异步处理函数（缓存窗口 + 组装消息）
@@ -252,10 +255,11 @@ good-review-master/
 ### 包依赖关系
 
 ```
-main → config, llm, logutil, bot, onebot, async, apppath, version, web/server
-bot → config, cache, onebot, cmd
-cmd → config, cache, llm, onebot, async
-web/server → config, logutil, onebot, cache
+main → app, config, apppath, logutil, version
+app → config, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
+bot → config, cache, onebot, router
+router → config, cache, llm, onebot, async
+web/server → config, logutil, onebot, cache, version
 async → logutil, pool
 pool → (无内部依赖：仅标准库 sync)
 onebot → (无内部依赖)
@@ -266,6 +270,8 @@ logutil → apppath
 apppath → (无内部依赖)
 version → (无内部依赖)
 ```
+
+`app` 是组合根，只有 `main` 引它；组件需要别的组件时在 `app` 里注入，不要跨包直接 import。
 
 ### 消息处理流程
 
@@ -309,7 +315,7 @@ cmd:
       prompt: "你是天气助手..."
 ```
 
-**2. 在 `cmd/` 下新建 handler 文件**（如 `weather.go`），handler 为 Router 的方法，签名固定为 `(event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)`：
+**2. 在 `router/` 下新建 handler 文件**（如 `weather.go`），handler 为 Router 的方法，签名固定为 `(event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)`：
 
 ```go
 func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona string) {
@@ -326,7 +332,7 @@ func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywo
 }
 ```
 
-**3. 在 `cmd/command.go` 的 `NewRouter()` 中注册到 `handlerMap`**：
+**3. 在 `router/command.go` 的 `NewRouter()` 中注册到 `handlerMap`**：
 
 ```go
 r.handlerMap = map[string]HandlerFunc{
@@ -346,7 +352,7 @@ r.handlerMap = map[string]HandlerFunc{
 
 三层测试体系：
 
-1. **单元测试**：`cmd/chat_window_test.go` 表格驱动穷举缓存窗口决策（扩展 vs 重置）各分支；决策函数为纯函数、显式传参、无全局依赖。
+1. **单元测试**：`router/chat_window_test.go` 表格驱动穷举缓存窗口决策（扩展 vs 重置）各分支；决策函数为纯函数、显式传参、无全局依赖。
 2. **测试模式基建**：`GOOD_REVIEW_TEST=1` 启动时用 FakeLLM（固定回复并记录每次调用）替代真实大模型、NapCat 指向死地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）——仅测试模式可达，生产模式会被 SPA fallback 回成页面 HTML。
 3. **E2E**：Playwright **API 层自测**（`request` fixture，不启动浏览器），直打真实测试二进制的 HTTP 接口：
 
@@ -382,7 +388,7 @@ cd tests/e2e && pnpm test
 
 ### 缓存窗口决策：扩展 vs 重置（成本优化）
 
-每次发大模型前按 token 成本二选一（`cmd/chat_window.go`）：
+每次发大模型前按 token 成本二选一（`router/chat_window.go`）：
 
 - **扩展窗口**（缓存命中）：锚点 `LLMAnchor{Start, LastSent}` 定位上次发送窗口，成本 = `命中前缀 × cache_hit_cost + 新增 × cache_miss_cost`；
 - **重置窗口**：最近 `llm_send_count` 条，成本 = `全部 × cache_miss_cost`。
@@ -408,7 +414,7 @@ cd tests/e2e && pnpm test
 | `system_prompt` | 文本 | 人格级系统指令（行为边界 / 输出要求） |
 | `emotion` | JSON 对象 | 情绪维度（维度 → 取值，人格核心） |
 
-**渲染位置**：`RenderPersona`（`cmd/persona_render.go`）把人格渲染成 user 消息**末尾**的片段——不进 system prompt，从而不破坏上方"前缀缓存命中"的稳定前缀。
+**渲染位置**：`RenderPersona`（`router/persona_render.go`）把人格渲染成 user 消息**末尾**的片段——不进 system prompt，从而不破坏上方"前缀缓存命中"的稳定前缀。
 
 **内置两条通用规则**（`personaDirective`）：
 
@@ -420,7 +426,7 @@ cd tests/e2e && pnpm test
 ### 数据结构机制
 
 - **环形缓冲缓存**（`cache/`）：定长数组 + 写指针，满了循环覆盖，**零拷贝写入**；`msgIDSet` O(1) 去重；`GetAll()` 两段拼接保持时间序。
-- **前缀树指令路由**（`cmd/command.go`）：`trieMatch` 逐字符返回**最长匹配前缀**（「锐评下」优先于「锐评」），O(k) 与路由总数无关；用户指令从 YAML 动态 rebuild，内部指令持久保留。
+- **前缀树指令路由**（`router/command.go`）：`trieMatch` 逐字符返回**最长匹配前缀**（「锐评下」优先于「锐评」），O(k) 与路由总数无关；用户指令从 YAML 动态 rebuild，内部指令持久保留。
 
 ### 工程健壮性
 

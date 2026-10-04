@@ -72,7 +72,7 @@ Polling loop (bot/polling.go)
 # The script runs 3 steps automatically:
 #   1. Install frontend deps + build frontend
 #   2. Copy to embed directory
-#   3. go run main.go
+#   3. go run ./cmd/good-review
 # First run auto-creates config.yaml.
 # Edit config.yaml with your settings, then run again.
 ```
@@ -186,7 +186,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 | Kind | Defined in | Examples |
 |---|---|---|
 | **Function commands** | `prompt_system.yaml` / `prompt_custom.yaml` | `锐评下`, `猫娘` |
-| **Internal commands** | Go code (`cmd/internal_cmd.go`) | `添加关键字`, `删除关键字`, `添加指令规则`, `删除指令规则`, `帮助` |
+| **Internal commands** | Go code (`router/internal_cmd.go`) | `添加关键字`, `删除关键字`, `添加指令规则`, `删除指令规则`, `帮助` |
 
 ### Triggering
 
@@ -247,7 +247,7 @@ cmd:
       prompt: "You are a weather assistant..."
 ```
 
-**2. Create a new handler file in `cmd/`** (e.g. `weather.go`), handler must be a Router method with the fixed signature `(event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)`:
+**2. Create a new handler file in `router/`** (e.g. `weather.go`), handler must be a Router method with the fixed signature `(event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)`:
 
 ```go
 func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona string) {
@@ -264,7 +264,7 @@ func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywo
 }
 ```
 
-**3. Register in `handlerMap` in `cmd/command.go` `NewRouter()`**
+**3. Register in `handlerMap` in `router/command.go` `NewRouter()`**
 
 ```go
 r.handlerMap = map[string]HandlerFunc{
@@ -277,7 +277,9 @@ r.handlerMap = map[string]HandlerFunc{
 
 ```
 good-review-master/
-├── main.go                  # Entry point: logger, first-run prompt, app.Run + exit code
+├── cmd/
+│   └── good-review/
+│       └── main.go           # Entry point: logger, first-run prompt, app.Run + exit code
 ├── app/                     # Composition root: wires every component, starts/stops them
 ├── go.mod / go.sum           # Go module dependencies
 ├── config.yaml               # Live config (gitignored)
@@ -308,11 +310,12 @@ good-review-master/
 │   └── logger.go             # Logging (zap + lumberjack, 20MB rotation, 30-day retention)
 ├── onebot/
 │   ├── client.go             # NapCatQQ HTTP API client (resty, auto-marshal + retry)
+│   ├── cqimage.go            # CQ-code parsing (image extraction, [图片] placeholder, truncation)
 │   └── types.go              # API data types
 ├── bot/
 │   ├── polling.go            # HTTP poll loop + history fetching (context-aware)
 │   └── handler.go            # Message processing: whitelist → @detection → routing
-├── cmd/
+├── router/                   # Command system: prefix-trie matching + dispatch (was cmd/, package renamed)
 │   ├── command.go            # Router + prefix trie matching + unmatched fallback + safe goroutine
 │   ├── internal_cmd.go       # Internal commands (add/delete keyword, add/delete rule, help)
 │   ├── chat_review.go        # Async chat_review handler (cache window + message assembly)
@@ -332,10 +335,11 @@ good-review-master/
 ### Package Dependency Graph
 
 ```
-main → config, llm, logutil, bot, onebot, async, apppath, version, web/server
-bot → config, cache, onebot, cmd
-cmd → config, cache, llm, onebot, async
-web/server → config, logutil, onebot, cache
+main → app, config, apppath, logutil, version
+app → config, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
+bot → config, cache, onebot, router
+router → config, cache, llm, onebot, async
+web/server → config, logutil, onebot, cache, version
 async → logutil, pool
 pool → (no internal deps: stdlib sync only)
 onebot → (no internal deps)
@@ -346,6 +350,8 @@ logutil → apppath
 apppath → (no internal deps)
 version → (no internal deps)
 ```
+
+`app` is the composition root and only `main` imports it; when a component needs another component, inject it in `app` rather than importing across packages.
 
 ## Logging
 
@@ -362,7 +368,7 @@ Logs are written to the `log/` directory under the working directory. Uses `zap`
 
 Three-layer testing:
 
-1. **Unit tests**: `cmd/chat_window_test.go` — table-driven coverage of every branch of the cache-window decision (extend vs reset); the decision function is a pure function with explicit inputs and no global state.
+1. **Unit tests**: `router/chat_window_test.go` — table-driven coverage of every branch of the cache-window decision (extend vs reset); the decision function is a pure function with explicit inputs and no global state.
 2. **Test-mode infrastructure**: with `GOOD_REVIEW_TEST=1`, `FakeLLM` (fixed reply + records every call) replaces the real LLM, NapCat points at a dead address, and `/api/debug/*` self-test endpoints (inject/reset/state/trigger) are registered — reachable only in test mode; in production the SPA fallback serves page HTML for those paths.
 3. **E2E**: Playwright **API-level tests** (`request` fixture, no browser) driving the real test binary's HTTP API:
 
@@ -398,7 +404,7 @@ Startup and shutdown order live in the `app` package: `app.New` only assembles (
 
 ### Cache Window Decision: Extend vs Reset (Cost Optimization)
 
-Before every LLM call, the window to send is chosen by token cost (`cmd/chat_window.go`):
+Before every LLM call, the window to send is chosen by token cost (`router/chat_window.go`):
 
 - **Extend** (cache hit): the `LLMAnchor{Start, LastSent}` anchor locates the last-sent window; cost = `hit prefix × cache_hit_cost + new messages × cache_miss_cost`;
 - **Reset**: the most recent `llm_send_count` messages; cost = `everything × cache_miss_cost`.
@@ -424,7 +430,7 @@ Every command can carry a 5-dimension persona (`Persona` in `config/prompt.go`),
 | `system_prompt` | text | Persona-level system directive (behavior boundaries / output requirements) |
 | `emotion` | JSON object | Emotion dimensions (dimension → value, the core of the persona) |
 
-**Rendering position**: `RenderPersona` (`cmd/persona_render.go`) renders the persona as a segment at the **tail** of the user message — never into the system prompt — so it doesn't break the stable prefix relied on by the prefix cache above.
+**Rendering position**: `RenderPersona` (`router/persona_render.go`) renders the persona as a segment at the **tail** of the user message — never into the system prompt — so it doesn't break the stable prefix relied on by the prefix cache above.
 
 **Two built-in generic rules** (`personaDirective`):
 
@@ -436,7 +442,7 @@ Every command can carry a 5-dimension persona (`Persona` in `config/prompt.go`),
 ### Data Structures
 
 - **Ring-buffer cache** (`cache/`): fixed-size array + write pointer, overwrites the oldest when full — **zero-copy writes**; `msgIDSet` gives O(1) dedup; `GetAll()` splices two segments to preserve time order.
-- **Prefix-trie routing** (`cmd/command.go`): `trieMatch` walks chars and returns the **longest matching prefix** ("锐评下" wins over "锐评"), O(k) regardless of route count; user commands are rebuilt dynamically from YAML, internal commands persist.
+- **Prefix-trie routing** (`router/command.go`): `trieMatch` walks chars and returns the **longest matching prefix** ("锐评下" wins over "锐评"), O(k) regardless of route count; user commands are rebuilt dynamically from YAML, internal commands persist.
 
 ### Engineering Robustness
 

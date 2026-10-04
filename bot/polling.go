@@ -23,7 +23,7 @@ func (b *Bot) RunPollingLoop(ctx context.Context) {
 		}
 		gc := cache.GetGroupCache(groupID, b.cfg.MaxCacheMsg)
 		for _, msg := range msgs {
-			content, images := cache.NormalizeContent(msg.RawMessage, b.cfg.MaxMsgRune)
+			content, images := onebot.NormalizeContent(msg.RawMessage, b.cfg.MaxMsgRune)
 			gc.Add(cache.Message{
 				MsgID:   msg.MessageID,
 				GroupID: onebot.FormatGroupID(msg.GroupID),

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"good-review-master/bot"
-	"good-review-master/cmd"
+	"good-review-master/router"
 	"good-review-master/config"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
@@ -31,7 +31,7 @@ type App struct {
 	OneBot     *onebot.Client
 	MCP        *mcpclient.Manager
 	BuiltinMCP *mcpserver.Server // 未启用看图（image_max<=0）或启动失败时为 nil
-	Router     *cmd.Router
+	Router     *router.Router
 	Bot        *bot.Bot
 	Web        *webserver.Server // web_port<=0 时为 nil
 

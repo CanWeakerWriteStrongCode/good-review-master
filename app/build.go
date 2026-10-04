@@ -9,7 +9,7 @@ import (
 	"syscall"
 
 	"good-review-master/bot"
-	"good-review-master/cmd"
+	"good-review-master/router"
 	"good-review-master/config"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
@@ -88,7 +88,7 @@ func New(opts Options) (*App, error) {
 	application.MCP.LogConfig()
 	application.MCP.Start()
 
-	application.Router = cmd.NewRouter(cfg, promptCfg, application.LLM, application.OneBot, application.MCP, application.ctx)
+	application.Router = router.NewRouter(cfg, promptCfg, application.LLM, application.OneBot, application.MCP, application.ctx)
 
 	if info, err := application.OneBot.GetLoginInfo(); err != nil {
 		logutil.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)

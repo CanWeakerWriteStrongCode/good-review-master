@@ -12,7 +12,7 @@ go vet ./...          # 必须绿
 go test ./...         # 必须绿
 go tool golangci-lint run    # 参考，不是门禁（红了挑着修，别为它改无意义的代码）
 cd tests/e2e && pnpm test    # 行为回归，每阶段收尾必跑（基线 7 过 / 2 既有失败 bot-flow、persona）
-go build -o good-review-master.exe .  # 出二进制
+go build -o good-review-master.exe ./cmd/good-review  # 出二进制
 ```
 
 **不跑 `go test -race`**：race detector 需要 cgo + C 编译器，本机没装 gcc。
@@ -47,14 +47,16 @@ The frontend **must** be compiled before the Go binary — Go's `embed` resolves
 
 | Script | Step 3 | Platform |
 | --- | --- | --- |
-| `build_exe.bat` | `go build -o good-review-master.exe .` | Windows |
-| `build_linux.sh` | `go build -o good-review-master .` | Linux |
-| `start_main.bat` | `go run main.go` | Windows |
-| `start_main.sh` | `go run main.go` | Linux |
+| `build_exe.bat` | `go build -o dist\... .\cmd\good-review` (cross-compiles 4 targets) | Windows |
+| `build_linux.sh` | `go build -o dist/... ./cmd/good-review` (cross-compiles 4 targets) | Linux |
+| `start_main.bat` | `go run ./cmd/good-review` | Windows |
+| `start_main.sh` | `go run ./cmd/good-review` | Linux |
 
 1. `pnpm run build:h5` (in `web/frontend/`) — builds uni-app H5 frontend
 2. Copy `dist/build/h5` → `web/server/static/frontend/`
-3. `go build` or `go run`
+3. `go build` or `go run` — **always targeting `./cmd/good-review`**, since `main.go` no longer sits at the repo root
+
+> The repo root is **not** a main package any more. A bare `go build .` at the root compiles nothing useful. `tests/e2e/scripts/prep.mjs` and all four scripts above were updated together with that move.
 
 **pnpm scripts** (in `web/frontend/`): `dev:h5`, `build:h5`, `dev:mp-weixin`, `build:mp-weixin`. Use `pnpm` for all package management; `npm` is blocked via a preinstall hook.
 
@@ -81,9 +83,9 @@ Browser / MiniProgram ←→ Gin web server (:web_port) ←→ OneBot + Cache (r
 
 ```
 main → app, config, logutil, apppath, version
-app → config, llm, onebot, cmd, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
-bot → config, cache, onebot, cmd
-cmd → config, cache, llm, onebot, async
+app → config, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
+bot → config, cache, onebot, router
+router → config, cache, llm, onebot, async
 web/server → config, logutil, onebot, cache, version
 async → logutil, pool
 pool → (仅标准库 sync)
@@ -95,7 +97,12 @@ logutil → apppath
 apppath → (no internal deps)
 ```
 
-`app` is the composition root (see below); `bot` is the runtime poller; `cmd` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`app` is the composition root (see below); `bot` is the runtime poller; `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based) **plus CQ-code parsing** (`cqimage.go`); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK); `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+
+Two structural conventions behind that layout:
+
+- **`main.go` lives in `cmd/good-review/`, not at the repo root.** The root is not a main package; every build/run command targets `./cmd/good-review`. `cmd/` is the conventional Go location for binaries, and it keeps the root readable as a package list.
+- **CQ-code parsing lives in `onebot/`, not `cache/`.** `[CQ:image,...]` is part of the OneBot protocol, so parsing it belongs with the protocol client; `cache/` is storage and must not know about wire formats. Callers are `bot/handler.go` and `bot/polling.go` (both already import `onebot`).
 
 ### Key design: explicit dependency injection, composition root, no init() side effects
 
@@ -103,7 +110,7 @@ All components are constructed explicitly in the `app` package (composition root
 
 `app` must not be imported by anything but `main` — when a component needs another component, inject it in `app` rather than importing across.
 
-Known remaining global state (deliberately kept for now): `cache` package-level `cacheMap`/`anchorMap` and `logutil`'s logger are shared by `bot`/`cmd`/`web/server` without being held as fields.
+Known remaining global state (deliberately kept for now): `cache` package-level `cacheMap`/`anchorMap` and `logutil`'s logger are shared by `bot`/`router`/`web/server` without being held as fields.
 
 ## Startup & shutdown sequence
 
@@ -116,7 +123,7 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 3. `onebot.NewClient` — OneBot HTTP client (resty).
 4. Built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1, its URL is injected into `cfg.MCPConfig`); failure is non-fatal.
 5. `mcpclient.New(cfg.MCPConfig, ctx)` + `LogConfig()` + `Start()`.
-6. `cmd.NewRouter(cfg, promptCfg, llm, ob, mcpMgr, ctx)` — router receives the lifecycle context for its goroutine group.
+6. `router.NewRouter(cfg, promptCfg, llm, ob, mcpMgr, ctx)` — router receives the lifecycle context for its goroutine group.
 7. `obClient.GetLoginInfo()` — bot nickname (failure is non-fatal) + startup logs.
 8. `bot.NewBot(...)`; `webserver.New(cfg, obClient)` + `EnableDebug(router, fakeLLM)` when test mode (conditional, `cfg.WebPort > 0`).
 
@@ -140,16 +147,16 @@ All three YAML files are auto-created from embedded templates on first run if mi
 
 `prompt_system.yaml` is parsed once at startup and cached (`Config.systemPrompt`) — subsequent checks read the cached pointer, not the file. `prompt_custom.yaml` is read on every write operation (add/delete command/rule) and on `Reload()`.
 
-## Command system (`cmd/`)
+## Command system (`router/`)
 
 ### Two kinds of commands
 
 | Kind | Defined in | Examples |
 | --- | --- | --- |
-| Internal | `cmd/internal_cmd.go` via `Router.register()` | `添加关键字`, `删除关键字`, `帮助` |
+| Internal | `router/internal_cmd.go` via `Router.register()` | `添加关键字`, `删除关键字`, `帮助` |
 | User | `prompt_system.yaml` / `prompt_custom.yaml` YAML lists | `锐评下`, `猫娘` |
 
-### Router struct (`cmd/command.go`)
+### Router struct (`router/command.go`)
 
 ```go
 type Router struct {
@@ -203,7 +210,7 @@ polling (bot/polling.go) → fetch history (onebot.Client)
 ## Adding a new command type
 
 1. Write a handler method: `func (r *Router) handlerName(event onebot.Event, groupID string, prompt string)`
-2. Add to `handlerMap` in `cmd/command.go` `NewRouter()`: `"category_name": r.handlerName`
+2. Add to `handlerMap` in `router/command.go` `NewRouter()`: `"category_name": r.handlerName`
 3. Add entries in `prompt_system.yaml` under `cmd.category_name:` as a list of `{keyword, prompt}`
 4. Optionally add shared rules under `rules.category_name:`
 
@@ -400,4 +407,4 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 ## Code conventions
 
 - **Variable naming**: 变量名不要简化，要完整让人方便看懂。
-- **Wiring lives in `app`**: 新增组件时在 `app.New` 里构造并挂到 `App` 字段上，启动/关闭动作放 `app.Start`/`app.Shutdown`。不要在 `main`、`cmd`、`bot`、`web/server` 里 new 组件或读包级全局来绕过注入。
+- **Wiring lives in `app`**: 新增组件时在 `app.New` 里构造并挂到 `App` 字段上，启动/关闭动作放 `app.Start`/`app.Shutdown`。不要在 `main`、`router`、`bot`、`web/server` 里 new 组件或读包级全局来绕过注入。

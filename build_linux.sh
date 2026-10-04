@@ -23,10 +23,10 @@ COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS="-s -w -X good-review-master/version.Version=${VERSION} -X good-review-master/version.Commit=${COMMIT} -X good-review-master/version.BuildTime=${BUILD_TIME}"
 
-GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-windows-amd64-${VERSION}.exe .
-GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-linux-amd64-${VERSION} .
-GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-amd64-${VERSION} .
-GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-arm64-${VERSION} .
+GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-windows-amd64-${VERSION}.exe ./cmd/good-review
+GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-linux-amd64-${VERSION} ./cmd/good-review
+GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-amd64-${VERSION} ./cmd/good-review
+GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/good-review-master-darwin-arm64-${VERSION} ./cmd/good-review
 
 echo ""
 echo "构建成功！输出文件夹: $SCRIPT_DIR/dist"

@@ -1,4 +1,4 @@
-package cmd
+package router
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func (r *Router) chatReview(event onebot.Event, groupID string, systemPrompt str
 }
 
 // selectChatWindow 按 token 成本决定扩展还是重置，返回本次要发送的窗口消息。
-// 决策逻辑在 decideChatWindow（cmd/chat_window.go，纯函数，可单测穷举）；这里只做
+// 决策逻辑在 decideChatWindow（router/chat_window.go，纯函数，可单测穷举）；这里只做
 // 配置/锚点读取 + 日志输出。扩展条件：锚点可用、扩展成本 < 重置成本、未超上下文护栏。
 func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPrompt string) []cache.Message {
 	// systemTokens = 固定前缀 P（systemPrompt + 常量前缀 + MCP 工具清单）的 token 数：扩展/重置都会发送。

@@ -13,7 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// MessageRouter 供 debug trigger 触发指令路由（由 cmd.Router 实现，避免 web 依赖 cmd）
+// MessageRouter 供 debug trigger 触发指令路由（由 router.Router 实现，避免 web 依赖 router）
 type MessageRouter interface {
 	RouteMessage(content string, event onebot.Event, groupID string)
 }

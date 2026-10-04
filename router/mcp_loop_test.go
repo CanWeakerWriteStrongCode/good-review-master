@@ -1,4 +1,4 @@
-package cmd
+package router
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 )
 
 // setupTestLogger 初始化 zap 并切到临时目录：logutil 的 sugar 未初始化时任何日志调用都会
-// nil panic，而工具循环与选窗决策里都有日志；不切目录会把 bot.log 写进仓库 cmd/log/。
+// nil panic，而工具循环与选窗决策里都有日志；不切目录会把 bot.log 写进仓库 router/log/。
 func setupTestLogger(t *testing.T) {
 	t.Helper()
 	t.Chdir(t.TempDir())

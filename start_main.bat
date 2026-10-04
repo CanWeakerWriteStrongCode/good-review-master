@@ -26,5 +26,5 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-go run main.go
+go run ./cmd/good-review
 pause
