@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"good-review-master/apppath"
 
@@ -52,14 +53,32 @@ type Persona struct {
 	Emotion      RawJSON `yaml:"emotion" json:"emotion"`             // 情绪维度（必填，JSON 对象：维度→取值，核心）
 }
 
+// PromptData 提示词可变部分的一份**完整快照**（发布后不可变）。
+//
+// 为什么需要这一层：热重载把 Reload 与路由重建带到了 informer 自己的 goroutine 上，
+// 而消息分发、内部指令的异步任务也在读同一批数据。Go 的 map 并发读写是
+// **fatal error 而不是竞态警告**——`concurrent map read and map write` 会直接带走进程。
+// 所以约定变成：写侧构造全新的 map、一次性发布；读侧拿到的 map 永不被再改动。
+//
+// 与 config.Snapshot 是同一套思路，只是这里的数据是两张 map 而不是一个结构体。
+type PromptData struct {
+	CmdConfigs  map[string][]CmdConf
+	SharedRules map[string]string
+}
+
 // PromptConfig 提示词配置（系统 + 自定义合并），支持热重载
 type PromptConfig struct {
-	CmdConfigs   map[string][]CmdConf
-	SharedRules  map[string]string
-	mu           sync.Mutex
-	systemPath   string
-	customPath   string
-	systemPrompt *promptFile // 缓存 prompt_system.yaml 解析结果，启动后只读
+	systemPath string
+	customPath string
+
+	// writeMu 串行化所有写操作（Reload 与增删指令）。
+	// 它们都是"读文件 → 改 → 写回"的整段事务，必须互斥，否则两次添加会互相覆盖。
+	writeMu sync.Mutex
+
+	// system 是 prompt_system.yaml 的解析结果；data 是它与自定义文件合并后的结果。
+	// 两者都随 Reload 整体替换，读侧无锁。
+	system atomic.Pointer[promptFile]
+	data   atomic.Pointer[PromptData]
 }
 
 type promptFile struct {
@@ -73,78 +92,101 @@ func LoadPromptConfig(systemPath, customPath string) (*PromptConfig, error) {
 		systemPath: systemPath,
 		customPath: customPath,
 	}
-	pc.load()
+	pc.Reload()
 	return pc, nil
 }
 
-// load 读取并合并提示词配置文件（调用方需持有 mu）
-func (pc *PromptConfig) load() {
-	pc.CmdConfigs = make(map[string][]CmdConf)
-	cfgPath := pc.systemPath
-	raw, err := os.ReadFile(cfgPath)
+// Snapshot 返回当前提示词数据的一份不可变视图，**无锁**。
+//
+// 调用方可以一直持有它、反复读其中的 map——因为发布之后没有任何代码会再改动它们。
+// 这与 config.Snapshot 的约定一致：用到时取一次，跨一次完整操作用一个。
+func (pc *PromptConfig) Snapshot() *PromptData {
+	return pc.data.Load()
+}
+
+// Reload 重新读取并合并提示词文件，然后一次性发布。
+//
+// 发布点是全类唯一的：build 只构造、不碰接收者，所以读侧要么看到完整的旧数据、
+// 要么看到完整的新数据，不存在"合并到一半"的中间态。
+func (pc *PromptConfig) Reload() {
+	pc.writeMu.Lock()
+	defer pc.writeMu.Unlock()
+
+	system, data := pc.build()
+	pc.system.Store(system)
+	pc.data.Store(data)
+}
+
+// build 读取并合并提示词文件，返回全新的数据（不修改接收者）。
+//
+// 任何一步失败都返回一份**可用的空数据**而不是 nil：PromptData 的 map 若为 nil，
+// 调用方 range 没问题但写入会 panic，而且 nil 会让"取快照"这件事变得需要判空。
+func (pc *PromptConfig) build() (*promptFile, *PromptData) {
+	system := &promptFile{Cmd: make(map[string][]CmdConf), Rules: make(map[string]string)}
+	data := &PromptData{CmdConfigs: make(map[string][]CmdConf), SharedRules: make(map[string]string)}
+
+	raw, err := os.ReadFile(pc.systemPath)
 	if err != nil {
 		destPath := apppath.GetWorkPath("prompt_system.yaml")
 		if writeErr := writePromptSystem(destPath); writeErr != nil {
 			logutil.Warn("无法创建 prompt_system.yaml，以空指令集启动", "err", writeErr)
-			return
+			return system, data
 		}
 		logutil.Info("已创建 prompt_system.yaml", "path", destPath)
 		raw = promptSystemExampleTemplate // 使用内嵌模板字节，落入下方解析逻辑
 	}
-	var cfg promptFile
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	var systemCfg promptFile
+	if err := yaml.Unmarshal(raw, &systemCfg); err != nil {
 		logutil.Warn("prompt_system.yaml 格式错误，将以空指令集启动", "err", err)
-		return
+		return system, data
 	}
-	if cfg.Cmd == nil {
-		cfg.Cmd = make(map[string][]CmdConf)
+	if systemCfg.Cmd == nil {
+		systemCfg.Cmd = make(map[string][]CmdConf)
 	}
-	pc.systemPrompt = &cfg // 缓存系统提示词，后续只读不重新解析
-	pc.CmdConfigs = cfg.Cmd
-	pc.SharedRules = cfg.Rules
+	if systemCfg.Rules == nil {
+		systemCfg.Rules = make(map[string]string)
+	}
+	// system 是"系统文件本身长什么样"，供 KeywordInSystemCmd / CategoryInSystemRule 判定；
+	// 它与下面 data 里的合并结果必须分开：守卫要问的是"这个词在系统文件里吗"，
+	// 而不是"合并后有没有"——后者会把用户自定义的指令误判成系统的。
+	system = &systemCfg
 
-	// 合并 prompt_custom.yaml
-	customRaw, err := os.ReadFile(pc.customPath)
-	if err != nil {
-		return
+	for name, entries := range systemCfg.Cmd {
+		data.CmdConfigs[name] = append(data.CmdConfigs[name], entries...)
 	}
-	var customCfg promptFile
-	if err := yaml.Unmarshal(customRaw, &customCfg); err != nil {
-		logutil.Warn("prompt_custom.yaml 格式错误，跳过", "err", err)
-		return
+	for category, rule := range systemCfg.Rules {
+		data.SharedRules[category] = rule
 	}
-	for name, entries := range customCfg.Cmd {
-		pc.CmdConfigs[name] = append(pc.CmdConfigs[name], entries...)
-	}
-	if customCfg.Rules != nil {
-		if pc.SharedRules == nil {
-			pc.SharedRules = make(map[string]string)
-		}
-		for cat, rule := range customCfg.Rules {
-			pc.SharedRules[cat] = rule
+
+	// 合并 prompt_custom.yaml（缺失或格式错都不致命，用系统的即可）
+	if customRaw, err := os.ReadFile(pc.customPath); err == nil {
+		var customCfg promptFile
+		if err := yaml.Unmarshal(customRaw, &customCfg); err != nil {
+			logutil.Warn("prompt_custom.yaml 格式错误，跳过", "err", err)
+		} else {
+			for name, entries := range customCfg.Cmd {
+				data.CmdConfigs[name] = append(data.CmdConfigs[name], entries...)
+			}
+			for category, rule := range customCfg.Rules {
+				data.SharedRules[category] = rule
+			}
 		}
 	}
 
 	// persona 必填（无特例）：旧配置可能缺失，告警但不致命（该指令不渲染人格块）
-	for name, entries := range pc.CmdConfigs {
+	for name, entries := range data.CmdConfigs {
 		for _, entry := range entries {
 			if entry.Persona == nil {
 				logutil.Warn("指令缺少 persona，将不渲染人格块", "keyword", entry.Keyword, "category", name)
 			}
 		}
 	}
+	return system, data
 }
 
-// Reload 热重载提示词配置
-func (pc *PromptConfig) Reload() {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	pc.load()
-}
-
-// getSystemPrompt 返回缓存 prompt_system.yaml 解析结果（启动后只读，不需要每次读文件）
+// getSystemPrompt 返回 prompt_system.yaml 解析结果（随 Reload 整体替换，读侧无锁）
 func (pc *PromptConfig) getSystemPrompt() *promptFile {
-	return pc.systemPrompt
+	return pc.system.Load()
 }
 
 // KeywordInSystemCmd 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在
@@ -165,8 +207,8 @@ func (pc *PromptConfig) KeywordInSystemCmd(keyword string) bool {
 
 // DeleteCommand 从 prompt_custom.yaml 删除指令（按 keyword 全局匹配）
 func (pc *PromptConfig) DeleteCommand(keyword string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
+	pc.writeMu.Lock()
+	defer pc.writeMu.Unlock()
 	raw, err := os.ReadFile(pc.customPath)
 	if err != nil {
 		return err
@@ -188,8 +230,8 @@ func (pc *PromptConfig) DeleteCommand(keyword string) error {
 
 // AddCommand 添加指令到 prompt_custom.yaml（全局 keyword 唯一，最后写入生效）
 func (pc *PromptConfig) AddCommand(category, keyword, promptText string, persona *Persona) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
+	pc.writeMu.Lock()
+	defer pc.writeMu.Unlock()
 	var cfg promptFile
 	raw, err := os.ReadFile(pc.customPath)
 	if err == nil {
@@ -240,8 +282,8 @@ func (pc *PromptConfig) CategoryInSystemRule(category string) bool {
 
 // AddRule 添加/更新规则到 prompt_custom.yaml
 func (pc *PromptConfig) AddRule(category, ruleText string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
+	pc.writeMu.Lock()
+	defer pc.writeMu.Unlock()
 	var cfg promptFile
 	raw, err := os.ReadFile(pc.customPath)
 	if err == nil {
@@ -258,8 +300,8 @@ func (pc *PromptConfig) AddRule(category, ruleText string) error {
 
 // DeleteRule 删除 prompt_custom.yaml 中的规则
 func (pc *PromptConfig) DeleteRule(category string) error {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
+	pc.writeMu.Lock()
+	defer pc.writeMu.Unlock()
 	raw, err := os.ReadFile(pc.customPath)
 	if err != nil {
 		return err

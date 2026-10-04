@@ -128,7 +128,7 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 7. `mcpclient.New(initial.MCPConfig, ctx)` + `LogConfig()` + `Start()` — uses the initial config, not the snapshot: MCP servers do **not** hot-reload.
 8. `router.NewRouter(snapshot, promptCfg, llm, ob, mcpMgr, ctx)` — router receives the lifecycle context for its goroutine group.
 9. Startup logs; `bot.NewBot(snapshot, ...)`; `webserver.New(snapshot, obClient)` + `EnableDebug(router, fakeLLM)` when test mode (conditional, `initial.WebPort > 0`).
-10. `store.NewInformer(configStore, list, FilePoller)` — built last, started by `Start()`.
+10. `store.NewInformer(configStore, list, FilePoller)` + `store.NewObserver(promptPoller, reloadPrompts)` — built last, both started by `Start()`. The prompt observer calls `Prompt.Reload()` then `Router.Rebuild()`.
 
 **`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches the polling goroutine, the config informer, and the web server (all non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code. The informer exits on the same cancelled ctx — if it didn't, it would hold up graceful shutdown.
 
@@ -195,6 +195,25 @@ cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X througho
 | `Store[T]` | `config/store/store.go` | immutable snapshot behind `atomic.Pointer`; readers always see one self-consistent version |
 | `Source` | `config/store/source.go` | emits "changed" signals; `FilePoller` stats files (mtime+size) every 2s |
 | `Informer[T]` | `config/store/informer.go` | List → swap → notify handlers; runs under `app`'s lifecycle context |
+| `Observer` | `config/store/observer.go` | "changed → call back", **without** holding a snapshot |
+
+`Informer` and `Observer` exist as two shapes rather than one with a flag, because they serve data with different owners. `Informer` is for data that has **no** snapshot yet (the app config); `Observer` is for data that **already** owns and atomically publishes its own snapshot (the prompt config). Forcing the second case through `Informer` would create a second source of truth for the same data. Both share `Source` — the part that is genuinely common — and each keeps its own small loop.
+
+### What hot-reloads, and what does not
+
+| Changed | Takes effect |
+| --- | --- |
+| `prompt_system.yaml` / `prompt_custom.yaml` | within ~2s (`PromptConfig.Reload()` **and** `Router.Rebuild()`) |
+| `allow_groups`, thresholds, cost params, model name, `max_msg_rune`, poll interval | on the next read (next tick / next request) |
+| `web_port`, credentials, `jwt_secret`, `mcp.servers` | **restart required** — a WARN says so on reload |
+
+The prompt path needs *both* steps: `Reload` only swaps the data, while the route table is **derived** from it. Skipping `Rebuild` yields the worst kind of bug — the file clearly contains the new keyword, and nothing happens when you use it.
+
+The restart-required list is not arbitrary: those values are consumed at construction (listener bound, auth middleware installed, MCP clients built). `warnRestartOnlyChanges` compares the old and new snapshots and reports them, because once hot-reload exists users reasonably assume *everything* is live and will otherwise waste time wondering why changing the port did nothing.
+
+**`PromptConfig` publishes once, never mutates.** `Reload` builds entirely fresh maps and stores them via `atomic.Pointer[PromptData]`; readers get a map nobody will ever write to again. This is not stylistic — Go's concurrent map read/write is a **fatal error** (`concurrent map read and map write`), not a race warning, and hot-reload puts `Reload` on the informer goroutine while dispatch and the internal-command tasks read the same data. The old `load()` published `pc.CmdConfigs` and *then* mutated it while merging the custom file, which was a live race. `config/prompt_test.go` pins the immutability.
+
+`PromptConfig.Snapshot()` returns the merged result; `getSystemPrompt()` returns the system file *alone*. The guard functions (`KeywordInSystemCmd`, `CategoryInSystemRule`) must use the latter: asking "does this keyword belong to the system?" against the merged data would misclassify user-added commands as system ones, making them undeletable.
 
 **A file source has no deltas.** Files are rewritten wholesale, so every change is a full re-List and the snapshot is swapped entire — there is no merge step, which is why `old`/`new` handed to handlers are always two complete, self-consistent configs.
 
@@ -218,22 +237,28 @@ What hot-reloads and what does not: `allow_groups`, thresholds, cost params, mod
 ### Router struct (`router/command.go`)
 
 ```go
+type routeTable struct {          // 一份完整路由表快照，发布后不可变
+    trie   *trieNode              // 前缀树匹配，O(k)
+    routes []Command              // 帮助列表遍历
+}
 type Router struct {
-    routeTrie  *trieNode         // 前缀树匹配，O(k)
-    routes     []Route           // 帮助列表遍历
-    registry   []Command
-    handlerMap map[string]HandlerFunc
-    llmClient  llm.Client
-    obClient   *onebot.Client
-    promptCfg  *config.PromptConfig
-    appCfg     config.Snapshot
-    starter    *async.Group     // goroutine 生命周期管理
+    table            atomic.Pointer[routeTable] // 整体替换，分发时无锁读取
+    internalCommands []Command                  // 内部指令，仅启动时注册
+    handlerMap       map[string]HandlerFunc
+    llmClient        llm.Client
+    obClient         *onebot.Client
+    promptCfg        *config.PromptConfig
+    appCfg           config.Snapshot
+    starter          *async.Group               // goroutine 生命周期管理
 }
 func NewRouter(appCfg, promptCfg, llmClient, obClient, shutdownCtx) *Router
 func (r *Router) RouteMessage(content, event, groupID)
+func (r *Router) Rebuild()                            // 提示词变了之后重建路由表
 func (r *Router) Go(fn func(context.Context) error)   // 安全启动 goroutine
 func (r *Router) Wait() error                         // 等待所有 goroutine 退出
 ```
+
+`trie` and `routes` live in **one** atomically-swapped struct on purpose: with two separate atomics, a dispatch could pair a new trie with an old help list, so what `帮助` lists and what actually matches would disagree — the kind of inconsistency that is miserable to debug. `Rebuild` needs no lock: it builds a fresh table and stores it, so concurrent rebuilds converge and readers never see half a table.
 
 ### Route matching: prefix trie
 

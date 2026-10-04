@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"good-review-master/async"
 	"good-review-master/config"
@@ -72,10 +73,29 @@ func trieMatch(root *trieNode, text string) *Command {
 	return lastMatch
 }
 
+// routeTable 路由表的一份完整快照（发布后不可变）。
+//
+// 前缀树与列表放进**同一个**结构体整体替换，而不是各自一个 atomic：
+// 分开的话，分发拿到新 trie、而「帮助」列出旧 routes 是可能的，
+// 于是"列出来的指令"与"实际能命中的指令"对不上——这类不一致极难排查。
+type routeTable struct {
+	trie   *trieNode
+	routes []Command // 全部指令（内部 + 用户），内部指令 Category="internal"
+}
+
 // Router 指令路由器
 type Router struct {
-	routeTrie  *trieNode
-	routes     []Command // 全部指令（内部 + 用户），内部指令 Category="internal"
+	// table 是当前路由表，rebuild 时整体替换、分发时无锁读取。
+	// 热重载让 rebuild 可能来自 informer goroutine，同时消息分发与内部指令的
+	// 异步任务都在读它——必须原子替换，不能就地改。
+	table atomic.Pointer[routeTable]
+
+	// internalCommands 内部指令，只在启动时 register，之后只读。
+	// 单独存一份而不是从 table.routes 里筛 Category=="internal"：
+	// 那种做法要求"内部指令一定还在 routes 里"，是个隐式约定；
+	// 分开存之后 rebuild 的输入是明确的，也不会随 table 的替换而丢失。
+	internalCommands []Command
+
 	handlerMap map[string]HandlerFunc
 	llmClient  llm.Client
 	obClient   *onebot.Client
@@ -106,18 +126,19 @@ func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient
 		"chat_review": r.chatReview,
 	}
 	r.registerInternalCommands()
-	r.rebuild()
+	r.Rebuild()
 	return r
 }
 
-// register 注册内部/系统指令
+// register 注册内部/系统指令（仅启动期调用，之后 internalCommands 只读）
 func (r *Router) register(rt Command) {
-	r.routes = append(r.routes, rt)
+	r.internalCommands = append(r.internalCommands, rt)
 }
 
-// isInternalKeyword 检查关键字是否为内部/系统指令
+// isInternalKeyword 检查关键字是否为内部/系统指令。
+// 直接查 internalCommands：内部指令不随热重载变化，没必要为它去读路由表快照。
 func (r *Router) isInternalKeyword(keyword string) bool {
-	for _, cmd := range r.routes {
+	for _, cmd := range r.internalCommands {
 		if cmd.Category == "internal" && cmd.Keyword == keyword {
 			return true
 		}
@@ -125,33 +146,36 @@ func (r *Router) isInternalKeyword(keyword string) bool {
 	return false
 }
 
-// rebuild 重建路由表（前缀树匹配 + 列表展示）
-func (r *Router) rebuild() {
-	// 保存内部指令（Category="internal"），重建后重新插入
-	var internal []Command
-	for _, rt := range r.routes {
-		if rt.Category == "internal" {
-			internal = append(internal, rt)
-		}
+// Rebuild 重建路由表（前缀树匹配 + 列表展示）。
+//
+// 导出版本供配置热更新调用：提示词文件变了之后，光 Reload 数据还不够，
+// 路由表是从数据派生的，必须跟着重建才能让新关键字真正可命中。
+//
+// 无锁也无所谓并发：它只构造一份全新的 table 再原子替换，
+// 两个并发调用各建一份、后者胜出，结果完全一致（输入相同）；
+// 读者要么看到旧表要么看到新表，不会看到半张。
+func (r *Router) Rebuild() {
+	table := &routeTable{
+		trie:   &trieNode{children: make(map[rune]*trieNode)},
+		routes: make([]Command, 0, len(r.internalCommands)),
 	}
 
-	r.routes = nil
-	r.routeTrie = &trieNode{children: make(map[rune]*trieNode)}
-
-	// 系统路由（内部指令）
-	for i := range internal {
-		rt := &internal[i]
-		r.routes = append(r.routes, *rt)
-		trieInsert(r.routeTrie, rt.Keyword, rt)
+	// 内部指令始终在（不随提示词文件变化）
+	for i := range r.internalCommands {
+		rt := &r.internalCommands[i]
+		table.routes = append(table.routes, *rt)
+		trieInsert(table.trie, rt.Keyword, rt)
 	}
 
-	// 用户路由（从 CmdConfigs 生成）
-	for cmdName, entries := range r.promptCfg.CmdConfigs {
+	// 用户指令：从提示词快照生成。
+	// 整块重建都基于**同一份**快照，不会一半用旧数据一半用新数据。
+	promptData := r.promptCfg.Snapshot()
+	for cmdName, entries := range promptData.CmdConfigs {
 		handler := r.handlerMap[cmdName]
 		if handler == nil {
 			continue
 		}
-		sharedRules := r.promptCfg.SharedRules[cmdName]
+		sharedRules := promptData.SharedRules[cmdName]
 		for _, entry := range entries {
 			rt := Command{
 				Keyword:     entry.Keyword,
@@ -161,10 +185,17 @@ func (r *Router) rebuild() {
 				Handler:     handler,
 				Persona:     entry.Persona,
 			}
-			r.routes = append(r.routes, rt)
-			trieInsert(r.routeTrie, entry.Keyword, &rt)
+			table.routes = append(table.routes, rt)
+			trieInsert(table.trie, entry.Keyword, &rt)
 		}
 	}
+
+	r.table.Store(table)
+}
+
+// routesSnapshot 返回当前路由表的指令列表（供「帮助」等只读遍历）。
+func (r *Router) routesSnapshot() []Command {
+	return r.table.Load().routes
 }
 
 // RouteMessage 前缀树匹配并分发
@@ -185,7 +216,7 @@ func (r *Router) RouteMessage(content string, event onebot.Event, groupID string
 	if cfg.LLMConfig.ImageMax > 0 {
 		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用 view_image 工具（实际查看有数量上限，达到后请直接作答）。不要编造没实际看过的图片内容。"
 	}
-	route := trieMatch(r.routeTrie, text)
+	route := trieMatch(r.table.Load().trie, text)
 	if route == nil {
 		r.replyDefault(text, event, groupID, systemPrompt)
 		return
@@ -238,7 +269,7 @@ func (r *Router) clearGroupPersona(groupID string) {
 // 直接遍历 rebuild 好的路由表：新增/删除关键字经 Reload()+rebuild() 后自动同步。
 func (r *Router) availablePersonaNames() []string {
 	var names []string
-	for _, route := range r.routes {
+	for _, route := range r.routesSnapshot() {
 		if route.Persona != nil {
 			names = append(names, route.Keyword)
 		}

@@ -44,6 +44,7 @@ type App struct {
 	sources          config.Sources
 	configStore      *store.Store[config.Config]
 	configInformer   *store.Informer[config.Config]
+	promptObserver   *store.Observer
 	botNickname      string // 启动时从 NapCat 取到，之后不变
 	builtinImageAddr string // 内嵌看图 MCP 的地址；空表示本会话没启用
 	webURL           string // 启动时算好的面板地址，只用于启动日志
@@ -61,6 +62,13 @@ func (a *App) Start() {
 	go func() {
 		if err := a.configInformer.Run(a.ctx); err != nil {
 			logutil.Error("配置监听退出", "err", err)
+		}
+	}()
+
+	// 提示词监听同理：挂在同一个 ctx 上，退出时一起收
+	go func() {
+		if err := a.promptObserver.Run(a.ctx); err != nil {
+			logutil.Error("提示词监听退出", "err", err)
 		}
 	}()
 

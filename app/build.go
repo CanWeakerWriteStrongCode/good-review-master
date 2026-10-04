@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -136,8 +137,68 @@ func New(opts Options) (*App, error) {
 		}
 		return application.derive(reloaded), nil
 	}, store.NewFilePoller(configWatchInterval, opts.ConfigPath, opts.SecretPath))
+	application.configInformer.AddEventHandler(warnRestartOnlyChanges)
+
+	// 提示词监听：提示词有自己的合并语义（系统只读 + 自定义每次读盘），
+	// 数据也由 PromptConfig 自己持有，所以这里只观察"变了"，不另存一份快照。
+	application.promptObserver = store.NewObserver(
+		store.NewFilePoller(configWatchInterval,
+			opts.SystemPromptPath, config.CustomPromptPath(opts.SystemPromptPath)),
+		application.reloadPrompts,
+	)
 
 	return application, nil
+}
+
+// reloadPrompts 提示词文件变化后的动作：重读并重建路由表。
+//
+// 两步缺一不可：Reload 只换数据，而路由表（前缀树 + 帮助列表）是从数据**派生**出来的，
+// 不重建的话新关键字根本命中不了——用户会看到"配置文件里明明写了，发出去却没反应"。
+func (a *App) reloadPrompts() {
+	a.Prompt.Reload()
+	a.Router.Rebuild()
+	data := a.Prompt.Snapshot()
+	logutil.Info("提示词已热更新并重建路由表", "指令类别数", len(data.CmdConfigs))
+}
+
+// warnRestartOnlyChanges 报告"改了但不会热生效"的配置项。
+//
+// 为什么需要这个告警：热更新一上线，用户会理所当然地以为改什么都能立刻生效。
+// 而下面这几项在启动时就固化了——端口已绑定、路由表与鉴权中间件已按当时的值装好、
+// MCP 客户端已按当时的服务列表构造。不提示的话，用户会以为改动生效了，
+// 然后花时间排查"为什么改端口没用"。
+func warnRestartOnlyChanges(previous, next *config.Config) {
+	if previous.WebPort != next.WebPort {
+		logutil.Warn("web_port 已变化，但需要重启才能生效（监听器在启动时已绑定）",
+			"原值", previous.WebPort, "新值", next.WebPort)
+	}
+	if previous.WebUsername != next.WebUsername || previous.WebPassword != next.WebPassword {
+		logutil.Warn("Web 登录账号或密码已变化，但需要重启才能生效（鉴权中间件在启动时已装好）")
+	}
+	if previous.JWTSecret != next.JWTSecret {
+		logutil.Warn("jwt_secret 已变化，但需要重启才能生效（已签发的 token 仍按旧密钥校验）")
+	}
+	if !sameMCPServers(previous.MCPConfig.Servers, next.MCPConfig.Servers) {
+		logutil.Warn("mcp.servers 已变化，但需要重启才能生效（MCP 客户端在启动时已按当时的列表构造）")
+	}
+}
+
+// sameMCPServers 比较两份服务列表是否等价。逐个字段比，不用 reflect.DeepEqual：
+// 后者会把 nil 与空切片判为不等，从而对同一份配置误报变化。
+func sameMCPServers(previous, next []config.MCPServerConf) bool {
+	if len(previous) != len(next) {
+		return false
+	}
+	for i := range previous {
+		left, right := previous[i], next[i]
+		if left.Name != right.Name || left.Transport != right.Transport ||
+			left.URL != right.URL || left.Token != right.Token ||
+			left.Command != right.Command || left.ShouldInject() != right.ShouldInject() ||
+			strings.Join(left.Args, "\x00") != strings.Join(right.Args, "\x00") {
+			return false
+		}
+	}
+	return true
 }
 
 // derive 把"只有 app 知道"的运行期值贴到一份刚加载出来的配置上，得到可以发布的快照。

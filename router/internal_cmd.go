@@ -88,7 +88,7 @@ func (r *Router) handleAddCommand(event onebot.Event, groupID string, systemProm
 		return
 	}
 	r.promptCfg.Reload()
-	r.rebuild()
+	r.Rebuild()
 	r.obClient.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
 }
 
@@ -111,7 +111,7 @@ func (r *Router) handleDeleteCommand(event onebot.Event, groupID string, systemP
 		return
 	}
 	r.promptCfg.Reload()
-	r.rebuild()
+	r.Rebuild()
 	r.obClient.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
 }
 
@@ -177,7 +177,7 @@ func (r *Router) handleListCommands(event onebot.Event, groupID string, systemPr
 	buf.WriteString("【指令帮助】\n\n")
 	buf.WriteString("使用方式：@机器人 + 关键词\n\n")
 	buf.WriteString("▎管理指令：\n")
-	for _, cmd := range r.routes {
+	for _, cmd := range r.routesSnapshot() {
 		if cmd.Category != "internal" || cmd.Help == "" {
 			continue
 		}
@@ -188,7 +188,7 @@ func (r *Router) handleListCommands(event onebot.Event, groupID string, systemPr
 		}
 	}
 	buf.WriteString("\n▎功能指令：\n")
-	for _, cmd := range r.routes {
+	for _, cmd := range r.routesSnapshot() {
 		if cmd.Category == "internal" || cmd.Keyword == "" {
 			continue
 		}
@@ -219,7 +219,7 @@ func (r *Router) handleSwitchPersona(event onebot.Event, groupID string, systemP
 		return
 	}
 
-	for _, route := range r.routes {
+	for _, route := range r.routesSnapshot() {
 		if route.Keyword != name {
 			continue
 		}

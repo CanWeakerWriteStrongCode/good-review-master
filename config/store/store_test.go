@@ -209,3 +209,62 @@ func waitFor(t *testing.T, condition func() bool, message string) {
 	}
 	t.Fatal(message)
 }
+
+// TestRun在ctx取消后返回 锁住优雅关闭依赖的性质。
+// Windows 上没法给进程发 SIGINT，所以"Ctrl+C 后监听 goroutine 会不会卡住
+// 整个退出流程"这件事只能靠这里替代验证：Run 必须随 ctx 取消立刻返回。
+func TestRun在ctx取消后返回(t *testing.T) {
+	initial := "v"
+	target := NewStore(&initial)
+
+	cases := map[string]func(context.Context) error{
+		"informer": NewInformer(target, func() (*string, error) { return &initial, nil },
+			newFakeSource()).Run,
+		"observer": NewObserver(newFakeSource(), func() {}).Run,
+	}
+
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			returned := make(chan struct{})
+			go func() {
+				defer close(returned)
+				_ = run(ctx)
+			}()
+
+			cancel()
+			select {
+			case <-returned:
+			case <-time.After(2 * time.Second):
+				t.Fatal("ctx 取消后 Run 没返回：它会拖住优雅关闭")
+			}
+		})
+	}
+}
+
+// TestObserver回调panic不带走循环 与 Informer 的同名性质一致：
+// 一次坏回调不该让热更新永远停摆。
+func TestObserver回调panic不带走循环(t *testing.T) {
+	source := newFakeSource()
+	var mu sync.Mutex
+	calls := 0
+	observer := NewObserver(source, func() {
+		mu.Lock()
+		calls++
+		current := calls
+		mu.Unlock()
+		if current == 1 {
+			panic("第一次回调炸了")
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = observer.Run(ctx) }()
+
+	source.signal()
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 }, "首次回调未执行")
+
+	source.signal() // 循环若被 panic 带走，这次不会有人处理
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 }, "panic 之后观察者没继续跑")
+}
