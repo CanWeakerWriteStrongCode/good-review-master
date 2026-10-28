@@ -72,7 +72,7 @@ CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
     PLUGIN_NAME,
     "good-review",
     "把 AstrBot 事件转发给外部 Go 服务，并把 OneBot 动作用作平台无关的发送/查询协议",
-    "1.6.0",
+    "1.6.2",
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -199,6 +199,9 @@ class OneBotBridge(Star):
         payload["group_id"] = str(payload.get("group_id") or "")
         payload["user_id"] = str(payload.get("user_id") or "")
         payload["self_id"] = str(payload.get("self_id") or getattr(msg, "self_id", ""))
+        # 机器人自己发出的消息要在归一化之前判断：QQ 官方 message_sent 事件的
+        # user_id 和 self_id 可能是两个不同的 openid，只比 user_id == self_id 会漏掉。
+        self_message = payload.get("post_type") == "message_sent"
         payload["post_type"] = payload.get("post_type") or "message"
         if payload["post_type"] == "message_sent":
             # OneBot 把机器人自己发出的消息标成 message_sent；归一成 message 后
@@ -232,8 +235,8 @@ class OneBotBridge(Star):
         )
         payload["mentioned"] = self._is_mentioned(event, msg, platform_id)
 
-        if payload["user_id"] == payload["self_id"] and payload["self_id"]:
-            if not self._cfg_bool("forward_self_messages", False):
+        if not self._cfg_bool("forward_self_messages", False):
+            if self_message or (payload["user_id"] == payload["self_id"] and payload["self_id"]):
                 return None
         return payload
 
@@ -416,11 +419,10 @@ class OneBotBridge(Star):
 
         def replace(match: re.Match) -> str:
             mention_id = str(match.group(1) or "")
-            is_self = (
-                is_self_by_id.get(mention_id, False)
-                or (bool(self_id) and mention_id == self_id)
-                # group_at 事件在拿不到 mentions 元数据时会用 qq_official 占位
-                or mention_id == "qq_official"
+            # 占位值 qq_official 是 group_at 事件拿不到 mentions 元数据时伪造的 At，
+            # 不代表本账号真被 @，不能渲染成「@你」。
+            is_self = is_self_by_id.get(mention_id, False) or (
+                bool(self_id) and mention_id == self_id
             )
             return self._format_mention(group_id, mention_id, is_self, platform_id)
 
@@ -462,32 +464,50 @@ class OneBotBridge(Star):
         return ""
 
     def _is_mentioned(self, event: AstrMessageEvent, msg, platform_id: str = "") -> bool:
-        # AstrBot 的唤醒阶段已经把 At/AtAll/Reply/wake_prefix 算过了；
-        # 这里再用消息链和原始文本兜底，覆盖不同适配器的 self_id 形式。
-        if bool(getattr(event, "is_at_or_wake_command", False)):
-            return True
+        """判断这条消息是否真的在 @ 本账号。
+
+        多账号同群时，AstrBot 对群 @ 事件固定 force_group_mention：拿不到 mention
+        元数据时会把 self_id 填成 qq_official 并伪造 At(qq=qq_official)，
+        event.is_at_or_wake_command 也会因此为真。这两者都不能当成本账号被 @ 的证据，
+        否则没被 @ 的账号也会执行指令。
+        """
+        # 1) mentions 里明确标了 is_you：最可靠的「真的被 @」证据
+        for mention in self._mentions(msg):
+            if bool(getattr(mention, "is_you", False)):
+                return True
+
         self_id = str(getattr(msg, "self_id", "") or "")
-        if self_id in SELF_ID_PLACEHOLDERS:
+        if self_id not in SELF_ID_PLACEHOLDERS:
+            # AstrBot 已从 mention 元数据拿到真实身份，@ / 唤醒前缀 / 回复都可信
+            if bool(getattr(event, "is_at_or_wake_command", False)):
+                return True
+        else:
+            # 占位值不可信：只能用本平台实例已学到的真实 openid 证明
             self_id = self._self_id_for(platform_id)
+            if not self_id:
+                return False
+
         for comp in getattr(msg, "message", []) or []:
-            if type(comp).__name__.lower() != "at":
+            comp_name = type(comp).__name__.lower()
+            if comp_name == "atall":
+                # AstrBot 的 ignore_at_all 生效时不会把它算作唤醒
+                return bool(getattr(event, "is_at_or_wake_command", False))
+            if comp_name != "at":
                 continue
             qq = str(getattr(comp, "qq", "") or "")
-            if qq and (qq == self_id or qq == "qq_official"):
+            if qq and qq == self_id:
                 return True
-        if self_id:
-            raw = getattr(msg, "raw_message", None)
-            if isinstance(raw, dict):
-                content = str(raw.get("raw_message") or "")
-            else:
-                content = str(getattr(raw, "content", "") or "")
-            if content and (
-                f"<@{self_id}>" in content
-                or f"<@!{self_id}>" in content
-                or f'<qqbot-at-user id="{self_id}"' in content
-            ):
-                return True
-        return False
+
+        raw = getattr(msg, "raw_message", None)
+        if isinstance(raw, dict):
+            content = str(raw.get("raw_message") or "")
+        else:
+            content = str(getattr(raw, "content", "") or "")
+        return bool(content) and (
+            f"<@{self_id}>" in content
+            or f"<@!{self_id}>" in content
+            or f'<qqbot-at-user id="{self_id}"' in content
+        )
 
     async def _post_event(self, payload: dict[str, Any], platform: str = "") -> bool:
         url = self._cfg("go_event_url", DEFAULT_EVENT_URL)
@@ -1022,6 +1042,14 @@ class OneBotBridge(Star):
     async def _query_action(self, action: str, params: dict) -> dict:
         group_id = str(params.get("group_id") or "")
         self_id = str(params.get("self_id") or "")
+        # 指定了账号但还没学到它的平台实例时，不能退回"第一个适配器"：
+        # 多账号下会把 A 的昵称当成 B 的返回，面板就会显示错误的账号名。
+        if action == "get_login_info" and self_id and self_id not in self._self_platform:
+            return {
+                "status": "failed",
+                "retcode": 1404,
+                "message": "账号身份尚未学习，无法定位平台实例",
+            }
         platform_id = self._platform_for_action(self_id, group_id)
         adapter = self._get_adapter(group_id, self_id)
         if adapter is None:

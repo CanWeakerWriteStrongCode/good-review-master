@@ -162,6 +162,47 @@ func (gc *GroupMsgCache) GetAll() []Message {
 	return msgs
 }
 
+// CacheStats 群缓存的聚合状态（面板展示用）。
+type CacheStats struct {
+	Count    int    // 已缓存消息条数
+	LastTime int64  // 最近一条消息的平台时间
+	SelfID   string // 最近一条带账号信息的消息的 self_id；空表示无法归属
+}
+
+// Stats 一次加锁返回缓存的聚合状态。
+//
+// 面板只需要条数、最近活动时间和接收账号，没必要为每个群 GetAll 整份拷贝；
+// 群缓存按 group_id 建，而 QQ 官方的 group_openid 按 bot 维度分配，
+// 所以同一群的消息都来自同一个账号，取最近一条的 self_id 就够了。
+func (gc *GroupMsgCache) Stats() CacheStats {
+	gc.mu.RLock()
+	defer gc.mu.RUnlock()
+
+	n := gc.writeAt
+	if gc.filled {
+		n = len(gc.buf)
+	}
+	stats := CacheStats{Count: n}
+	// 从最新写入位置往前找：最近时间与最近的非空 self_id 各取一次。
+	for i := 0; i < n; i++ {
+		idx := (gc.writeAt - 1 - i + len(gc.buf)) % len(gc.buf)
+		msg := gc.buf[idx]
+		if msg.MessageID == 0 && msg.Content == "" && msg.Time == 0 {
+			continue
+		}
+		if stats.LastTime == 0 {
+			stats.LastTime = msg.Time
+		}
+		if stats.SelfID == "" {
+			stats.SelfID = msg.SelfID
+		}
+		if stats.LastTime != 0 && stats.SelfID != "" {
+			break
+		}
+	}
+	return stats
+}
+
 // HasSeen 检查某个机器人账号是否已经处理过这条消息（O(1) map 查找）。
 // 用 (self_id, message_id) 而不是单独 message_id：同一个物理群可能被多个账号同时收到。
 func (gc *GroupMsgCache) HasSeen(selfID string, msgID int64) bool {

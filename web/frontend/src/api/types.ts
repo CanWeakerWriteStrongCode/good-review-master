@@ -1,21 +1,37 @@
 export interface GroupInfo {
   group_id: string
   group_name: string
+  /** 接收该群的机器人账号；空=无法归属 */
+  self_id: string
+  /** 账号昵称；解析不到时为空 */
+  account_name: string
   message_count: number
   last_activity: string
   cached: boolean
+}
+
+/** 一个机器人账号的汇总（多账号面板用） */
+export interface AccountInfo {
+  self_id: string
+  nickname: string
+  group_count: number
+  cached_group_count: number
+  message_count: number
+  last_activity: string
 }
 
 export interface BotStatus {
   bot_nickname: string
   api_key: string
   group_count: number
+  account_count: number
   allow_all_groups: boolean
 }
 
 export interface Message {
   msg_id: number
   group_id: string
+  self_id?: string
   user_id: string
   nick: string
   card: string

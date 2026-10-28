@@ -1,4 +1,4 @@
-import type { GroupInfo, BotStatus, Message, APIResponse } from './types'
+import type { AccountInfo, GroupInfo, BotStatus, Message, APIResponse } from './types'
 
 export const BASE_URL = '/api'
 
@@ -42,12 +42,15 @@ export async function request<T>(url: string): Promise<T> {
 
 export interface GroupsData {
   groups: GroupInfo[]
+  accounts: AccountInfo[]
   bot_info: BotStatus
 }
 
 export interface MessagesData {
   group_id: string
   group_name: string
+  self_id: string
+  account_name: string
   messages: Message[]
   empty: boolean
 }

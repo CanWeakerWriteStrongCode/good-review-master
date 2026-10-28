@@ -67,3 +67,43 @@ func Test跨账号重复消息只存一份(t *testing.T) {
 		t.Fatal("seen 必须按 (self_id, message_id) 区分")
 	}
 }
+
+func TestStats返回条数最近时间与账号(t *testing.T) {
+	gc := &GroupMsgCache{
+		buf:     make([]Message, 4),
+		seenSet: make(map[seenKey]struct{}, 4),
+	}
+	if st := gc.Stats(); st.Count != 0 || st.LastTime != 0 || st.SelfID != "" {
+		t.Fatalf("空缓存应返回零值，得到 %+v", st)
+	}
+
+	gc.Add(Message{MessageID: 1, SelfID: "bot-a", Content: "a", Time: 100})
+	gc.Add(Message{MessageID: 2, SelfID: "", Content: "b", Time: 101})
+	gc.Add(Message{MessageID: 3, SelfID: "bot-b", Content: "c", Time: 99})
+
+	st := gc.Stats()
+	if st.Count != 3 {
+		t.Fatalf("Count = %d, want 3", st.Count)
+	}
+	if st.LastTime != 99 {
+		t.Fatalf("LastTime 应取最近一条消息的时间，得到 %d", st.LastTime)
+	}
+	if st.SelfID != "bot-b" {
+		t.Fatalf("SelfID 应取最近一条带账号的消息，得到 %q", st.SelfID)
+	}
+}
+
+func TestStats环形覆盖(t *testing.T) {
+	gc := &GroupMsgCache{
+		buf:     make([]Message, 2),
+		seenSet: make(map[seenKey]struct{}, 2),
+	}
+	gc.Add(Message{MessageID: 1, SelfID: "bot-a", Content: "a", Time: 1})
+	gc.Add(Message{MessageID: 2, SelfID: "bot-a", Content: "b", Time: 2})
+	gc.Add(Message{MessageID: 3, SelfID: "bot-b", Content: "c", Time: 3})
+
+	st := gc.Stats()
+	if st.Count != 2 || st.LastTime != 3 || st.SelfID != "bot-b" {
+		t.Fatalf("环形覆盖后 Stats = %+v", st)
+	}
+}

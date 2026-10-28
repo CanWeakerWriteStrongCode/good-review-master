@@ -20,15 +20,17 @@ import (
 
 // Server Web 管理面板服务器
 type Server struct {
-	cfg          config.Snapshot
-	engine       *gin.Engine
-	httpServer   *http.Server
-	obClient     *onebot.Client
-	groupNames   map[string]string // groupID → groupName 缓存
-	groupNamesMu sync.RWMutex
-	loginLimiter *loginRateLimiter
-	draining     atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
-	startedAt    time.Time   // 供 /api/diagnostics 报运行时长
+	cfg            config.Snapshot
+	engine         *gin.Engine
+	httpServer     *http.Server
+	obClient       *onebot.Client
+	groupNames     map[string]string // groupID → groupName 缓存
+	groupNamesMu   sync.RWMutex
+	accountNames   map[string]string // selfID → 机器人昵称缓存（多账号面板用）
+	accountNamesMu sync.RWMutex
+	loginLimiter   *loginRateLimiter
+	draining       atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
+	startedAt      time.Time   // 供 /api/diagnostics 报运行时长
 }
 
 // New 创建 Web 服务器实例。
@@ -62,6 +64,7 @@ func New(cfg config.Snapshot, obClient *onebot.Client) *Server {
 		engine:       engine,
 		obClient:     obClient,
 		groupNames:   make(map[string]string),
+		accountNames: make(map[string]string),
 		loginLimiter: newLoginRateLimiter(),
 		startedAt:    time.Now(),
 	}
@@ -75,9 +78,9 @@ func New(cfg config.Snapshot, obClient *onebot.Client) *Server {
 	apiGroup.POST("/login", handleLogin(startup.WebUsername, startup.WebPassword, startup.JWTSecret, s.loginLimiter))
 	apiGroup.Use(AuthMiddleware(startup.JWTSecret))
 	{
-		apiGroup.GET("/status", handleAPIStatus(cfg))
-		apiGroup.GET("/groups", handleAPIGroups(cfg, obClient, s.groupNames, &s.groupNamesMu))
-		apiGroup.GET("/groups/:id", handleAPIMessages(s.groupNames, &s.groupNamesMu))
+		apiGroup.GET("/status", s.handleAPIStatus())
+		apiGroup.GET("/groups", s.handleAPIGroups())
+		apiGroup.GET("/groups/:id", s.handleAPIMessages())
 		apiGroup.POST("/logout", handleLogout())
 		// 运行时诊断：恒定可用，不受 enable_pprof 影响。
 		// goroutine 概览走 runtime.Stack 自取，没有采样式开销，没必要跟着 pprof 一起关。

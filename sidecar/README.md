@@ -105,6 +105,11 @@ runtime:
 时消息会继续走到 AstrBot 自己的 Agent，因此两边不会互相抢消息。两个账号同群、同昵称时，
 出站动作会带 `self_id`，插件按它选择账号，不会把回复从另一个账号发出去。
 
+同一物理群里的两个账号会各自收到一条事件，所以 `mentioned` 必须按账号分别判定：只有
+`mentions` 里标了 `is_you`，或消息里命中该账号已学到的真实 openid 才算被 @。AstrBot 在拿不到
+mention 元数据时伪造的 `At(qq=qq_official)` 不作为证据，否则没被 @ 的账号也会执行指令。
+机器人自己发出的 `message_sent` 消息默认不回灌到 Go 的上下文。
+
 真正的 @ 触发由插件写入事件的 `mentioned` 字段决定，不依赖 `[CQ:at,qq=...]` 的号码匹配；
 QQ 官方机器人只有 `openid`，没有数字 QQ 号，因此配置里也不再需要 `bot.qq`。
 
@@ -120,7 +125,7 @@ QQ 官方机器人只有 `openid`，没有数字 QQ 号，因此配置里也不�
 | `message_id` | 各平台消息 ID 稳定哈希成 int64 |
 | `self_id` | 机器人稳定 ID（QQ 官方是 openid）；适配器给占位值时由插件替换成学到的 openid |
 | `display_message` | **扩展**：给缓存和大模型看的统一文本，所有 @ 已翻译成 `@昵称(openid)` |
-| `mentioned` | **扩展**：是否 @ 了机器人（由 AstrBot 计算，并额外比对机器人的 openid / `<@openid>`） |
+| `mentioned` | **扩展**：是否真的 @ 了本账号（要求 `mentions.is_you` 或命中已学到的真实 openid；占位值 `qq_official` 不算） |
 
 标准字段之外的信息不再塞进事件：
 

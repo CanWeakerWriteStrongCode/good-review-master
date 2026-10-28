@@ -3,7 +3,7 @@
     <!-- Bot 状态栏 -->
     <view class="status-bar" v-if="store.botStatus">
       <text class="status-text">
-        {{ store.botStatus.bot_nickname || 'Bot' }} |
+        {{ store.botStatus.account_count }} 个账号 |
         监控 {{ store.botStatus.group_count }} 个群 |
         API: {{ store.botStatus.api_key }}
       </text>
@@ -13,41 +13,62 @@
       </view>
     </view>
 
-    <!-- 群列表 -->
-    <view class="group-list">
-      <view
-        class="group-card"
-        v-for="group in store.groups"
-        :key="group.group_id"
-        @click="goMessages(group.group_id)"
-      >
-        <view class="group-card-header">
-          <view class="group-title">
-            <text class="group-name">{{ group.group_name || group.group_id }}</text>
-            <text class="group-id-sub">{{ group.group_id }}</text>
+    <!-- 群列表：按接收账号分组 -->
+    <view
+      class="account-section"
+      v-for="section in store.accountSections"
+      :key="section.self_id || '__unassigned__'"
+    >
+      <view class="account-header">
+        <view class="account-title">
+          <text class="account-name">{{ section.displayName }}</text>
+          <text
+            class="account-id"
+            v-if="section.self_id && section.self_id !== 'qq_official' && section.self_id !== 'unknown_selfid'"
+          >{{ section.self_id }}</text>
+        </view>
+        <text class="account-meta">{{ section.group_count }} 群 · {{ section.message_count }} 条</text>
+      </view>
+
+      <view class="group-list">
+        <view
+          class="group-card"
+          v-for="group in section.groups"
+          :key="group.group_id"
+          @click="goMessages(group.group_id)"
+        >
+          <view class="group-card-header">
+            <view class="group-title">
+              <text class="group-name">{{ group.group_name || group.group_id }}</text>
+              <text class="group-id-sub">{{ group.group_id }}</text>
+            </view>
+            <view class="group-badge" :class="group.cached ? 'badge-active' : 'badge-empty'">
+              {{ group.cached ? '已缓存' : '无数据' }}
+            </view>
           </view>
-          <view class="group-badge" :class="group.cached ? 'badge-active' : 'badge-empty'">
-            {{ group.cached ? '已缓存' : '无数据' }}
+          <view class="group-card-body" v-if="group.cached">
+            <view class="group-stat">
+              <text class="stat-label">消息数</text>
+              <text class="stat-value">{{ group.message_count }}</text>
+            </view>
+            <view class="group-stat">
+              <text class="stat-label">最近活动</text>
+              <text class="stat-value stat-time">{{ group.last_activity || '-' }}</text>
+            </view>
+          </view>
+          <view class="group-card-body" v-else>
+            <text class="no-data">等待接收消息...</text>
           </view>
         </view>
-        <view class="group-card-body" v-if="group.cached">
-          <view class="group-stat">
-            <text class="stat-label">消息数</text>
-            <text class="stat-value">{{ group.message_count }}</text>
-          </view>
-          <view class="group-stat">
-            <text class="stat-label">最近活动</text>
-            <text class="stat-value stat-time">{{ group.last_activity || '-' }}</text>
-          </view>
-        </view>
-        <view class="group-card-body" v-else>
-          <text class="no-data">等待轮询获取数据...</text>
-        </view>
+      </view>
+
+      <view class="account-empty" v-if="section.groups.length === 0">
+        <text>该账号暂无群数据</text>
       </view>
     </view>
 
     <!-- 空态 -->
-    <view class="empty" v-if="!store.loading && store.groups.length === 0">
+    <view class="empty" v-if="!store.loading && store.accountSections.length === 0">
       <text>暂未配置群组，请在 config.yaml 中设置 allow_groups</text>
     </view>
 
@@ -131,6 +152,46 @@ function goDiagnostics() {
   padding: 4px 12px;
   border: 1px solid #e74c3c;
   border-radius: 6px;
+}
+
+/* 账号分组 */
+.account-section {
+  margin-bottom: 20px;
+}
+.account-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 2px 4px 8px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #e8e8ee;
+}
+.account-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.account-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+.account-id {
+  font-size: 11px;
+  color: #aaa;
+  word-break: break-all;
+}
+.account-meta {
+  font-size: 12px;
+  color: #888;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+.account-empty {
+  text-align: center;
+  padding: 18px 0;
+  color: #bbb;
+  font-size: 13px;
 }
 
 /* 群卡片 */

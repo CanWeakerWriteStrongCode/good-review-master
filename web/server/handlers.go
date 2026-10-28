@@ -4,13 +4,11 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"sort"
-	"sync"
 	"time"
 
 	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/logutil"
-	"good-review-master/onebot"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,6 +23,8 @@ type APIResponse struct {
 type GroupDetail struct {
 	GroupID      string `json:"group_id"`
 	GroupName    string `json:"group_name"`
+	SelfID       string `json:"self_id"`      // 接收该群的机器人账号；空=无法归属
+	AccountName  string `json:"account_name"` // 账号昵称；解析不到时为空
 	MessageCount int    `json:"message_count"`
 	LastActivity string `json:"last_activity"`
 	Cached       bool   `json:"cached"`
@@ -35,6 +35,7 @@ type BotStatus struct {
 	BotNickname    string `json:"bot_nickname"`
 	APIKey         string `json:"api_key"`
 	GroupCount     int    `json:"group_count"`
+	AccountCount   int    `json:"account_count"`
 	AllowAllGroups bool   `json:"allow_all_groups"`
 }
 
@@ -49,63 +50,23 @@ func panelGroupIDs(cfg *config.Config) []string {
 	return ids
 }
 
-func handleAPIGroups(snapshot config.Snapshot, obClient *onebot.Client, groupNames map[string]string, groupNamesMu *sync.RWMutex) gin.HandlerFunc {
+func (s *Server) handleAPIGroups() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 一个请求内取一次快照：群列表与 bot 信息必须来自同一份配置，
 		// 否则热更新插在中间会返回"群列表是新的、群数量是旧的"这种自相矛盾的响应
-		cfg := snapshot()
-		cachedIDs := cache.ListGroupIDs()
-		cachedSet := make(map[string]struct{}, len(cachedIDs))
-		for _, id := range cachedIDs {
-			cachedSet[id] = struct{}{}
-		}
-
-		groupIDs := panelGroupIDs(cfg)
-		groups := make([]GroupDetail, 0, len(groupIDs))
-		for _, groupID := range groupIDs {
-			info := GroupDetail{
-				GroupID: groupID,
-				Cached:  false,
-			}
-			// 获取群名称（优先用缓存，否则调 AstrBot 桥接 API）
-			groupNamesMu.RLock()
-			name, ok := groupNames[groupID]
-			groupNamesMu.RUnlock()
-			if !ok && obClient != nil {
-				gi, err := obClient.GetGroupInfo(groupID)
-				if err == nil && gi.GroupName != "" {
-					name = gi.GroupName
-					groupNamesMu.Lock()
-					groupNames[groupID] = name
-					groupNamesMu.Unlock()
-				}
-			}
-			info.GroupName = name
-			if _, ok := cachedSet[groupID]; ok {
-				info.Cached = true
-				gc := cache.GetCache(groupID)
-				if gc != nil {
-					info.MessageCount = gc.Len()
-					msgs := gc.GetAll()
-					if len(msgs) > 0 {
-						lastTime := msgs[len(msgs)-1].Time
-						if lastTime > 0 {
-							info.LastActivity = formatTimestamp(lastTime)
-						}
-					}
-				}
-			}
-			groups = append(groups, info)
-		}
+		cfg := s.cfg()
+		groups, accounts := s.collectGroupDetails(cfg)
 
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: gin.H{
-				"groups": groups,
+				"groups":   groups,
+				"accounts": accounts,
 				"bot_info": BotStatus{
 					BotNickname:    cfg.BotNickname,
 					APIKey:         cfg.MaskedAPIKey(),
-					GroupCount:     len(groupIDs),
+					GroupCount:     len(groups),
+					AccountCount:   len(accounts),
 					AllowAllGroups: cfg.AllowsAllGroups(),
 				},
 			},
@@ -116,48 +77,54 @@ func handleAPIGroups(snapshot config.Snapshot, obClient *onebot.Client, groupNam
 // handleAPIMessages 返回指定群的缓存消息。
 // groupNames 由 handleAPIGroups 与 debug inject/reset 并发读写，读也要持锁——
 // 之前这里直读 map，是已知的数据竞争点。
-func handleAPIMessages(groupNames map[string]string, groupNamesMu *sync.RWMutex) gin.HandlerFunc {
+func (s *Server) handleAPIMessages() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID := c.Param("id")
-		groupNamesMu.RLock()
-		groupName := groupNames[groupID]
-		groupNamesMu.RUnlock()
+		s.groupNamesMu.RLock()
+		groupName := s.groupNames[groupID]
+		s.groupNamesMu.RUnlock()
 
 		gc := cache.GetCache(groupID)
 		if gc == nil {
 			c.JSON(http.StatusOK, APIResponse{
 				Code: 200,
 				Data: gin.H{
-					"group_id":   groupID,
-					"group_name": groupName,
-					"messages":   []cache.Message{},
-					"empty":      true,
+					"group_id":     groupID,
+					"group_name":   groupName,
+					"self_id":      "",
+					"account_name": "",
+					"messages":     []cache.Message{},
+					"empty":        true,
 				},
 			})
 			return
 		}
 
+		stats := gc.Stats()
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: gin.H{
-				"group_id":   groupID,
-				"group_name": groupName,
-				"messages":   gc.GetAll(),
-				"empty":      gc.Len() == 0,
+				"group_id":     groupID,
+				"group_name":   groupName,
+				"self_id":      stats.SelfID,
+				"account_name": s.accountName(stats.SelfID),
+				"messages":     gc.GetAll(),
+				"empty":        stats.Count == 0,
 			},
 		})
 	}
 }
 
-func handleAPIStatus(snapshot config.Snapshot) gin.HandlerFunc {
+func (s *Server) handleAPIStatus() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cfg := snapshot()
+		cfg := s.cfg()
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: BotStatus{
 				BotNickname:    cfg.BotNickname,
 				APIKey:         cfg.MaskedAPIKey(),
 				GroupCount:     len(panelGroupIDs(cfg)),
+				AccountCount:   len(accountIDs(cfg)),
 				AllowAllGroups: cfg.AllowsAllGroups(),
 			},
 		})

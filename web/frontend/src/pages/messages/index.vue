@@ -2,7 +2,10 @@
   <view class="page">
     <!-- 群信息头 -->
     <view class="msg-header">
-      <text class="header-group-id">{{ store.groupName || '群' }}（{{ store.groupId }}）</text>
+      <view class="header-main">
+        <text class="header-group-id">{{ store.groupName || '群' }}（{{ store.groupId }}）</text>
+        <text class="header-account">接收账号：{{ store.accountName || store.selfId || '未知' }}</text>
+      </view>
       <text class="header-count" v-if="!store.empty">{{ store.messages.length }} 条消息</text>
     </view>
 
@@ -76,14 +79,28 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
 }
+.header-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 .header-group-id {
   color: #fff;
   font-size: 16px;
   font-weight: 600;
+  word-break: break-all;
+}
+.header-account {
+  color: #aab;
+  font-size: 12px;
+  margin-top: 2px;
+  word-break: break-all;
 }
 .header-count {
   color: #aab;
   font-size: 13px;
+  flex-shrink: 0;
+  margin-left: 12px;
 }
 
 /* 消息列表 */

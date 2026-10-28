@@ -60,11 +60,20 @@ func (e Event) ReplyID() string {
 	return ""
 }
 
+// IsSelfIDPlaceholder 判断适配器是否还没学到机器人的真实身份。
+// QQ 官方在拿不到 mention 元数据时会用这些占位值，不能当成账号 ID。
+func IsSelfIDPlaceholder(selfID string) bool {
+	switch selfID {
+	case "", "qq_official", "unknown_selfid":
+		return true
+	}
+	return false
+}
+
 // BotID 返回机器人的稳定 ID。
 // "qq_official" / "unknown_selfid" 是适配器的占位值，不代表任何真实身份。
 func (e Event) BotID() string {
-	switch e.SelfID {
-	case "", "qq_official", "unknown_selfid":
+	if IsSelfIDPlaceholder(e.SelfID) {
 		return ""
 	}
 	return e.SelfID
@@ -111,6 +120,22 @@ type HistoryMsg struct {
 type LoginInfo struct {
 	UserID   int64  `json:"user_id"`
 	Nickname string `json:"nickname"`
+	// OpenID 是 QQ 官方机器人的账号标识；aiocqhttp 不返回该字段。
+	OpenID string `json:"openid,omitempty"`
+	// PlatformID 是桥接插件解析出的 AstrBot 平台实例 ID，仅用于排障。
+	PlatformID string `json:"platform_id,omitempty"`
+}
+
+// Matches 判断返回的登录信息是否确实属于请求的账号。
+// QQ 官方用 openid 标识账号；没有 openid 时（aiocqhttp）回落到数字 user_id。
+func (l LoginInfo) Matches(selfID string) bool {
+	if selfID == "" {
+		return true
+	}
+	if l.OpenID != "" {
+		return l.OpenID == selfID
+	}
+	return strconv.FormatInt(l.UserID, 10) == selfID
 }
 
 // GroupInfo get_group_info 响应。

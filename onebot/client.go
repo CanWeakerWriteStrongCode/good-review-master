@@ -1,6 +1,7 @@
 package onebot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -36,11 +37,29 @@ func NewClient(httpAPI, accessToken string) *Client {
 	}
 }
 
-// GetLoginInfo 获取机器人登录信息（QQ号、昵称）
+// GetLoginInfo 获取当前机器人登录信息（QQ号、昵称）
 func (ob *Client) GetLoginInfo() (*LoginInfo, error) {
-	logutil.Info("调用 OneBot API", "action", "get_login_info")
+	return ob.GetLoginInfoFor("")
+}
+
+// GetLoginInfoFor 查询指定账号的登录信息。
+//
+// 多账号部署时 self_id 用来让桥接插件定位到正确的平台实例；空串保持原来的
+// "当前账号" 语义。面板按账号展示昵称时用它，不传 self_id 会拿到错误的账号。
+// 面板是同步调用，给一个短超时：插件挂住时不能把 /api/groups 一起拖住。
+func (ob *Client) GetLoginInfoFor(selfID string) (*LoginInfo, error) {
+	logutil.Info("调用 OneBot API", "action", "get_login_info", "self", selfID)
+	body := map[string]any{}
+	if selfID != "" {
+		body["self_id"] = selfID
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	var result actionResponse[LoginInfo]
 	resp, err := ob.restyClient.R().
+		SetContext(ctx).
+		SetBody(body).
 		SetResult(&result).
 		Post("/get_login_info")
 	if err != nil {
@@ -52,7 +71,8 @@ func (ob *Client) GetLoginInfo() (*LoginInfo, error) {
 	if err := result.err("get_login_info"); err != nil {
 		return nil, err
 	}
-	logutil.Info("get_login_info 成功", "nickname", result.Data.Nickname, "user_id", result.Data.UserID)
+	logutil.Info("get_login_info 成功", "nickname", result.Data.Nickname,
+		"user_id", result.Data.UserID, "openid", result.Data.OpenID, "self", selfID)
 	return &result.Data, nil
 }
 

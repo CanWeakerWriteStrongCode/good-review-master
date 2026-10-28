@@ -78,6 +78,52 @@ func TestGetLoginInfoRetcodeError(t *testing.T) {
 	}
 }
 
+func TestGetLoginInfoFor发送selfID并解析openid(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body["self_id"] != "OPENID_A" {
+			t.Errorf("self_id = %v", body["self_id"])
+		}
+		writeAction(t, w, map[string]any{
+			"status": "ok", "retcode": 0,
+			"data": map[string]any{
+				"user_id": 0, "nickname": "bot-a",
+				"openid": "OPENID_A", "platform_id": "instance-a",
+			},
+		})
+	})
+
+	info, err := client.GetLoginInfoFor("OPENID_A")
+	if err != nil {
+		t.Fatalf("GetLoginInfoFor: %v", err)
+	}
+	if info.Nickname != "bot-a" || info.OpenID != "OPENID_A" || info.PlatformID != "instance-a" {
+		t.Fatalf("info = %+v", info)
+	}
+	if !info.Matches("OPENID_A") {
+		t.Fatal("openid 应与请求账号匹配")
+	}
+	if info.Matches("OPENID_B") {
+		t.Fatal("openid 不应匹配另一个账号")
+	}
+}
+
+func TestLoginInfoMatches回落数字ID(t *testing.T) {
+	aiocqhttp := LoginInfo{UserID: 10001}
+	if !aiocqhttp.Matches("10001") {
+		t.Fatal("没有 openid 时应按数字 user_id 匹配")
+	}
+	if aiocqhttp.Matches("10002") {
+		t.Fatal("数字 user_id 不匹配时不应通过")
+	}
+	if !(LoginInfo{}).Matches("") {
+		t.Fatal("空 selfID 表示不校验身份")
+	}
+}
+
 func TestFetchGroupMsgHistory(t *testing.T) {
 	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
