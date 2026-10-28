@@ -17,6 +17,7 @@ import (
 	"good-review-master/router"
 	"good-review-master/telemetry"
 	webserver "good-review-master/web/server"
+	"good-review-master/workspace"
 )
 
 // 本文件是组合根的 provider 声明：**每个节点只说"我由什么造出来"**，
@@ -84,9 +85,29 @@ type injectorInputs struct {
 // `github.com/google/wire` 这个包不会被链进生产二进制，包级 var 初始化也少一次
 // （wire.NewSet/Bind/FieldsOf 在运行期都是空操作，这个仓库的约定是启动期零副作用）。
 
-// providePromptConfig 加载提示词（系统文件 + 自定义文件合并）。
-func providePromptConfig(paths promptPaths) (*config.PromptConfig, error) {
-	return config.LoadPromptConfig(paths.System, paths.Custom)
+// provideWorkspaces 按配置构造每个机器人账号的工作空间。
+//
+// 提示词文件按工作空间目录解析（不存在则回退全局），因此多账号可以各自维护
+// 指令与人格；单账号/旧配置时等价于原来的单份 PromptConfig。
+func provideWorkspaces(cfg config.Snapshot, paths promptPaths, llmClient llm.Client,
+	obClient *onebot.Client, mcp *mcpclient.Manager, ctx context.Context) (*workspace.Manager, error) {
+	return workspace.New(cfg, paths.System, paths.Custom, llmClient, obClient, mcp, ctx)
+}
+
+// provideDefaultRouter 暴露默认工作空间的 Router 给 debug 触发与关闭等待。
+func provideDefaultRouter(manager *workspace.Manager) *router.Router {
+	if def := manager.Default(); def != nil {
+		return def.Router
+	}
+	return nil
+}
+
+// provideDefaultPrompt 暴露默认工作空间的提示词（保持 App.Prompt 字段语义）。
+func provideDefaultPrompt(manager *workspace.Manager) *config.PromptConfig {
+	if def := manager.Default(); def != nil {
+		return def.Prompt
+	}
+	return nil
 }
 
 // provideOneBot 建 OneBot 客户端。
@@ -180,11 +201,11 @@ func provideConfigSnapshot(target *store.Store[config.Config]) config.Snapshot {
 //
 // 条件构造只能放进 provider：Wire 没有"按运行期条件二选一"的表达能力。
 // 返回 nil 是它的惯用写法——下游要么判空，要么像 App 那样把 nil 当作"没启用"。
-func provideWebServer(cfg config.Snapshot, obClient *onebot.Client) *webserver.Server {
+func provideWebServer(cfg config.Snapshot, obClient *onebot.Client, workspaces *workspace.Manager) *webserver.Server {
 	if cfg().WebPort <= 0 {
 		return nil
 	}
-	return webserver.New(cfg, obClient)
+	return webserver.New(cfg, obClient, workspaces)
 }
 
 // provideMetricsServer 建指标端点；metrics_addr 配成 off 时返回 nil。
@@ -215,12 +236,11 @@ func provideConfigInformer(sources config.Sources, target *store.Store[config.Co
 }
 
 // providePromptObserver 建提示词监听器。
-// 它只观察"文件变了"，不另存快照——提示词数据由 PromptConfig 自己持有并原子发布。
-func providePromptObserver(paths promptPaths, promptCfg *config.PromptConfig,
-	messageRouter *router.Router) *store.Observer {
+// 监听**全部工作空间**的提示词文件：A 账号改了指令，不能等 B 账号的文件也变化。
+func providePromptObserver(manager *workspace.Manager) *store.Observer {
 	return store.NewObserver(
-		store.NewFilePoller(configWatchInterval, paths.System, paths.Custom),
-		func() { reloadPrompts(promptCfg, messageRouter) },
+		store.NewFilePoller(configWatchInterval, manager.PromptPaths()...),
+		manager.ReloadPrompts,
 	)
 }
 
@@ -242,6 +262,7 @@ func provideApp(
 	obClient *onebot.Client,
 	mcpManager *mcpclient.Manager,
 	builtinMCP *mcpserver.Server,
+	workspaces *workspace.Manager,
 	messageRouter *router.Router,
 	messageBot *bot.Bot,
 	imServer *im.Server,
@@ -257,6 +278,7 @@ func provideApp(
 		OneBot:         obClient,
 		MCP:            mcpManager,
 		BuiltinMCP:     builtinMCP,
+		Workspaces:     workspaces,
 		Router:         messageRouter,
 		Bot:            messageBot,
 		IM:             imServer,

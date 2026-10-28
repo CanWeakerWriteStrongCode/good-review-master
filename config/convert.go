@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"time"
 
 	"good-review-master/logutil"
@@ -31,6 +32,7 @@ func assemble(sections *sections) *Config {
 		AstrBotAccessToken: astrBotToken,
 		AllowGroups:        parseCommaList(sections.Bot.AllowGroups),
 		AllowSelfIDs:       parseCommaList(sections.Bot.AllowSelfIDs),
+		Workspaces:         convertWorkspaces(sections.Bot.Workspaces),
 		MaxCacheMsg:        sections.Runtime.MaxCacheMsg,
 		LLMSendCount:       sections.Runtime.LLMSendCount,
 		LLMTimeout:         time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
@@ -77,6 +79,29 @@ func assemble(sections *sections) *Config {
 			Servers:           servers,
 		},
 	}
+}
+
+// convertWorkspaces 把 YAML 形态的工作空间声明转成运行期形态。
+func convertWorkspaces(entries []workspaceSection) []WorkspaceConf {
+	out := make([]WorkspaceConf, 0, len(entries))
+	for _, entry := range entries {
+		selfIDs := make([]string, 0, len(entry.SelfIDs))
+		for _, id := range entry.SelfIDs {
+			if id = strings.TrimSpace(id); id != "" && id != "*" {
+				selfIDs = append(selfIDs, id)
+			}
+		}
+		out = append(out, WorkspaceConf{
+			ID:          strings.TrimSpace(entry.ID),
+			Name:        strings.TrimSpace(entry.Name),
+			PlatformID:  strings.TrimSpace(entry.PlatformID),
+			SelfIDs:     selfIDs,
+			Nickname:    strings.TrimSpace(entry.Nickname),
+			AllowGroups: parseCommaList(entry.AllowGroups),
+			PromptDir:   strings.TrimSpace(entry.PromptDir),
+		})
+	}
+	return out
 }
 
 // resolveSecret 结算一个密钥的值：secret.yaml 优先，缺失则回退 config.yaml 的旧位置。

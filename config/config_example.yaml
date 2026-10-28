@@ -20,7 +20,29 @@ bot:
   # 允许 Go 接管的机器人账号（OneBot self_id，逗号分隔）。多账号同时运行时，
   # 不在列表里的账号会被 Go 忽略，桥接插件会把消息交还给 AstrBot 自己的 Agent。
   # 填 "*" 表示接管所有账号；留空表示一个都不接管。
+  # 配置了下面的 workspaces 后，接管范围以各工作空间声明的 self_ids/platform_id 为准，
+  # 本项留空不再表示"不接管"。
   allow_self_ids: "*"
+
+  # ===== 多机器人账号工作空间（可选） =====
+  # 不写时等价于一个隐式 default 工作空间，行为与单账号版本完全一致。
+  # 每个工作空间有自己的缓存、群人格、指令表与提示词，互不影响。
+  # workspaces:
+  #   - id: "haoping"                       # 必填：稳定标识（字母/数字/_/-），用于目录、URL、日志
+  #     name: "好评大师的小助理"              # 可选：面板展示名，默认取 nickname
+  #     platform_id: "好评大师的小助理"        # 必填：AstrBot 平台实例 ID（配置里的 id，唯一）
+  #     self_ids:                           # 可选：该账号的 openid / QQ 号，用于归属兜底
+  #       - "0C2F9A2A..."
+  #     nickname: "好评大师的小助理"          # 可选：覆盖桥接查询到的昵称
+  #     allow_groups: "group_openid_A"      # 可选：覆盖全局群白名单（不合并）
+  #     prompt_dir: "workspaces/haoping"    # 可选：默认 workspaces/<id>
+  #
+  #   - id: "bushi"
+  #     name: "不是好评大师"
+  #     platform_id: "不是好评大师"
+  #     self_ids:
+  #       - "3319D7..."
+  #     prompt_dir: "workspaces/bushi"
 
 # ===== 运行时参数 =====
 runtime:

@@ -115,7 +115,7 @@ QQ 官方机器人只有 `openid`，没有数字 QQ 号，因此配置里也不�
 
 ## 6. 事件字段
 
-事件本身是 OneBot 11 群消息事件，只保留两个扩展字段：
+事件本身是 OneBot 11 群消息事件，只保留三个扩展字段：
 
 | 字段 | 说明 |
 |---|---|
@@ -124,6 +124,7 @@ QQ 官方机器人只有 `openid`，没有数字 QQ 号，因此配置里也不�
 | `sender` | 标准发送者对象：`{"nickname": "...", "card": "..."}` |
 | `message_id` | 各平台消息 ID 稳定哈希成 int64 |
 | `self_id` | 机器人稳定 ID（QQ 官方是 openid）；适配器给占位值时由插件替换成学到的 openid |
+| `platform_id` | **扩展**：AstrBot 平台实例 ID（配置里的 `id`），每个实例唯一且恒定；Go 用它做多账号工作空间归属的主键 |
 | `display_message` | **扩展**：给缓存和大模型看的统一文本，所有 @ 已翻译成 `@昵称(openid)` |
 | `mentioned` | **扩展**：是否真的 @ 了本账号（要求 `mentions.is_you` 或命中已学到的真实 openid；占位值 `qq_official` 不算） |
 

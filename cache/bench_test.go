@@ -16,7 +16,7 @@ import (
 func BenchmarkAdd(b *testing.B) {
 	gc := &GroupMsgCache{
 		buf:     make([]Message, 1024),
-		seenSet: make(map[seenKey]struct{}, 1024),
+		seenSet: make(map[int64]struct{}, 1024),
 	}
 	msg := Message{MessageID: 1, GroupID: "1", UserID: "1", Nickname: "张三", Content: "今天好累"}
 
@@ -34,7 +34,7 @@ func BenchmarkAdd(b *testing.B) {
 func BenchmarkGetAll(b *testing.B) {
 	gc := &GroupMsgCache{
 		buf:     make([]Message, 20),
-		seenSet: make(map[seenKey]struct{}, 20),
+		seenSet: make(map[int64]struct{}, 20),
 	}
 	for i := 0; i < 20; i++ {
 		gc.Add(Message{MessageID: int64(i + 1), Content: "消息" + strconv.Itoa(i)})
@@ -51,7 +51,7 @@ func BenchmarkGetAll(b *testing.B) {
 func BenchmarkHasSeen(b *testing.B) {
 	gc := &GroupMsgCache{
 		buf:     make([]Message, 1024),
-		seenSet: make(map[seenKey]struct{}, 1024),
+		seenSet: make(map[int64]struct{}, 1024),
 	}
 	for i := 0; i < 512; i++ {
 		gc.Add(Message{MessageID: int64(i + 1)})

@@ -31,47 +31,44 @@ func TestBuildChatLog保留字符串UserID(t *testing.T) {
 	}
 }
 
-// 同一个群被两个机器人账号同时收消息时，同一条消息只保留一份；
-// 但同一个账号自己的 message_id 去重要单独成立。
-func Test跨账号重复消息只存一份(t *testing.T) {
+// 每个工作空间一个 Store：同一个物理群在两个账号下各有一份缓存，互不影响。
+func Test不同Store的群缓存互相隔离(t *testing.T) {
+	a, b := NewStore(), NewStore()
+	a.GetGroupCache("G", 8).Add(Message{MessageID: 1, SelfID: "bot-a", Content: "a", Time: 1})
+	b.GetGroupCache("G", 8).Add(Message{MessageID: 1, SelfID: "bot-b", Content: "b", Time: 1})
+
+	if n := a.GetGroupCache("G", 8).Len(); n != 1 {
+		t.Fatalf("账号 A 缓存条数 = %d, want 1", n)
+	}
+	if n := b.GetGroupCache("G", 8).Len(); n != 1 {
+		t.Fatalf("账号 B 缓存条数 = %d, want 1", n)
+	}
+	if !a.GetGroupCache("G", 8).HasSeen("bot-a", 1) || !b.GetGroupCache("G", 8).HasSeen("bot-b", 1) {
+		t.Fatal("两个账号应各自记住自己的消息")
+	}
+}
+
+// 同一个 Store 内 message_id 仍然去重（重连重发 / 回填与推送重叠）。
+func Test同Store内消息去重(t *testing.T) {
 	gc := &GroupMsgCache{
 		buf:     make([]Message, 8),
-		seenSet: make(map[seenKey]struct{}, 8),
+		seenSet: make(map[int64]struct{}, 8),
 	}
-	base := Message{
-		GroupID:  "G",
-		UserID:   "U",
-		Nickname: "张三",
-		Content:  "今天好累",
-		Time:     1700000000,
-	}
-	first := base
-	first.SelfID = "bot-a"
-	first.MessageID = 1
-	second := base
-	second.SelfID = "bot-b"
-	second.MessageID = 2
-	gc.Add(first)
-	gc.Add(second)
+	gc.Add(Message{MessageID: 1, SelfID: "bot-a", Content: "a", Time: 1})
+	gc.Add(Message{MessageID: 1, SelfID: "bot-a", Content: "a", Time: 1})
 
 	if got := gc.Len(); got != 1 {
-		t.Fatalf("同一消息被两个账号收到，应只缓存一条，得到 %d", got)
+		t.Fatalf("重复 message_id 应只缓存一条，得到 %d", got)
 	}
 	if !gc.HasSeen("bot-a", 1) {
-		t.Fatal("bot-a 的消息应标记为已处理")
-	}
-	if gc.HasSeen("bot-b", 2) {
-		t.Fatal("被跨账号去重掉的消息不应算 bot-b 已处理")
-	}
-	if gc.HasSeen("bot-a", 2) {
-		t.Fatal("seen 必须按 (self_id, message_id) 区分")
+		t.Fatal("消息应标记为已处理")
 	}
 }
 
 func TestStats返回条数最近时间与账号(t *testing.T) {
 	gc := &GroupMsgCache{
 		buf:     make([]Message, 4),
-		seenSet: make(map[seenKey]struct{}, 4),
+		seenSet: make(map[int64]struct{}, 4),
 	}
 	if st := gc.Stats(); st.Count != 0 || st.LastTime != 0 || st.SelfID != "" {
 		t.Fatalf("空缓存应返回零值，得到 %+v", st)
@@ -96,7 +93,7 @@ func TestStats返回条数最近时间与账号(t *testing.T) {
 func TestStats环形覆盖(t *testing.T) {
 	gc := &GroupMsgCache{
 		buf:     make([]Message, 2),
-		seenSet: make(map[seenKey]struct{}, 2),
+		seenSet: make(map[int64]struct{}, 2),
 	}
 	gc.Add(Message{MessageID: 1, SelfID: "bot-a", Content: "a", Time: 1})
 	gc.Add(Message{MessageID: 2, SelfID: "bot-a", Content: "b", Time: 2})

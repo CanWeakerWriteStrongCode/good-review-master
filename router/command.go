@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"good-review-master/async"
+	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/llm"
 	"good-review-master/onebot"
@@ -113,6 +114,12 @@ type Router struct {
 	mcp        MCPProvider // MCP 工具提供者，未启用时为 nil
 	starter    *async.Group
 
+	// store 是本工作空间的缓存与锚点。默认指向进程级默认 Store（单账号测试、
+	// 旧调用点）；多工作空间部署由 workspace 包注入各自的 Store。
+	store *cache.Store
+	// workspace 是工作空间 ID，只用于指标与日志标签（每个 Router 一个工作空间）。
+	workspace string
+
 	// groupPersona 各群当前人格（#切换人格/#取消人格 维护，纯 @ 聊天时生效）。
 	// 内存态，重启清空，与 cache/锚点一致。同一分发路径读写，加锁防未来并发扩展。
 	groupPersonaMu sync.RWMutex
@@ -128,6 +135,7 @@ func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient
 		promptCfg:    promptCfg,
 		appCfg:       appCfg,
 		mcp:          mcpProvider,
+		store:        cache.DefaultStore(),
 		starter:      async.New(shutdownCtx),
 		groupPersona: make(map[string]*groupPersonaBinding),
 	}
@@ -138,6 +146,27 @@ func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient
 	r.Rebuild()
 	return r
 }
+
+// SetStore 注入本工作空间的缓存与锚点。必须在开始处理消息前调用。
+func (r *Router) SetStore(store *cache.Store) {
+	if store != nil {
+		r.store = store
+	}
+}
+
+// SetWorkspace 设置工作空间 ID，只影响指标与日志标签。
+func (r *Router) SetWorkspace(id string) { r.workspace = id }
+
+// storeOr 返回注入的 Store；未注入时退回进程级默认 Store。
+func (r *Router) cacheStore() *cache.Store {
+	if r.store == nil {
+		return cache.DefaultStore()
+	}
+	return r.store
+}
+
+// WorkspaceID 返回本 Router 所属工作空间（测试与面板用）。
+func (r *Router) WorkspaceID() string { return r.workspace }
 
 // register 注册内部/系统指令（仅启动期调用，之后 internalCommands 只读）
 func (r *Router) register(rt Command) {

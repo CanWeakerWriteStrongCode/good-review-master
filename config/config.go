@@ -37,6 +37,56 @@ type Config struct {
 	OTLPEndpoint       string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
 	LLMConfig          LLMConf
 	MCPConfig          MCPConf
+	Workspaces         []WorkspaceConf // 多账号工作空间；空 = 隐式 default（兼容旧配置）
+}
+
+// WorkspaceConf 一个机器人账号的工作空间（运行期形态，来自 bot.workspaces）。
+type WorkspaceConf struct {
+	ID          string   // 稳定标识：目录名、日志、面板 URL、指标标签
+	Name        string   // 展示名；空时回退昵称/平台 ID
+	PlatformID  string   // AstrBot 平台实例 ID（唯一，事件归属主键）
+	SelfIDs     []string // 该账号可能出现的 self_id 别名（openid / 数字 QQ）
+	Nickname    string   // 覆盖昵称；空时取桥接 get_login_info
+	AllowGroups []string // 覆盖群白名单；空 = 继承全局 bot.allow_groups
+	PromptDir   string   // 提示词目录；空 = workspaces/<id>
+}
+
+// EffectiveWorkspaces 返回实际生效的工作空间列表。
+//
+// 没有显式配置时生成一个 default 工作空间：它不覆盖任何字段，群白名单、昵称
+// 仍来自全局配置。这样所有下游只认 Workspaces，不必到处判断"旧配置模式"。
+func (cfg *Config) EffectiveWorkspaces() []WorkspaceConf {
+	if len(cfg.Workspaces) > 0 {
+		return cfg.Workspaces
+	}
+	return []WorkspaceConf{{
+		ID:          "default",
+		Name:        cfg.BotNickname,
+		SelfIDs:     filterSelfIDs(cfg.AllowSelfIDs),
+		AllowGroups: cfg.AllowGroups,
+		Nickname:    cfg.BotNickname,
+	}}
+}
+
+// filterSelfIDs 去掉通配符：工作空间别名只接受具体账号，* 交给全局总闸判断。
+func filterSelfIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != "" && id != "*" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// WorkspaceByID 按 ID 查工作空间声明（热重载时用最新配置覆盖启动期快照）。
+func (cfg *Config) WorkspaceByID(id string) (WorkspaceConf, bool) {
+	for _, ws := range cfg.Workspaces {
+		if ws.ID == id {
+			return ws, true
+		}
+	}
+	return WorkspaceConf{}, false
 }
 
 // MCPServerConf 单个 MCP 工具服务配置
@@ -119,7 +169,9 @@ func (cfg *Config) HasGroup(groupID string) bool {
 // 而 AstrBot 的 Agent 又会被插件放行，出现"同一账号两套行为"。
 func (cfg *Config) HasSelfID(selfID string) bool {
 	if len(cfg.AllowSelfIDs) == 0 {
-		return false
+		// 配了工作空间就不再要求额外白名单：接管范围由各工作空间声明的
+		// platform_id / self_ids 决定，单一数据源比两处白名单更好排查。
+		return len(cfg.Workspaces) > 0
 	}
 	for _, id := range cfg.AllowSelfIDs {
 		if id == "*" || id == selfID {

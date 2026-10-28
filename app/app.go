@@ -22,6 +22,7 @@ import (
 	"good-review-master/router"
 	"good-review-master/telemetry"
 	webserver "good-review-master/web/server"
+	"good-review-master/workspace"
 )
 
 // App 是全部运行时对象的聚合体：字段在 New 中一次性装配完成，之后只读。
@@ -34,7 +35,8 @@ type App struct {
 	OneBot     *onebot.Client
 	MCP        *mcpclient.Manager
 	BuiltinMCP *mcpserver.Server // 未启用看图（image_max<=0）或启动失败时为 nil
-	Router     *router.Router
+	Workspaces *workspace.Manager
+	Router     *router.Router // 默认工作空间的 Router（debug 触发/兼容）
 	Bot        *bot.Bot
 	IM         *im.Server               // AstrBot sidecar 的事件入口
 	Web        *webserver.Server        // web_port<=0 时为 nil
@@ -148,8 +150,10 @@ func (a *App) Shutdown(ctx context.Context) {
 			logutil.Warn("IM 事件入口关闭失败", "err", err)
 		}
 
-		if err := a.Router.Wait(); err != nil {
-			logutil.Error("等待 goroutine 退出失败", "err", err)
+		if a.Workspaces != nil {
+			if err := a.Workspaces.Wait(); err != nil {
+				logutil.Error("等待 goroutine 退出失败", "err", err)
+			}
 		}
 
 		// 关闭 MCP 会话（stdio 子进程随之终止）。Close 目前恒返回 nil——

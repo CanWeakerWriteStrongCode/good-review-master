@@ -11,6 +11,7 @@ import (
 	"good-review-master/logutil"
 	"good-review-master/onebot"
 	"good-review-master/telemetry"
+	"good-review-master/workspace"
 )
 
 const (
@@ -34,8 +35,12 @@ const (
 func (b *Bot) Run(ctx context.Context) {
 	initial := b.cfg()
 	if initial.BackfillOnStart {
-		logutil.Info("正在通过 AstrBot 桥接拉取历史消息", "api", initial.AstrBotHTTPAPI)
-		backfillHistory(initial, b.ob, historyCount)
+		if len(b.workspaces.List()) > 1 {
+			logutil.Warn("多工作空间下跳过启动回填：历史接口不区分接收账号，回填会把同一个群的数据写进错误的工作空间")
+		} else {
+			logutil.Info("正在通过 AstrBot 桥接拉取历史消息", "api", initial.AstrBotHTTPAPI)
+			backfillHistory(initial, b.workspaces.List()[0], b.ob, historyCount)
+		}
 	} else {
 		logutil.Info("已关闭启动历史回填（当前平台没有群历史消息接口）")
 	}
@@ -46,8 +51,8 @@ func (b *Bot) Run(ctx context.Context) {
 		case <-ctx.Done():
 			logutil.Info("消息分发循环正常退出")
 			return
-		case event := <-b.queue:
-			b.dispatch(ctx, event)
+		case item := <-b.queue:
+			b.dispatch(ctx, item)
 		}
 	}
 }
@@ -60,15 +65,27 @@ func (b *Bot) Run(ctx context.Context) {
 // 账号白名单在这里判定而不是消费侧：桥接插件要根据 accepted 决定是否 stop_event()，
 // 不在 Go 管辖范围内的账号必须让它继续走到 AstrBot 自己的 Agent。
 func (b *Bot) AcceptEvent(ctx context.Context, event onebot.Event) (bool, error) {
+	// allow_self_ids 为空且没有工作空间 = 一个账号都不接管（旧语义，必须保留）。
+	// 配了工作空间后 HasSelfID 返回 true，接管范围交给下面的归属解析。
 	if !b.cfg().HasSelfID(event.SelfID) {
 		return false, nil
 	}
+	// 归属解析必须发生在入队前：解析不到就不接管（交还 AstrBot Agent），
+	// 而不是先收下再在消费侧猜一个账号。
+	ws := b.workspaces.Resolve(event)
+	if ws == nil {
+		logutil.Warn("无法确定事件所属工作空间，已拒绝接管",
+			"platform_id", event.PlatformID, "self_id", event.SelfID,
+			"group", event.GroupID, "user", event.UserID)
+		return false, nil
+	}
+	event = ws.BindEvent(event)
 
 	timer := time.NewTimer(enqueueTimeout)
 	defer timer.Stop()
 
 	select {
-	case b.queue <- event:
+	case b.queue <- job{event: event, ws: ws}:
 		return true, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -82,17 +99,18 @@ func (b *Bot) AcceptEvent(ctx context.Context, event onebot.Event) (bool, error)
 // 去重必须放在消费侧而不是入队侧：事件可能在历史回填完成前就入队，
 // 入队时缓存还没填到这条消息；等真正处理时再看，才能同时覆盖
 // "重连后平台重发"和"历史回填与推送重叠"两种情况。
-func (b *Bot) dispatch(ctx context.Context, event onebot.Event) {
-	cfg := b.cfg()
-	if !cfg.HasGroup(event.GroupID) {
+func (b *Bot) dispatch(ctx context.Context, item job) {
+	event, ws := item.event, item.ws
+	cfg := ws.Snapshot()()
+	if !ws.AllowsGroup(event.GroupID) {
 		return
 	}
 	// 另一个被 Go 接管的机器人账号发的消息：既不进上下文，也不能触发回复。
-	if cfg.IsManagedAccount(event.UserID) {
+	if cfg.IsManagedAccount(event.UserID) || b.workspaces.IsManagedAccount(event.UserID) {
 		return
 	}
 
-	gc := cache.GetGroupCache(event.GroupID, cfg.MaxCacheMsg)
+	gc := ws.Cache.GetGroupCache(event.GroupID, cfg.MaxCacheMsg)
 	if gc.HasSeen(event.SelfID, event.MessageID) {
 		logutil.Debug("跳过重复消息", "group", event.GroupID, "self", event.SelfID, "msgID", event.MessageID)
 		return
@@ -101,12 +119,12 @@ func (b *Bot) dispatch(ctx context.Context, event onebot.Event) {
 	if event.Time > 0 {
 		telemetry.PollLagSeconds.Observe(time.Since(time.Unix(event.Time, 0)).Seconds())
 	}
-	b.ProcessMessage(ctx, event)
+	b.ProcessMessage(ctx, event, ws)
 }
 
 // backfillHistory 首次启动时拉取历史消息填充缓存。
-func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
-	for _, groupID := range cfg.AllowGroups {
+func backfillHistory(cfg *config.Config, ws *workspace.Workspace, ob *onebot.Client, count int) {
+	for _, groupID := range ws.Snapshot()().AllowGroups {
 		if groupID == "*" {
 			// 通配符无法枚举具体群：启动时缓存还是空的，没有可回填的对象。
 			logutil.Info("allow_groups 含通配符 *，跳过启动回填（无法枚举全部群）")
@@ -118,7 +136,7 @@ func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
 			logutil.Error("首次拉取群消息失败", "group", groupID, "err", err)
 			continue
 		}
-		gc := cache.GetGroupCache(groupID, cfg.MaxCacheMsg)
+		gc := ws.Cache.GetGroupCache(groupID, cfg.MaxCacheMsg)
 		for _, msg := range msgs {
 			content, images := onebot.NormalizeContent(msg.RawMessage, cfg.MaxMsgRune)
 			gc.Add(cache.Message{
@@ -133,6 +151,6 @@ func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
 			})
 		}
 		logutil.Info("群消息缓存初始化完成", "group", groupID, "条数", len(msgs))
-		telemetry.CacheMessages.WithLabelValues(groupID).Set(float64(gc.Len()))
+		telemetry.CacheMessages.WithLabelValues(ws.ID, groupID).Set(float64(gc.Len()))
 	}
 }

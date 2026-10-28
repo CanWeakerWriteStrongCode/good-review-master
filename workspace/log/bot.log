@@ -1,0 +1,8 @@
+2026-10-28 16:36:53	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}
+2026-10-28 16:38:13	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}
+2026-10-28 16:41:40	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}
+2026-10-28 16:42:20	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}
+2026-10-28 16:43:18	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}
+2026-10-28 16:43:44	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}
+2026-10-28 16:44:31	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}
+2026-10-28 16:45:06	[33mWARN[0m	config/prompt.go:180	指令缺少 persona，将不渲染人格块	{"keyword": "只在A", "category": "chat_review"}

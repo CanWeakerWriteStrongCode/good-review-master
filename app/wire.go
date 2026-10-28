@@ -8,7 +8,6 @@ import (
 	"good-review-master/config"
 	"good-review-master/im"
 	"good-review-master/mcpclient"
-	"good-review-master/router"
 	"good-review-master/telemetry"
 
 	"github.com/google/wire"
@@ -48,7 +47,6 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 		// 写成 new(config.Config) 会让它去找一个没人提供的值类型。
 		wire.FieldsOf(new(*config.Config), "MCPConfig", "MetricsAddr"),
 
-		providePromptConfig,
 		provideOneBot,
 		provideBotNickname,
 		provideBuiltinImageMCP,
@@ -58,10 +56,10 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 		provideConfigSnapshot,
 
 		mcpclient.New,
-		// 路由器只依赖 MCPProvider 这个窄接口，这里把唯一的实现接上去。
-		// router 包因此完全不认识 mcpclient——方向是对的：能力由使用方定义。
-		wire.Bind(new(router.MCPProvider), new(*mcpclient.Manager)),
-		router.NewRouter,
+		// 每个机器人账号一套工作空间（Router/Prompt/Cache），由 workspace.New 内部构造。
+		provideWorkspaces,
+		provideDefaultRouter,
+		provideDefaultPrompt,
 		bot.NewBot,
 		// IM 入站服务只依赖一个"能接收事件"的窄接口，唯一的实现是 *bot.Bot。
 		wire.Bind(new(im.EventConsumer), new(*bot.Bot)),

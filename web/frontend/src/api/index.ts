@@ -1,4 +1,4 @@
-import type { AccountInfo, GroupInfo, BotStatus, Message, APIResponse } from './types'
+import type { AccountInfo, GroupInfo, BotStatus, Message, WorkspaceInfo, APIResponse } from './types'
 
 export const BASE_URL = '/api'
 
@@ -46,9 +46,23 @@ export interface GroupsData {
   bot_info: BotStatus
 }
 
+export interface WorkspacesData {
+  workspaces: WorkspaceInfo[]
+  bot_info: BotStatus
+}
+
+export interface WorkspaceGroupsData {
+  workspace: WorkspaceInfo
+  groups: GroupInfo[]
+  accounts: AccountInfo[]
+  bot_info: BotStatus
+}
+
 export interface MessagesData {
   group_id: string
   group_name: string
+  workspace_id: string
+  workspace_name: string
   self_id: string
   account_name: string
   messages: Message[]
@@ -69,6 +83,20 @@ export function fetchGroups(): Promise<GroupsData> {
 
 export function fetchMessages(groupId: string): Promise<MessagesData> {
   return request<MessagesData>(`/groups/${groupId}`)
+}
+
+export function fetchWorkspaces(): Promise<WorkspacesData> {
+  return request<WorkspacesData>('/workspaces')
+}
+
+export function fetchWorkspaceGroups(workspaceId: string): Promise<WorkspaceGroupsData> {
+  return request<WorkspaceGroupsData>(`/workspaces/${encodeURIComponent(workspaceId)}/groups`)
+}
+
+export function fetchWorkspaceMessages(workspaceId: string, groupId: string): Promise<MessagesData> {
+  return request<MessagesData>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/groups/${encodeURIComponent(groupId)}`,
+  )
 }
 
 export async function login(username: string, password: string): Promise<LoginResult> {

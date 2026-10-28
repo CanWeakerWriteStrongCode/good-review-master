@@ -93,10 +93,11 @@ var (
 	// LLMCostTotal 大模型累计成本（相对单位）。
 	// 本项目配置里的单价是相对值（见 docs/cache-cost-analysis.md），
 	// 所以这里累加的也是"相对成本"，用途是看趋势与对比两种窗口模式，不是算钱。
-	LLMCostTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	// workspace 标签用于区分多个机器人账号；标签基数由配置的工作空间数量决定（有界）。
+	LLMCostTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_cost_total",
-		Help: "大模型累计成本（相对单位，由缓存命中/未命中单价折算）",
-	})
+		Help: "大模型累计成本（相对单位，由缓存命中/未命中单价折算），按 workspace 分组",
+	}, []string{"workspace"})
 
 	// ---------------- 缓存窗口（本项目的核心业务指标） ----------------
 
@@ -104,14 +105,14 @@ var (
 	// 这条曲线是缓存成本模型是否按预期工作的唯一直接证据。
 	LLMWindowModeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_window_mode_total",
-		Help: "选窗决策结果，按 mode(extend/reset) 分组",
-	}, []string{"mode"})
+		Help: "选窗决策结果，按 workspace/mode(extend/reset) 分组",
+	}, []string{"workspace", "mode"})
 
 	// LLMCacheHitTotal 累计命中的前缀 token 数（只有 extend 路径会命中）。
-	LLMCacheHitTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	LLMCacheHitTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_cache_hit_total",
-		Help: "累计命中的缓存前缀 token 数",
-	})
+		Help: "累计命中的缓存前缀 token 数，按 workspace 分组",
+	}, []string{"workspace"})
 
 	// CacheMessages 各群当前缓存的消息条数。
 	//
@@ -120,8 +121,16 @@ var (
 	// route / status 这类无界标签会随请求内容增长，是 metrics 落地的经典事故。
 	CacheMessages = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "cache_messages",
-		Help: "各群环形缓存当前消息条数",
-	}, []string{"group"})
+		Help: "各工作空间下各群环形缓存当前消息条数",
+	}, []string{"workspace", "group"})
+
+	// WorkspaceResolveTotal 事件归属解析结果。
+	// result=platform（平台实例 ID 命中）/ self_id（别名命中）/ single（单工作空间兜底）/ unresolved（拒绝接管）。
+	// unresolved 持续增长说明插件的 platform_id 没带上或配置写错，是"消息不回复"的第一现场。
+	WorkspaceResolveTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "workspace_resolve_total",
+		Help: "入站事件的工作空间归属结果，按 result 分组",
+	}, []string{"result"})
 
 	// ---------------- 轮询 ----------------
 
@@ -234,6 +243,7 @@ func allCollectors() []prometheus.Collector {
 		LLMWindowModeTotal,
 		LLMCacheHitTotal,
 		CacheMessages,
+		WorkspaceResolveTotal,
 
 		PollCycleDurationSeconds,
 		PollLagSeconds,

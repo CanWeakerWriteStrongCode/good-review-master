@@ -47,7 +47,7 @@ func TestNewRegistry可重复构造(t *testing.T) {
 	// 顺带验证了"埋点侧写进去的东西确实能被抓到"（这两件事都得成立才有意义）。
 	HTTPRequestsTotal.WithLabelValues("GET", "/healthz", "200").Inc()
 	LLMRequestsTotal.WithLabelValues("test-model", ResultOK).Inc()
-	LLMWindowModeTotal.WithLabelValues("extend").Inc()
+	LLMWindowModeTotal.WithLabelValues("default", "extend").Inc()
 	MCPToolCallsTotal.WithLabelValues("server", "tool", ResultOK).Inc()
 	ConfigReloadTotal.WithLabelValues("auto").Inc()
 

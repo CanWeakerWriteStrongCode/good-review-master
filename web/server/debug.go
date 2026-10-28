@@ -19,6 +19,22 @@ type MessageRouter interface {
 	RouteMessage(ctx context.Context, content string, event onebot.Event, groupID string)
 }
 
+// debugStore 选择调试接口要操作的缓存：指定工作空间 > 默认工作空间 > 进程级默认。
+func (s *Server) debugStore(workspaceID string) (*cache.Store, string) {
+	if s.workspaces == nil {
+		return cache.DefaultStore(), ""
+	}
+	if workspaceID != "" {
+		if view, ok := s.workspaces.ViewByID(workspaceID); ok {
+			return view.Store, view.ID
+		}
+	}
+	if def := s.workspaces.Default(); def != nil {
+		return def.Cache, def.ID
+	}
+	return cache.DefaultStore(), ""
+}
+
 // debugState 测试模式的调试状态（msg_id 自增序列等）
 type debugState struct {
 	mu     sync.Mutex
@@ -51,9 +67,10 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logutil.Warn("调试接口被调用", "action", "inject")
 		var body struct {
-			GroupID   string     `json:"group_id"`
-			GroupName string     `json:"group_name"`
-			Messages  []debugMsg `json:"messages"`
+			WorkspaceID string     `json:"workspace_id"`
+			GroupID     string     `json:"group_id"`
+			GroupName   string     `json:"group_name"`
+			Messages    []debugMsg `json:"messages"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || body.GroupID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "data": nil})
@@ -65,11 +82,19 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 			s.groupNamesMu.Unlock()
 		}
 
-		gc := cache.GetGroupCache(body.GroupID, s.cfg().MaxCacheMsg)
+		store, wsID := s.debugStore(body.WorkspaceID)
+		selfID := ""
+		if s.workspaces != nil {
+			if view, ok := s.workspaces.ViewByID(wsID); ok && len(view.SelfIDs) > 0 {
+				selfID = view.SelfIDs[0]
+			}
+		}
+		gc := store.GetGroupCache(body.GroupID, s.cfg().MaxCacheMsg)
 		now := time.Now().Unix()
 		for _, m := range body.Messages {
 			msg := cache.Message{
 				GroupID:  body.GroupID,
+				SelfID:   selfID,
 				UserID:   m.UserID,
 				Nickname: m.Nick,
 				Card:     m.Card,
@@ -100,7 +125,11 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 func (s *Server) handleDebugReset(state *debugState, fakeLLM *testutil.FakeLLM) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logutil.Warn("调试接口被调用", "action", "reset")
-		cache.ResetAll()
+		if s.workspaces != nil {
+			s.workspaces.ResetAll()
+		} else {
+			cache.ResetAll()
+		}
 		fakeLLM.Reset()
 		state.mu.Lock()
 		state.msgSeq = 1_000_000
@@ -120,23 +149,44 @@ func (s *Server) handleDebugState(fakeLLM *testutil.FakeLLM) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logutil.Warn("调试接口被调用", "action", "state")
 		groups := make([]gin.H, 0)
-		for _, gid := range cache.ListGroupIDs() {
-			gc := cache.GetCache(gid)
-			if gc == nil {
-				continue
+		anchors := make(map[string]cache.LLMAnchor)
+		multiWorkspace := s.workspaces != nil && len(s.workspaces.Views()) > 1
+		appendStore := func(wsID string, store *cache.Store) {
+			for _, gid := range store.ListGroupIDs() {
+				gc := store.GetCache(gid)
+				if gc == nil {
+					continue
+				}
+				groups = append(groups, gin.H{
+					"workspace_id":  wsID,
+					"group_id":      gid,
+					"cached":        gc.Len() > 0,
+					"message_count": gc.Len(),
+					"messages":      gc.GetAll(),
+				})
 			}
-			groups = append(groups, gin.H{
-				"group_id":      gid,
-				"cached":        gc.Len() > 0,
-				"message_count": gc.Len(),
-				"messages":      gc.GetAll(),
-			})
+			for group, anchor := range store.ListAnchors() {
+				// 单工作空间保持旧的裸 group 键，兼容现有 E2E 与调试脚本；
+				// 多工作空间才加前缀区分账号。
+				key := group
+				if multiWorkspace {
+					key = wsID + "/" + group
+				}
+				anchors[key] = anchor
+			}
+		}
+		if s.workspaces != nil {
+			for _, view := range s.workspaces.Views() {
+				appendStore(view.ID, view.Store)
+			}
+		} else {
+			appendStore("", cache.DefaultStore())
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"code": 200,
 			"data": gin.H{
 				"groups":    groups,
-				"anchors":   cache.ListAnchors(),
+				"anchors":   anchors,
 				"llm_calls": fakeLLM.Calls(),
 			},
 		})
@@ -150,11 +200,17 @@ func (s *Server) handleDebugTrigger(router MessageRouter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logutil.Warn("调试接口被调用", "action", "trigger")
 		var body struct {
-			GroupID string `json:"group_id"`
-			Content string `json:"content"`
+			WorkspaceID string `json:"workspace_id"`
+			GroupID     string `json:"group_id"`
+			Content     string `json:"content"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || body.GroupID == "" || body.Content == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "data": nil})
+			return
+		}
+		store, resolvedWS := s.debugStore(body.WorkspaceID)
+		if body.WorkspaceID != "" && resolvedWS != body.WorkspaceID {
+			c.JSON(http.StatusNotFound, gin.H{"code": 404, "data": gin.H{"msg": "工作空间不存在"}})
 			return
 		}
 		event := onebot.Event{
@@ -166,7 +222,7 @@ func (s *Server) handleDebugTrigger(router MessageRouter) gin.HandlerFunc {
 			RawMessage:  body.Content,
 			MessageID:   time.Now().UnixNano(),
 		}
-		anchorBefore := cache.GetLLMAnchor(body.GroupID)
+		anchorBefore := store.GetLLMAnchor(body.GroupID)
 		// 用请求的 ctx：debug trigger 触发的这条链路会与 HTTP 入口的 span 接上，
 		// 于是 /api/debug/trigger 到一次大模型调用能在同一条 trace 里看完。
 		router.RouteMessage(c.Request.Context(), body.Content, event, body.GroupID)
@@ -174,7 +230,7 @@ func (s *Server) handleDebugTrigger(router MessageRouter) gin.HandlerFunc {
 		// 超时（如空缓存不设锚点）则直接返回，由测试侧轮询兜底。
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			anchor := cache.GetLLMAnchor(body.GroupID)
+			anchor := store.GetLLMAnchor(body.GroupID)
 			if anchor != nil {
 				if anchorBefore == nil || anchor.LastSent != anchorBefore.LastSent {
 					break

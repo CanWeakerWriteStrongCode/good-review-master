@@ -13,6 +13,20 @@
       </view>
     </view>
 
+    <!-- 工作空间切换：每个机器人账号一套独立数据 -->
+    <view class="workspace-tabs" v-if="store.workspaces.length > 1">
+      <view
+        v-for="ws in store.workspaces"
+        :key="ws.id"
+        class="workspace-tab"
+        :class="{ active: ws.id === store.selectedWorkspaceId }"
+        @click="store.selectWorkspace(ws.id)"
+      >
+        <text class="workspace-name">{{ ws.name }}</text>
+        <text class="workspace-meta">{{ ws.group_count }} 群 · {{ ws.message_count }} 条</text>
+      </view>
+    </view>
+
     <!-- 群列表：按接收账号分组 -->
     <view
       class="account-section"
@@ -103,8 +117,9 @@ async function doLogout() {
 }
 
 function goMessages(groupId: string) {
+  const wid = store.selectedWorkspaceId
   uni.navigateTo({
-    url: `/pages/messages/index?id=${groupId}`,
+    url: `/pages/messages/index?wid=${encodeURIComponent(wid)}&id=${encodeURIComponent(groupId)}`,
   })
 }
 
@@ -152,6 +167,38 @@ function goDiagnostics() {
   padding: 4px 12px;
   border: 1px solid #e74c3c;
   border-radius: 6px;
+}
+
+/* 工作空间切换 */
+.workspace-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+.workspace-tab {
+  flex: 1;
+  min-width: 132px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #e8e8ee;
+  display: flex;
+  flex-direction: column;
+}
+.workspace-tab.active {
+  border-color: #7ec8e3;
+  background: #f2fbff;
+}
+.workspace-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+.workspace-meta {
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
 }
 
 /* 账号分组 */

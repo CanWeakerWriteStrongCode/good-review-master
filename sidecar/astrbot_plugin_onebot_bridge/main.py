@@ -72,7 +72,7 @@ CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
     PLUGIN_NAME,
     "good-review",
     "把 AstrBot 事件转发给外部 Go 服务，并把 OneBot 动作用作平台无关的发送/查询协议",
-    "1.6.2",
+    "1.6.3",
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -104,6 +104,8 @@ class OneBotBridge(Star):
         self._msg_seq: dict[str, int] = {}
         # 入站消息 ID / 哈希 ID → REFIDX，供出站引用使用。
         self._msg_ref_idx: dict[str, str] = {}
+        # 每个平台实例只记一次 mention 元数据样本，用于排查 QQ 群消息是否带 is_you。
+        self._mention_diag_logged: set[str] = set()
 
     # ---------------- 生命周期 ----------------
 
@@ -199,6 +201,10 @@ class OneBotBridge(Star):
         payload["group_id"] = str(payload.get("group_id") or "")
         payload["user_id"] = str(payload.get("user_id") or "")
         payload["self_id"] = str(payload.get("self_id") or getattr(msg, "self_id", ""))
+        # platform_id 是 AstrBot 平台实例 ID（配置里的 id），每个实例唯一且恒定，
+        # 不依赖本条消息是否 @ 得到机器人。Go 侧用它做工作空间归属的主键：
+        # QQ 官方拿不到 mention 元数据时 self_id 只是占位值，不能当账号身份。
+        payload["platform_id"] = platform_id
         # 机器人自己发出的消息要在归一化之前判断：QQ 官方 message_sent 事件的
         # user_id 和 self_id 可能是两个不同的 openid，只比 user_id == self_id 会漏掉。
         self_message = payload.get("post_type") == "message_sent"
@@ -225,6 +231,20 @@ class OneBotBridge(Star):
 
         # 先学习身份，再翻译 @：本条的发送者与 mentions 可能就是待解析的 openid。
         self._remember_identity(msg, event)
+        # 每个平台实例打一次 mention 元数据样本：用来确认 QQ 群消息到底带不带 is_you。
+        # 只输出布尔/标记，不落 openid 明文。
+        raw_mentions = self._raw_mention_items(msg)
+        if raw_mentions and platform_id not in self._mention_diag_logged:
+            self._mention_diag_logged.add(platform_id)
+            summary = [
+                {
+                    "has_id": bool(item.get("id")),
+                    "has_member_openid": bool(item.get("member_openid")),
+                    "is_you": item.get("is_you"),
+                }
+                for item in raw_mentions
+            ]
+            logger.info(f"[onebot-bridge] mention 元数据样本 platform={platform_id!r}: {summary}")
         self_id = self._self_id_for(platform_id)
         if payload["self_id"] in SELF_ID_PLACEHOLDERS and self_id:
             payload["self_id"] = self_id
@@ -343,6 +363,20 @@ class OneBotBridge(Star):
                 if mention_name:
                     self._self_names[platform_id] = mention_name
 
+        # 原始 mentions 兜底：群消息里 id/is_you 有时只存在于 raw_data，
+        # botpy 对象上没有；两个来源都学一遍，多账号下才不会漏掉自己的身份。
+        for item in self._raw_mention_items(msg):
+            mention_id = str(item.get("id") or item.get("member_openid") or "")
+            mention_name = self._display_name(item.get("username"))
+            if mention_id and mention_name:
+                self._remember_member(group_id, mention_id, mention_name)
+            if mention_id and item.get("is_you") is True:
+                self._self_ids[platform_id] = mention_id
+                if platform_id:
+                    self._self_platform[mention_id] = platform_id
+                if mention_name:
+                    self._self_names[platform_id] = mention_name
+
         message_id = str(getattr(msg, "message_id", "") or "")
         session_id = str(getattr(msg, "session_id", "") or group_id)
         if message_id:
@@ -387,6 +421,43 @@ class OneBotBridge(Star):
         if isinstance(raw, dict):
             return list(raw.get("mentions") or [])
         return list(getattr(raw, "mentions", None) or [])
+
+    @staticmethod
+    def _raw_mention_items(msg) -> list[dict]:
+        """从 botpy 原始数据里取 mentions。
+
+        部分 AstrBot/botpy 组合会把 mentions 里的 is_you / member_openid 丢掉，
+        只保留 id/username；这里直接读 raw_data，补回判断「是不是在 @ 本账号」的依据。
+        """
+        raw = getattr(msg, "raw_message", None)
+        data = getattr(raw, "raw_data", None)
+        if not isinstance(data, dict):
+            return []
+        items = data.get("mentions")
+        if not isinstance(items, list):
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    def _self_mention_ids(self, msg) -> list[str]:
+        """返回明确标了 is_you 的 mention id（插件对象 + 原始数据两路）。"""
+        ids: list[str] = []
+        for mention in self._mentions(msg):
+            if not bool(getattr(mention, "is_you", False)):
+                continue
+            mid = str(
+                getattr(mention, "id", "")
+                or getattr(mention, "member_openid", "")
+                or ""
+            )
+            if mid and mid not in ids:
+                ids.append(mid)
+        for item in self._raw_mention_items(msg):
+            if item.get("is_you") is not True:
+                continue
+            mid = str(item.get("id") or item.get("member_openid") or "")
+            if mid and mid not in ids:
+                ids.append(mid)
+        return ids
 
     def _format_mention(self, group_id: str, mention_id: str, is_self: bool, platform_id: str = "") -> str:
         mention_id = str(mention_id or "").strip()
@@ -472,9 +543,8 @@ class OneBotBridge(Star):
         否则没被 @ 的账号也会执行指令。
         """
         # 1) mentions 里明确标了 is_you：最可靠的「真的被 @」证据
-        for mention in self._mentions(msg):
-            if bool(getattr(mention, "is_you", False)):
-                return True
+        if self._self_mention_ids(msg):
+            return True
 
         self_id = str(getattr(msg, "self_id", "") or "")
         if self_id not in SELF_ID_PLACEHOLDERS:

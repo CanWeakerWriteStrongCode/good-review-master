@@ -3,6 +3,7 @@
 /.vscode/
 /.claude/
 /.qoder/
+/.tmp/
 
 # 编译产物
 /dist/
@@ -13,6 +14,8 @@ __debug_bin*
 /config.yaml
 /prompt_system.yaml
 /prompt_custom.yaml
+# 多账号工作空间的提示词与自定义指令（运行期数据）
+/workspaces/
 # 密钥文件：单独一份、权限 0600，绝不能进版本库
 /secret.yaml
 

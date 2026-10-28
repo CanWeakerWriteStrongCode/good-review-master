@@ -22,7 +22,7 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
 	cfg := r.appCfg()
 	r.GoCtx(parent, func(ctx context.Context) error {
-		msgs := cache.GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
+		msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
 		if len(msgs) == 0 {
 			r.reply(event, groupID, "暂无群聊记录，无法锐评~")
 			return nil
@@ -51,7 +51,7 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 		r.reply(event, groupID, reply)
 
 		// 保存锚点（窗口首条 + 末条 message_id）
-		cache.SetLLMAnchor(groupID, cache.LLMAnchor{
+		r.cacheStore().SetLLMAnchor(groupID, cache.LLMAnchor{
 			Start:    chatLogMsgs[0].MessageID,
 			LastSent: chatLogMsgs[len(chatLogMsgs)-1].MessageID,
 		})
@@ -67,7 +67,7 @@ func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPr
 	// 工具清单必须算进来：它是随请求一起下发的 tools 字段，既占上下文长度又属于缓存前缀，
 	// 漏算会低估总 token，把窗口扩到撞穿 max_context_tokens 护栏。
 	systemTokens := cache.EstimateTokens(systemPrompt) + r.mcpToolsTokens()
-	decision := decideChatWindow(msgs, cache.GetLLMAnchor(groupID),
+	decision := decideChatWindow(msgs, r.cacheStore().GetLLMAnchor(groupID),
 		cfg.LLMConfig.CacheHitCost, cfg.LLMConfig.CacheMissCost,
 		cfg.LLMConfig.MaxContextTokens, cfg.LLMSendCount, systemTokens)
 
@@ -75,12 +75,12 @@ func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPr
 	// llm_cost_total 记的是**决策时的估算成本**，不是账单：真实计费口径只有服务端知道，
 	// 而本项目配置里的单价本来就是相对值（见 docs/cache-cost-analysis.md）。
 	// 它的用途是对比两种窗口模式的走势，不是算钱。
-	telemetry.LLMWindowModeTotal.WithLabelValues(decision.Mode).Inc()
+	telemetry.LLMWindowModeTotal.WithLabelValues(r.workspace, decision.Mode).Inc()
 	if decision.Mode == "extend" {
-		telemetry.LLMCacheHitTotal.Add(float64(decision.HitTokens))
-		telemetry.LLMCostTotal.Add(decision.ExtendCost)
+		telemetry.LLMCacheHitTotal.WithLabelValues(r.workspace).Add(float64(decision.HitTokens))
+		telemetry.LLMCostTotal.WithLabelValues(r.workspace).Add(decision.ExtendCost)
 	} else {
-		telemetry.LLMCostTotal.Add(decision.ResetCost)
+		telemetry.LLMCostTotal.WithLabelValues(r.workspace).Add(decision.ResetCost)
 	}
 
 	if decision.Mode == "extend" {

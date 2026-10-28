@@ -9,7 +9,6 @@ package app
 import (
 	"good-review-master/bot"
 	"good-review-master/mcpclient"
-	"good-review-master/router"
 	"good-review-master/telemetry"
 )
 
@@ -48,24 +47,25 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 	store := provideConfigStore(config)
 	snapshot := provideConfigSnapshot(store)
 	appPromptPaths := inputs.PromptPaths
-	promptConfig, err := providePromptConfig(appPromptPaths)
-	if err != nil {
-		return nil, err
-	}
 	llmClient := inputs.LLM
 	mcpConf := config.MCPConfig
 	context := inputs.Ctx
 	manager := mcpclient.New(mcpConf, context)
-	routerRouter := router.NewRouter(snapshot, promptConfig, llmClient, client, manager, context)
-	botBot := bot.NewBot(snapshot, client, routerRouter)
+	workspaceManager, err := provideWorkspaces(snapshot, appPromptPaths, llmClient, client, manager, context)
+	if err != nil {
+		return nil, err
+	}
+	promptConfig := provideDefaultPrompt(workspaceManager)
+	router := provideDefaultRouter(workspaceManager)
+	botBot := bot.NewBot(snapshot, client, workspaceManager)
 	imServer := provideIMServer(snapshot, botBot)
-	serverServer := provideWebServer(snapshot, client)
+	serverServer := provideWebServer(snapshot, client, workspaceManager)
 	string2 := config.MetricsAddr
 	registry := telemetry.NewRegistry()
 	metricsServer := provideMetricsServer(string2, registry)
 	sources := inputs.Sources
 	informer := provideConfigInformer(sources, store, appBotNickname, appBuiltinImageAddr)
-	observer := providePromptObserver(appPromptPaths, promptConfig, routerRouter)
-	app := provideApp(snapshot, promptConfig, llmClient, client, manager, server, routerRouter, botBot, imServer, serverServer, metricsServer, informer, observer)
+	observer := providePromptObserver(workspaceManager)
+	app := provideApp(snapshot, promptConfig, llmClient, client, manager, server, workspaceManager, router, botBot, imServer, serverServer, metricsServer, informer, observer)
 	return app, nil
 }

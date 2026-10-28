@@ -23,24 +23,12 @@ type Message struct {
 	Time      int64    `json:"time"`
 }
 
-// duplicateWindowSec 是跨账号同一条消息的时间容差。
-// 两个机器人账号同时收到同一条群消息时，平台时间戳基本一致；
-// 留几秒余量吸收推送延迟，同时避免把同一账号里正常的重复发言误判成重复。
-const duplicateWindowSec = 5
-
-// seenKey 是去重键：同一个 message_id 在不同账号下是两条不同的事件。
-// 用结构体而不是拼字符串，避免 Add 热路径上每次分配一个新字符串。
-type seenKey struct {
-	selfID string
-	msgID  int64
-}
-
 // GroupMsgCache 群消息环形缓存（零拷贝实现）
 type GroupMsgCache struct {
-	buf     []Message            // 固定大小环形缓冲区，只分配一次
-	writeAt int                  // 下一个写入位置
-	seenSet map[seenKey]struct{} // O(1) 去重查找
-	filled  bool                 // 是否已写满一圈
+	buf     []Message          // 固定大小环形缓冲区，只分配一次
+	writeAt int                // 下一个写入位置
+	seenSet map[int64]struct{} // O(1) 去重查找
+	filled  bool               // 是否已写满一圈
 	mu      sync.RWMutex
 }
 
@@ -51,29 +39,48 @@ type LLMAnchor struct {
 	LastSent int64 // 上次发送窗口末条消息 message_id
 }
 
-var (
-	cacheMap    = make(map[string]*GroupMsgCache)
+// Store 一个工作空间的消息缓存与选窗锚点。
+//
+// 多账号隔离的边界在这里：同一个物理群在两个账号下可能有相同 group_id
+// （通用 OneBot），所以键里不能只有 group_id。每个工作空间持有自己的 Store，
+// 包内只需要 group_id 一层键。
+type Store struct {
 	cacheMu     sync.RWMutex
-	anchorMap   = make(map[string]*LLMAnchor)
+	caches      map[string]*GroupMsgCache
 	anchorMapMu sync.RWMutex
-)
+	anchors     map[string]*LLMAnchor
+}
+
+// NewStore 创建独立缓存存储（一个工作空间一个）。
+func NewStore() *Store {
+	return &Store{
+		caches:  make(map[string]*GroupMsgCache),
+		anchors: make(map[string]*LLMAnchor),
+	}
+}
+
+var defaultStore = NewStore()
+
+// DefaultStore 返回进程级默认 Store，仅供单账号测试、调试接口与离线评测使用。
+// 生产链路必须使用工作空间自己的 Store。
+func DefaultStore() *Store { return defaultStore }
 
 // GetGroupCache 获取或创建群消息缓存
-func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
-	cacheMu.RLock()
-	gc, ok := cacheMap[groupID]
-	cacheMu.RUnlock()
+func (s *Store) GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
+	s.cacheMu.RLock()
+	gc, ok := s.caches[groupID]
+	s.cacheMu.RUnlock()
 
 	if !ok {
-		cacheMu.Lock()
-		if gc, ok = cacheMap[groupID]; !ok {
+		s.cacheMu.Lock()
+		if gc, ok = s.caches[groupID]; !ok {
 			gc = &GroupMsgCache{
 				buf:     make([]Message, maxSize),
-				seenSet: make(map[seenKey]struct{}, maxSize),
+				seenSet: make(map[int64]struct{}, maxSize),
 			}
-			cacheMap[groupID] = gc
+			s.caches[groupID] = gc
 		}
-		cacheMu.Unlock()
+		s.cacheMu.Unlock()
 	}
 	return gc
 }
@@ -88,58 +95,27 @@ func (gc *GroupMsgCache) Add(msg Message) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 
-	key := seenKey{selfID: msg.SelfID, msgID: msg.MessageID}
 	if msg.MessageID != 0 {
-		if _, ok := gc.seenSet[key]; ok {
+		if _, ok := gc.seenSet[msg.MessageID]; ok {
 			return
 		}
-	}
-	// 同一个物理群被多个机器人账号同时收消息时，每条消息会到达两次（self_id 不同）。
-	// 内容、发送者、时间都相同就只保留第一份，避免聊天记录里每条都出现两遍。
-	if gc.isCrossAccountDuplicate(msg) {
-		return
 	}
 
 	// 淘汰即将被覆盖的老消息
 	old := gc.buf[gc.writeAt]
 	if old.MessageID != 0 {
-		delete(gc.seenSet, seenKey{selfID: old.SelfID, msgID: old.MessageID})
+		delete(gc.seenSet, old.MessageID)
 	}
 
 	gc.buf[gc.writeAt] = msg
 	if msg.MessageID != 0 {
-		gc.seenSet[key] = struct{}{}
+		gc.seenSet[msg.MessageID] = struct{}{}
 	}
 	gc.writeAt++
 	if gc.writeAt >= len(gc.buf) {
 		gc.writeAt = 0
 		gc.filled = true
 	}
-}
-
-// isCrossAccountDuplicate 判断这条消息是不是另一个机器人账号已经收过的同一条消息。
-// 只在 self_id 不同、发送者/内容/引用目标相同且时间接近时成立，避免误伤正常的重复发言。
-func (gc *GroupMsgCache) isCrossAccountDuplicate(msg Message) bool {
-	if msg.Content == "" || msg.UserID == "" || msg.Time == 0 {
-		return false
-	}
-	n := gc.writeAt
-	if gc.filled {
-		n = len(gc.buf)
-	}
-	for i := 0; i < n; i++ {
-		old := gc.buf[i]
-		if old.MessageID == 0 || old.SelfID == msg.SelfID {
-			continue
-		}
-		if old.UserID != msg.UserID || old.Content != msg.Content || old.ReplyToID != msg.ReplyToID {
-			continue
-		}
-		if diff := old.Time - msg.Time; diff >= -duplicateWindowSec && diff <= duplicateWindowSec {
-			return true
-		}
-	}
-	return false
 }
 
 // GetAll 获取所有缓存消息（按时间排序的快照副本）
@@ -203,34 +179,35 @@ func (gc *GroupMsgCache) Stats() CacheStats {
 	return stats
 }
 
-// HasSeen 检查某个机器人账号是否已经处理过这条消息（O(1) map 查找）。
-// 用 (self_id, message_id) 而不是单独 message_id：同一个物理群可能被多个账号同时收到。
+// HasSeen 检查这条消息是否已经处理过（O(1) map 查找）。
+// 一个 Store 只属于一个账号，所以 message_id 本身已经足够；selfID 参数保留
+// 是为了调用方语义清晰，不参与判定。
 func (gc *GroupMsgCache) HasSeen(selfID string, msgID int64) bool {
 	if msgID == 0 {
 		return false
 	}
 	gc.mu.RLock()
 	defer gc.mu.RUnlock()
-	_, ok := gc.seenSet[seenKey{selfID: selfID, msgID: msgID}]
+	_, ok := gc.seenSet[msgID]
 	return ok
 }
 
 // ListGroupIDs 返回所有已缓存的群号
-func ListGroupIDs() []string {
-	cacheMu.RLock()
-	defer cacheMu.RUnlock()
-	ids := make([]string, 0, len(cacheMap))
-	for id := range cacheMap {
+func (s *Store) ListGroupIDs() []string {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+	ids := make([]string, 0, len(s.caches))
+	for id := range s.caches {
 		ids = append(ids, id)
 	}
 	return ids
 }
 
 // GetCache 返回指定群的缓存引用，不存在返回 nil
-func GetCache(groupID string) *GroupMsgCache {
-	cacheMu.RLock()
-	defer cacheMu.RUnlock()
-	return cacheMap[groupID]
+func (s *Store) GetCache(groupID string) *GroupMsgCache {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+	return s.caches[groupID]
 }
 
 // Len 返回缓存中的消息数量
@@ -288,18 +265,18 @@ func BuildChatLog(msgs []Message) string {
 }
 
 // GetLLMAnchor 获取群的缓存扩展锚点
-func GetLLMAnchor(groupID string) *LLMAnchor {
-	anchorMapMu.RLock()
-	defer anchorMapMu.RUnlock()
-	return anchorMap[groupID]
+func (s *Store) GetLLMAnchor(groupID string) *LLMAnchor {
+	s.anchorMapMu.RLock()
+	defer s.anchorMapMu.RUnlock()
+	return s.anchors[groupID]
 }
 
 // SetLLMAnchor 设置群的缓存扩展锚点
-func SetLLMAnchor(groupID string, anchor LLMAnchor) {
-	anchorMapMu.Lock()
-	defer anchorMapMu.Unlock()
+func (s *Store) SetLLMAnchor(groupID string, anchor LLMAnchor) {
+	s.anchorMapMu.Lock()
+	defer s.anchorMapMu.Unlock()
 	a := anchor
-	anchorMap[groupID] = &a
+	s.anchors[groupID] = &a
 }
 
 // FindMsgIndex 在消息列表中查找指定 message_id 的索引，未找到返回 -1
@@ -313,23 +290,42 @@ func FindMsgIndex(msgs []Message, msgID int64) int {
 }
 
 // ListAnchors 返回所有群的锚点副本（调试/测试用）
-func ListAnchors() map[string]LLMAnchor {
-	anchorMapMu.RLock()
-	defer anchorMapMu.RUnlock()
-	out := make(map[string]LLMAnchor, len(anchorMap))
-	for k, v := range anchorMap {
+func (s *Store) ListAnchors() map[string]LLMAnchor {
+	s.anchorMapMu.RLock()
+	defer s.anchorMapMu.RUnlock()
+	out := make(map[string]LLMAnchor, len(s.anchors))
+	for k, v := range s.anchors {
 		out[k] = *v
 	}
 	return out
 }
 
 // ResetAll 清空所有群缓存与锚点（仅测试/调试用）
-func ResetAll() {
-	cacheMu.Lock()
-	cacheMap = make(map[string]*GroupMsgCache)
-	cacheMu.Unlock()
+func (s *Store) ResetAll() {
+	s.cacheMu.Lock()
+	s.caches = make(map[string]*GroupMsgCache)
+	s.cacheMu.Unlock()
 
-	anchorMapMu.Lock()
-	anchorMap = make(map[string]*LLMAnchor)
-	anchorMapMu.Unlock()
+	s.anchorMapMu.Lock()
+	s.anchors = make(map[string]*LLMAnchor)
+	s.anchorMapMu.Unlock()
 }
+
+// 以下是默认 Store 的包级快捷方式，保留给测试、离线评测与 web 调试接口。
+// 生产链路（bot/router）必须使用工作空间自己的 Store，否则多账号会串台。
+
+func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
+	return defaultStore.GetGroupCache(groupID, maxSize)
+}
+
+func GetCache(groupID string) *GroupMsgCache { return defaultStore.GetCache(groupID) }
+
+func ListGroupIDs() []string { return defaultStore.ListGroupIDs() }
+
+func GetLLMAnchor(groupID string) *LLMAnchor { return defaultStore.GetLLMAnchor(groupID) }
+
+func SetLLMAnchor(groupID string, anchor LLMAnchor) { defaultStore.SetLLMAnchor(groupID, anchor) }
+
+func ListAnchors() map[string]LLMAnchor { return defaultStore.ListAnchors() }
+
+func ResetAll() { defaultStore.ResetAll() }

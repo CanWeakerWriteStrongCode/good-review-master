@@ -9,6 +9,7 @@ import (
 	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/logutil"
+	"good-review-master/workspace"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,13 +22,15 @@ type APIResponse struct {
 
 // GroupDetail 群信息
 type GroupDetail struct {
-	GroupID      string `json:"group_id"`
-	GroupName    string `json:"group_name"`
-	SelfID       string `json:"self_id"`      // 接收该群的机器人账号；空=无法归属
-	AccountName  string `json:"account_name"` // 账号昵称；解析不到时为空
-	MessageCount int    `json:"message_count"`
-	LastActivity string `json:"last_activity"`
-	Cached       bool   `json:"cached"`
+	GroupID       string `json:"group_id"`
+	GroupName     string `json:"group_name"`
+	WorkspaceID   string `json:"workspace_id"`
+	WorkspaceName string `json:"workspace_name"`
+	SelfID        string `json:"self_id"`      // 接收该群的机器人账号；空=无法归属
+	AccountName   string `json:"account_name"` // 账号昵称；解析不到时为空
+	MessageCount  int    `json:"message_count"`
+	LastActivity  string `json:"last_activity"`
+	Cached        bool   `json:"cached"`
 }
 
 // BotStatus Bot 运行时状态
@@ -55,23 +58,96 @@ func (s *Server) handleAPIGroups() gin.HandlerFunc {
 		// 一个请求内取一次快照：群列表与 bot 信息必须来自同一份配置，
 		// 否则热更新插在中间会返回"群列表是新的、群数量是旧的"这种自相矛盾的响应
 		cfg := s.cfg()
-		groups, accounts := s.collectGroupDetails(cfg)
+		var groups []GroupDetail
+		var accounts []AccountDetail
+		if views := s.workspaceViews(); len(views) > 0 {
+			if len(views) != 1 {
+				c.JSON(http.StatusBadRequest, APIResponse{Code: 400, Data: gin.H{
+					"msg": "存在多个工作空间，请使用 /api/workspaces/{id}/groups 指定账号",
+				}})
+				return
+			}
+			groups, accounts = s.collectWorkspaceDetails(views[0])
+		} else {
+			groups, accounts = s.collectGroupDetails(cfg)
+		}
 
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: gin.H{
 				"groups":   groups,
 				"accounts": accounts,
-				"bot_info": BotStatus{
-					BotNickname:    cfg.BotNickname,
-					APIKey:         cfg.MaskedAPIKey(),
-					GroupCount:     len(groups),
-					AccountCount:   len(accounts),
-					AllowAllGroups: cfg.AllowsAllGroups(),
-				},
+				"bot_info": s.botStatus(cfg, len(groups), len(accounts)),
 			},
 		})
 	}
+}
+
+func (s *Server) workspaceViews() []workspace.View {
+	if s.workspaces == nil {
+		return nil
+	}
+	return s.workspaces.Views()
+}
+
+func (s *Server) botStatus(cfg *config.Config, groupCount, accountCount int) BotStatus {
+	return BotStatus{
+		BotNickname:    cfg.BotNickname,
+		APIKey:         cfg.MaskedAPIKey(),
+		GroupCount:     groupCount,
+		AccountCount:   accountCount,
+		AllowAllGroups: cfg.AllowsAllGroups(),
+	}
+}
+
+// handleAPIWorkspaces 返回工作空间列表与各自汇总。
+func (s *Server) handleAPIWorkspaces() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		views := s.workspaceViews()
+		list := make([]WorkspaceInfo, 0, len(views))
+		groupCount, accountCount := 0, 0
+		for _, view := range views {
+			info := s.workspaceInfo(view)
+			list = append(list, info)
+			groupCount += info.GroupCount
+			accountCount += len(accountIDsFor(view.SelfIDs, view.Store, view.Store.ListGroupIDs()))
+		}
+		c.JSON(http.StatusOK, APIResponse{
+			Code: 200,
+			Data: gin.H{
+				"workspaces": list,
+				"bot_info":   s.botStatus(s.cfg(), groupCount, accountCount),
+			},
+		})
+	}
+}
+
+// handleAPIWorkspaceGroups 返回指定工作空间的群与账号汇总。
+func (s *Server) handleAPIWorkspaceGroups() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		view, ok := s.workspaceView(c.Param("wid"))
+		if !ok {
+			c.JSON(http.StatusNotFound, APIResponse{Code: 404, Data: gin.H{"msg": "工作空间不存在"}})
+			return
+		}
+		groups, accounts := s.collectWorkspaceDetails(view)
+		c.JSON(http.StatusOK, APIResponse{
+			Code: 200,
+			Data: gin.H{
+				"workspace": s.workspaceInfo(view),
+				"groups":    groups,
+				"accounts":  accounts,
+				"bot_info":  s.botStatus(s.cfg(), len(groups), len(accounts)),
+			},
+		})
+	}
+}
+
+func (s *Server) workspaceView(id string) (workspace.View, bool) {
+	if s.workspaces == nil {
+		return workspace.View{}, false
+	}
+	return s.workspaces.ViewByID(id)
 }
 
 // handleAPIMessages 返回指定群的缓存消息。
@@ -79,54 +155,89 @@ func (s *Server) handleAPIGroups() gin.HandlerFunc {
 // 之前这里直读 map，是已知的数据竞争点。
 func (s *Server) handleAPIMessages() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		groupID := c.Param("id")
-		s.groupNamesMu.RLock()
-		groupName := s.groupNames[groupID]
-		s.groupNamesMu.RUnlock()
+		store := cache.DefaultStore()
+		var wsID, wsName string
+		if views := s.workspaceViews(); len(views) > 0 {
+			if len(views) != 1 {
+				c.JSON(http.StatusBadRequest, APIResponse{Code: 400, Data: gin.H{
+					"msg": "存在多个工作空间，请使用 /api/workspaces/{id}/groups/{group_id} 指定账号",
+				}})
+				return
+			}
+			store, wsID, wsName = views[0].Store, views[0].ID, views[0].Name
+		}
+		s.writeMessages(c, c.Param("id"), store, wsID, wsName)
+	}
+}
 
-		gc := cache.GetCache(groupID)
-		if gc == nil {
-			c.JSON(http.StatusOK, APIResponse{
-				Code: 200,
-				Data: gin.H{
-					"group_id":     groupID,
-					"group_name":   groupName,
-					"self_id":      "",
-					"account_name": "",
-					"messages":     []cache.Message{},
-					"empty":        true,
-				},
-			})
+// handleAPIWorkspaceMessages 返回指定工作空间下某个群的消息。
+func (s *Server) handleAPIWorkspaceMessages() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		view, ok := s.workspaceView(c.Param("wid"))
+		if !ok {
+			c.JSON(http.StatusNotFound, APIResponse{Code: 404, Data: gin.H{"msg": "工作空间不存在"}})
 			return
 		}
+		s.writeMessages(c, c.Param("gid"), view.Store, view.ID, view.Name)
+	}
+}
 
-		stats := gc.Stats()
+func (s *Server) writeMessages(c *gin.Context, groupID string, store *cache.Store, wsID, wsName string) {
+	s.groupNamesMu.RLock()
+	groupName := s.groupNames[groupID]
+	s.groupNamesMu.RUnlock()
+
+	gc := storeOr(store).GetCache(groupID)
+	if gc == nil {
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: gin.H{
-				"group_id":     groupID,
-				"group_name":   groupName,
-				"self_id":      stats.SelfID,
-				"account_name": s.accountName(stats.SelfID),
-				"messages":     gc.GetAll(),
-				"empty":        stats.Count == 0,
+				"group_id":       groupID,
+				"group_name":     groupName,
+				"workspace_id":   wsID,
+				"workspace_name": wsName,
+				"self_id":        "",
+				"account_name":   "",
+				"messages":       []cache.Message{},
+				"empty":          true,
 			},
 		})
+		return
 	}
+
+	stats := gc.Stats()
+	c.JSON(http.StatusOK, APIResponse{
+		Code: 200,
+		Data: gin.H{
+			"group_id":       groupID,
+			"group_name":     groupName,
+			"workspace_id":   wsID,
+			"workspace_name": wsName,
+			"self_id":        stats.SelfID,
+			"account_name":   s.accountName(stats.SelfID),
+			"messages":       gc.GetAll(),
+			"empty":          stats.Count == 0,
+		},
+	})
 }
 
 func (s *Server) handleAPIStatus() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := s.cfg()
+		groupCount := len(panelGroupIDs(cfg))
+		accountCount := len(accountIDs(cfg))
+		if views := s.workspaceViews(); len(views) > 0 {
+			groupCount = 0
+			accountCount = 0
+			for _, view := range views {
+				groups, accounts := s.collectWorkspaceDetails(view)
+				groupCount += len(groups)
+				accountCount += len(accounts)
+			}
+		}
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
-			Data: BotStatus{
-				BotNickname:    cfg.BotNickname,
-				APIKey:         cfg.MaskedAPIKey(),
-				GroupCount:     len(panelGroupIDs(cfg)),
-				AccountCount:   len(accountIDs(cfg)),
-				AllowAllGroups: cfg.AllowsAllGroups(),
-			},
+			Data: s.botStatus(cfg, groupCount, accountCount),
 		})
 	}
 }

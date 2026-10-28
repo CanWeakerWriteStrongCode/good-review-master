@@ -4,6 +4,7 @@
     <view class="msg-header">
       <view class="header-main">
         <text class="header-group-id">{{ store.groupName || '群' }}（{{ store.groupId }}）</text>
+        <text class="header-account" v-if="store.workspaceName">工作空间：{{ store.workspaceName }}</text>
         <text class="header-account">接收账号：{{ store.accountName || store.selfId || '未知' }}</text>
       </view>
       <text class="header-count" v-if="!store.empty">{{ store.messages.length }} 条消息</text>
@@ -56,8 +57,9 @@ onMounted(() => {
   if (queryIndex !== -1) {
     const params = new URLSearchParams(hash.slice(queryIndex))
     const id = params.get('id')
+    const wid = params.get('wid') || ''
     if (id) {
-      store.loadMessages(id)
+      store.loadMessages(wid, id)
     }
   }
 })

@@ -1,6 +1,9 @@
 export interface GroupInfo {
   group_id: string
   group_name: string
+  /** 所属工作空间（稳定 ID / 展示名） */
+  workspace_id?: string
+  workspace_name?: string
   /** 接收该群的机器人账号；空=无法归属 */
   self_id: string
   /** 账号昵称；解析不到时为空 */
@@ -8,6 +11,18 @@ export interface GroupInfo {
   message_count: number
   last_activity: string
   cached: boolean
+}
+
+/** 一个机器人账号的工作空间汇总 */
+export interface WorkspaceInfo {
+  id: string
+  name: string
+  platform_id: string
+  self_ids: string[]
+  group_count: number
+  cached_group_count: number
+  message_count: number
+  last_activity: string
 }
 
 /** 一个机器人账号的汇总（多账号面板用） */
@@ -31,6 +46,7 @@ export interface BotStatus {
 export interface Message {
   msg_id: number
   group_id: string
+  workspace_id?: string
   self_id?: string
   user_id: string
   nick: string

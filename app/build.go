@@ -13,7 +13,6 @@ import (
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
 	"good-review-master/logutil"
-	"good-review-master/router"
 	"good-review-master/telemetry"
 )
 
@@ -159,22 +158,12 @@ func logStartup(application *App) {
 	cfg := application.Config()
 	logutil.Info("🚀 【不是好评大师】机器人启动成功")
 	logutil.Info("AstrBot 桥接 API：" + cfg.AstrBotHTTPAPI)
-	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
+	logutil.Info("允许响应群（全局默认）：" + cfg.AllowGroupsStr())
 	logutil.Info("Go 接管的机器人账号：" + cfg.AllowSelfIDsStr())
 	logutil.Info("IM 事件入口：" + cfg.IMListenAddr)
-}
-
-// reloadPrompts 提示词文件变化后的动作：重读并重建路由表。
-//
-// 两步缺一不可：Reload 只换数据，而路由表（前缀树 + 帮助列表）是从数据**派生**出来的，
-// 不重建的话新关键字根本命中不了——用户会看到"配置文件里明明写了，发出去却没反应"。
-//
-// 写成自由函数而不是 App 的方法：监听器的 provider 需要它，而 App 需要监听器——
-// 方法值会把这个依赖变成环（App → observer → App）。
-func reloadPrompts(promptCfg *config.PromptConfig, messageRouter *router.Router) {
-	promptCfg.Reload()
-	messageRouter.Rebuild()
-	logutil.Info("提示词已热更新并重建路由表", "指令类别数", len(promptCfg.Snapshot().CmdConfigs))
+	if application.Workspaces != nil {
+		application.Workspaces.LogSummary()
+	}
 }
 
 // warnRestartOnlyChanges 报告"改了但不会热生效"的配置项。
@@ -221,6 +210,26 @@ func warnRestartOnlyChanges(previous, next *config.Config) {
 		previous.MCPConfig.BreakerCooldown != next.MCPConfig.BreakerCooldown {
 		logutil.Warn("mcp 的熔断参数已变化，但需要重启才能生效（熔断器在启动时已按服务构造）")
 	}
+	if !sameWorkspaces(previous.Workspaces, next.Workspaces) {
+		logutil.Warn("bot.workspaces 已变化，但需要重启才能生效（工作空间的 Router/提示词/缓存按启动时的声明构造）")
+	}
+}
+
+// sameWorkspaces 只比较结构性字段：nickname / allow_groups 支持热更新，
+// 不在这里判变化，否则每次改昵称都会误报"需要重启"。
+func sameWorkspaces(previous, next []config.WorkspaceConf) bool {
+	if len(previous) != len(next) {
+		return false
+	}
+	for i := range previous {
+		left, right := previous[i], next[i]
+		if left.ID != right.ID || left.PlatformID != right.PlatformID ||
+			left.PromptDir != right.PromptDir ||
+			strings.Join(left.SelfIDs, "\x00") != strings.Join(right.SelfIDs, "\x00") {
+			return false
+		}
+	}
+	return true
 }
 
 // sameMCPServers 比较两份服务列表是否等价。逐个字段比，不用 reflect.DeepEqual：

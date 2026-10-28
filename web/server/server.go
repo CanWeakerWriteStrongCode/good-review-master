@@ -14,6 +14,7 @@ import (
 	"good-review-master/config"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
+	"good-review-master/workspace"
 
 	"github.com/gin-gonic/gin"
 )
@@ -24,7 +25,8 @@ type Server struct {
 	engine         *gin.Engine
 	httpServer     *http.Server
 	obClient       *onebot.Client
-	groupNames     map[string]string // groupID → groupName 缓存
+	workspaces     *workspace.Manager // nil = 旧测试路径，退回进程级默认缓存
+	groupNames     map[string]string  // groupID → groupName 缓存
 	groupNamesMu   sync.RWMutex
 	accountNames   map[string]string // selfID → 机器人昵称缓存（多账号面板用）
 	accountNamesMu sync.RWMutex
@@ -39,7 +41,7 @@ type Server struct {
 // 监听端口、路由表、CORS 白名单、鉴权密钥、pprof 开关都必须在 New 时定下来
 // （监听器已经绑定、中间件已经装好、注册表已经建好），所以下面统一取一份启动快照来做这些决定；
 // 而 /api/status、/api/groups 返回的内容每次请求都重新取快照，改了配置下一次请求就能看到。
-func New(cfg config.Snapshot, obClient *onebot.Client) *Server {
+func New(cfg config.Snapshot, obClient *onebot.Client, workspaces *workspace.Manager) *Server {
 	startup := cfg()
 
 	gin.SetMode(gin.ReleaseMode)
@@ -63,6 +65,7 @@ func New(cfg config.Snapshot, obClient *onebot.Client) *Server {
 		cfg:          cfg,
 		engine:       engine,
 		obClient:     obClient,
+		workspaces:   workspaces,
 		groupNames:   make(map[string]string),
 		accountNames: make(map[string]string),
 		loginLimiter: newLoginRateLimiter(),
@@ -79,6 +82,10 @@ func New(cfg config.Snapshot, obClient *onebot.Client) *Server {
 	apiGroup.Use(AuthMiddleware(startup.JWTSecret))
 	{
 		apiGroup.GET("/status", s.handleAPIStatus())
+		apiGroup.GET("/workspaces", s.handleAPIWorkspaces())
+		apiGroup.GET("/workspaces/:wid/groups", s.handleAPIWorkspaceGroups())
+		apiGroup.GET("/workspaces/:wid/groups/:gid", s.handleAPIWorkspaceMessages())
+		// 旧接口：仅单工作空间时保留（多工作空间下返回 400，避免两个账号的数据混排）
 		apiGroup.GET("/groups", s.handleAPIGroups())
 		apiGroup.GET("/groups/:id", s.handleAPIMessages())
 		apiGroup.POST("/logout", handleLogout())

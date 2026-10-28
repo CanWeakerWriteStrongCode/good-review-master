@@ -28,6 +28,10 @@ type Event struct {
 	MessageID      int64  `json:"message_id"`
 	Time           int64  `json:"time"`
 	SelfID         string `json:"self_id"`
+	// PlatformID 是 AstrBot 平台实例 ID（配置里的 id），每个实例唯一且恒定。
+	// self_id 在 QQ 官方拿不到 @ 元数据时是占位值，不能用来做账号归属；
+	// platform_id 不依赖 @，所以工作空间解析以它为主键。
+	PlatformID string `json:"platform_id"`
 	// Mentioned 由桥接层给出"这条消息是否在叫机器人"的判断。
 	// QQ 官方机器人的 @ 语义和 OneBot 的 CQ 码不同（group_openid/mentions），
 	// 让适配器把判断结果带进来，业务层就不必认识各平台的 @ 表示。
