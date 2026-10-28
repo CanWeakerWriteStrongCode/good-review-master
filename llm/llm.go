@@ -333,10 +333,60 @@ func marshalForLog(value any) ([]byte, error) {
 		return nil, err
 	}
 	out := bytes.TrimRight(buf.Bytes(), "\n")
-	out = bytes.ReplaceAll(out, []byte(`\u003c`), []byte("<"))
-	out = bytes.ReplaceAll(out, []byte(`\u003e`), []byte(">"))
-	out = bytes.ReplaceAll(out, []byte(`\u0026`), []byte("&"))
+	unescaped := unescapeHTMLForLog(out)
+	// 替换若把 JSON 改坏（理论上不该发生），宁可打转义版，也不能让日志字段序列化失败。
+	if json.Valid(unescaped) {
+		out = unescaped
+	}
 	return out, nil
+}
+
+// unescapeHTMLForLog 还原 \u003c / \u003e / \u0026，但跳过本身已被转义的反斜杠。
+//
+// 消息正文里可能真的写着 "\u003c" 这六个字符，此时 JSON 中是 `\\u003c`：
+// 直接做字节替换会得到非法的 `\<`，整个 RawMessage 就再也序列化不出来。
+// 所以按反斜杠连续段判断：段长为奇数，最后一个反斜杠才开启真正的转义。
+func unescapeHTMLForLog(out []byte) []byte {
+	if !bytes.Contains(out, []byte(`\u00`)) {
+		return out
+	}
+	var result bytes.Buffer
+	result.Grow(len(out))
+	for i := 0; i < len(out); {
+		if out[i] != '\\' {
+			result.WriteByte(out[i])
+			i++
+			continue
+		}
+		run := 0
+		for i+run < len(out) && out[i+run] == '\\' {
+			run++
+		}
+		if i+run+5 > len(out) || run%2 == 0 {
+			result.Write(out[i : i+run])
+			i += run
+			continue
+		}
+		var replacement byte
+		switch string(out[i+run : i+run+5]) {
+		case "u003c":
+			replacement = '<'
+		case "u003e":
+			replacement = '>'
+		case "u0026":
+			replacement = '&'
+		}
+		if replacement == 0 {
+			result.Write(out[i : i+run])
+			i += run
+			continue
+		}
+		// 前 run-1 个反斜杠成对，代表字面量反斜杠，原样保留。
+		result.Write(out[i : i+run-1])
+		result.WriteByte(replacement)
+		i += run + 5
+	}
+	return result.Bytes()
 }
 
 // toOpenAIMessages 把中立消息列表转成 go-openai 的消息结构

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -73,5 +74,34 @@ func TestMarshalRequestForLog不转义HTML(t *testing.T) {
 	}
 	if strings.Contains(body, `\u003c`) || strings.Contains(body, `\u003e`) {
 		t.Fatalf("不应输出 HTML 转义：%s", body)
+	}
+}
+
+// TestMarshalForLog字面反斜杠不破坏JSON 还原转义时不能误伤消息正文里真正的
+// "\u003c" 文本：那种情况 JSON 是 `\\u003c`，盲替换会得到非法的 `\<`，
+// 日志字段（json.RawMessage）随即序列化失败，只剩一条 bodyError。
+func TestMarshalForLog字面反斜杠不破坏JSON(t *testing.T) {
+	content := `字面量 \u003c 与 <tag> 和 \u0026，还有 \< 结尾`
+	raw, err := marshalRequestForLog(openai.ChatCompletionRequest{
+		Model:    "m",
+		Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: content}},
+	})
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	if !json.Valid(raw) {
+		t.Fatalf("日志 JSON 已被改坏：%s", raw)
+	}
+	var decoded struct {
+		Messages []openai.ChatCompletionMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("日志 JSON 无法解析：%v\n%s", err, raw)
+	}
+	if len(decoded.Messages) != 1 || decoded.Messages[0].Content != content {
+		t.Fatalf("正文应原样保留，实际 %q", decoded.Messages[0].Content)
+	}
+	if !strings.Contains(string(raw), `<tag>`) {
+		t.Fatalf("真正的 < 仍应还原成可读字符：%s", raw)
 	}
 }
