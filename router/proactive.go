@@ -28,7 +28,8 @@ import (
 //     不排队、不并发——群里刷屏时旧消息不会攒成一串过期判定。
 //  4. 三重限流：发言后冷却、判定最小间隔、同一话题连续发言上限。
 //
-// 显式 @ 的回复不经过这里：它走 RouteMessage → chatReview，优先级更高。
+// 显式 @ 的回复不经过这里：handler 会直接走 RouteMessage → chatReview；
+// TryProactive 自己也会再检查一次 mention 并转给 RouteMessage，点名绝不进裁判。
 
 // proactiveSilenceReset 群静默超过这个时长视为新话题，连续发言计数清零。
 const proactiveSilenceReset = 5 * time.Minute
@@ -238,6 +239,13 @@ func coolingDown(g *proactiveGroup, cfg *config.Config, now time.Time) bool {
 //
 // 必须在消息已写入缓存之后调用（缓存里才有完整窗口）。
 func (r *Router) TryProactive(ctx context.Context, event onebot.Event, groupID, content string) {
+	// 点名（@ 本账号）必须回答，绝不经过裁判：裁判默认沉默，问它等于可能不回。
+	// handler 已在入口把 @ 分给 RouteMessage，这里再兜一层，任何调用方都不能
+	// 把点名消息送进"要不要回"的判定。
+	if event.MentionsBot() || event.AdapterAtMe() {
+		r.RouteMessage(ctx, content, event, groupID)
+		return
+	}
 	cfg := r.appCfg()
 	if !cfg.ProactiveEnabled || groupID == "" {
 		return

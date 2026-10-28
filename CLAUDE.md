@@ -473,7 +473,8 @@ the judge prompt.
 **Serialization is per `(workspace, group)`** — one worker with a single pending slot (latest wins),
 so two bots in the same group (e.g. customer service vs. chat companion) never block each other,
 while one bot never has two judge/generation runs in flight for the same group. Only the non-@ path
-is serialized.
+is serialized, and `TryProactive` re-checks `MentionsBot`/`AdapterAtMe`: a mention must be answered
+via `RouteMessage` and never reaches the judge.
 
 ## LLM client (`llm/`)
 

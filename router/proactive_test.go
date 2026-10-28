@@ -336,6 +336,28 @@ func TestProactive门控跳过定向消息(t *testing.T) {
 	}
 }
 
+// TestProactive点名消息直接回答 点名（@ 本账号）必须回答：
+// 即使调用方把它送进 TryProactive，也只能走直答链路，不能先问裁判要不要回。
+func TestProactive点名消息直接回答(t *testing.T) {
+	cfg := proactiveTestConfig()
+	instance, fake := newProactiveTestRouter(t, cfg)
+	fake.SetReply("收到，马上说")
+	seedMessages(instance, cfg,
+		cache.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Nickname: "张三", Content: "在吗"},
+	)
+
+	event := proactiveEvent("u1", "m1", "在吗", onebot.MentionSegment("bot-openid"))
+	instance.TryProactive(context.Background(), event, "g1", "@bot(bot-openid) 在吗")
+
+	waitFor(t, "直接生成回复", func() bool { return len(fake.Calls()) == 1 })
+	if err := instance.Wait(); err != nil {
+		t.Fatalf("等待异步任务失败：%v", err)
+	}
+	if got := len(fake.JSONCalls()); got != 0 {
+		t.Fatalf("点名消息不应进入裁判，实际调用 %d 次", got)
+	}
+}
+
 func TestProactive纯图片在无看图能力时跳过(t *testing.T) {
 	cfg := proactiveTestConfig()
 	cfg.ProactiveJudgeImages = 0
