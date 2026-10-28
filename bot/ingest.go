@@ -111,14 +111,14 @@ func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
 		for _, msg := range msgs {
 			content, images := onebot.NormalizeContent(msg.RawMessage, cfg.MaxMsgRune)
 			gc.Add(cache.Message{
-				MsgID:   msg.MessageID,
-				GroupID: onebot.FormatGroupID(msg.GroupID),
-				UserID:  strconv.FormatInt(msg.UserID, 10),
-				Nick:    msg.Sender.Nickname,
-				Card:    msg.Sender.Card,
-				Content: content,
-				Images:  images,
-				Time:    msg.Time,
+				MessageID: msg.MessageID,
+				GroupID:   onebot.FormatGroupID(msg.GroupID),
+				UserID:    strconv.FormatInt(msg.UserID, 10),
+				Nickname:  msg.Sender.Nickname,
+				Card:      msg.Sender.Card,
+				Content:   content,
+				Images:    images,
+				Time:      msg.Time,
 			})
 		}
 		logutil.Info("群消息缓存初始化完成", "group", groupID, "条数", len(msgs))

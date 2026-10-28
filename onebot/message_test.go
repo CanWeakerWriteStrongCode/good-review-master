@@ -37,11 +37,11 @@ func TestEventReplyID(t *testing.T) {
 	}
 }
 
-func TestEventQuoteMessageID(t *testing.T) {
+func TestEventQuotedMessageID(t *testing.T) {
 	event := Event{
 		Message: json.RawMessage(`[{"type":"reply","data":{"id":42}},{"type":"text","data":{"text":"hi"}}]`),
 	}
-	if got := event.QuoteMessageID(); got != 42 {
+	if got := event.QuotedMessageID(); got != 42 {
 		t.Fatalf("reply 段应解析出 quote msg_id，got %d", got)
 	}
 
@@ -49,16 +49,16 @@ func TestEventQuoteMessageID(t *testing.T) {
 		Message:    json.RawMessage(`"[CQ:reply,id=7] hi"`),
 		RawMessage: "[CQ:reply,id=7] hi",
 	}
-	if got := event.QuoteMessageID(); got != 7 {
+	if got := event.QuotedMessageID(); got != 7 {
 		t.Fatalf("message 不是段数组时应退回 raw_message 的 CQ 码，got %d", got)
 	}
 
 	event = Event{RawMessage: "[CQ:reply,id=9] hi"}
-	if got := event.QuoteMessageID(); got != 9 {
+	if got := event.QuotedMessageID(); got != 9 {
 		t.Fatalf("raw_message CQ reply = %d", got)
 	}
 
-	if got := (Event{RawMessage: "hi"}).QuoteMessageID(); got != 0 {
+	if got := (Event{RawMessage: "hi"}).QuotedMessageID(); got != 0 {
 		t.Fatalf("没有引用时应为 0，got %d", got)
 	}
 }

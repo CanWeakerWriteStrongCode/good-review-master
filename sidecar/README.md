@@ -108,6 +108,7 @@ QQ 官方机器人只有 `openid`，没有数字 QQ 号，因此配置里也不�
 |---|---|
 | `raw_message` | 平台原样文本：文本、`[CQ:at]`、`[CQ:reply]`、`[CQ:image]`、`[CQ:record]`、`[CQ:video]`、`[CQ:file]`、`[CQ:face]`，保留给排障 |
 | `message` | 同一份内容的消息段数组；引用是标准 `reply` 段 |
+| `sender` | 标准发送者对象：`{"nickname": "...", "card": "..."}` |
 | `message_id` | 各平台消息 ID 稳定哈希成 int64 |
 | `self_id` | 机器人稳定 ID（QQ 官方是 openid）；适配器给占位值时由插件替换成学到的 openid |
 | `display_message` | **扩展**：给缓存和大模型看的统一文本，所有 @ 已翻译成 `@昵称(openid)` |
@@ -188,7 +189,7 @@ curl -X POST http://127.0.0.1:18090/im/event \
   -H "Authorization: Bearer <token>" \
   -H "X-Platform: qq_official" \
   -H "Content-Type: application/json" \
-  -d '{"post_type":"message","message_type":"group","group_id":"<openid>","user_id":"1","nickname":"测试","raw_message":"[CQ:at,qq=qq_official] 锐评下","message_id":1,"time":1700000000,"self_id":"qq_official","display_message":"@机器人(qq_official) 锐评下","mentioned":true}'
+  -d '{"post_type":"message","message_type":"group","group_id":"<openid>","user_id":"1","sender":{"nickname":"测试","card":""},"raw_message":"[CQ:at,qq=qq_official] 锐评下","message_id":1,"time":1700000000,"self_id":"qq_official","display_message":"@机器人(qq_official) 锐评下","mentioned":true}'
 ```
 
 Go 日志应出现 `收到 IM 事件`；如果群在白名单且 `mentioned=true`，会触发锐评。

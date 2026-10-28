@@ -60,15 +60,15 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event) {
 	}
 
 	msg := cache.Message{
-		MsgID:   event.MessageID,
-		GroupID: groupID,
-		UserID:  event.UserID,
-		Nick:    event.Nickname,
-		Card:    event.Card,
-		Content: content,
-		Images:  images,
-		QuoteID: event.QuoteMessageID(),
-		Time:    eventTime(event),
+		MessageID: event.MessageID,
+		GroupID:   groupID,
+		UserID:    event.UserID,
+		Nickname:  event.DisplayName(),
+		Card:      event.Sender.Card,
+		Content:   content,
+		Images:    images,
+		ReplyToID: event.QuotedMessageID(),
+		Time:      eventTime(event),
 	}
 	cache.GetGroupCache(groupID, cfg.MaxCacheMsg).Add(msg)
 

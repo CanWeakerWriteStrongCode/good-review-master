@@ -17,7 +17,7 @@ import (
 // parent 是分发链路的 ctx：用 GoCtx 而不是 Go，任务才能同时继承
 // 调用方的 trace span 与 Group 的关闭信号（详见 async.Group.GoCtx）。
 func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
-	logutil.InfoCtx(parent, "触发锐评", "group", groupID, "user", event.Nickname)
+	logutil.InfoCtx(parent, "触发锐评", "group", groupID, "user", event.DisplayName())
 	// 一次锐评是一个完整的业务动作，全程用同一份配置：
 	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
 	cfg := r.appCfg()
@@ -50,10 +50,10 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 		}
 		r.reply(event, groupID, reply)
 
-		// 保存锚点（窗口首条 + 末条 MsgID）
+		// 保存锚点（窗口首条 + 末条 message_id）
 		cache.SetLLMAnchor(groupID, cache.LLMAnchor{
-			Start:    chatLogMsgs[0].MsgID,
-			LastSent: chatLogMsgs[len(chatLogMsgs)-1].MsgID,
+			Start:    chatLogMsgs[0].MessageID,
+			LastSent: chatLogMsgs[len(chatLogMsgs)-1].MessageID,
 		})
 		return nil
 	})
@@ -132,7 +132,7 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 			if u == "" {
 				continue
 			}
-			rows = append(rows, row{nick: m.Nick, msgID: m.MsgID, url: u})
+			rows = append(rows, row{nick: m.Nickname, msgID: m.MessageID, url: u})
 		}
 	}
 	if len(rows) == 0 {

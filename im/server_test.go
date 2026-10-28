@@ -66,7 +66,7 @@ func TestServerAcceptsGroupMessage(t *testing.T) {
 
 	rec := postEvent(t, server, "secret", `{
 		"post_type":"message","message_type":"group",
-		"group_id":"123456","user_id":"42","nickname":"小明","card":"",
+		"group_id":"123456","user_id":"42","sender":{"nickname":"小明","card":""},
 		"raw_message":"[CQ:at,qq=123456] 锐评下","message_id":99,
 		"time":1700000000,"self_id":"123456","mentioned":true
 	}`)
@@ -83,6 +83,9 @@ func TestServerAcceptsGroupMessage(t *testing.T) {
 	}
 	if got.SelfID != "123456" {
 		t.Fatalf("self_id not decoded: %+v", got)
+	}
+	if got.Sender.Nickname != "小明" || got.DisplayName() != "小明" {
+		t.Fatalf("sender.nickname not decoded: %+v", got)
 	}
 	if !got.Mentioned {
 		t.Fatalf("mentioned not decoded: %+v", got)

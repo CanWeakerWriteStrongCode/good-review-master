@@ -7,11 +7,11 @@ import (
 
 func TestBuildChatLog保留字符串UserID(t *testing.T) {
 	log := BuildChatLog([]Message{{
-		MsgID:   1,
-		UserID:  "79EBED44D996F294D8548AA8B0767D4C",
-		Nick:    "薛定谔的价值",
-		Content: "@用户(3319D76763F54481B6E5C25D68A787FA) test",
-		QuoteID: 42,
+		MessageID: 1,
+		UserID:    "79EBED44D996F294D8548AA8B0767D4C",
+		Nickname:  "薛定谔的价值",
+		Content:   "@用户(3319D76763F54481B6E5C25D68A787FA) test",
+		ReplyToID: 42,
 	}})
 
 	if !strings.Contains(log, `"message_id":1`) {

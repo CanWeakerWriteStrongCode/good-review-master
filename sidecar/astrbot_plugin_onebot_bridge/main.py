@@ -72,7 +72,7 @@ CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
     PLUGIN_NAME,
     "good-review",
     "把 AstrBot 事件转发给外部 Go 服务，并把 OneBot 动作用作平台无关的发送/查询协议",
-    "1.5.1",
+    "1.5.2",
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -181,9 +181,6 @@ class OneBotBridge(Star):
                 "time": int(getattr(msg, "timestamp", 0) or time.time()),
             }
 
-        sender = payload.get("sender") or {}
-        payload["nickname"] = sender.get("nickname", "") or sender.get("card", "") or str(payload.get("user_id") or "")
-        payload["card"] = sender.get("card", "") or ""
         payload["group_id"] = str(payload.get("group_id") or "")
         payload["user_id"] = str(payload.get("user_id") or "")
         payload["self_id"] = str(payload.get("self_id") or getattr(msg, "self_id", ""))

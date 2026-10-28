@@ -18,12 +18,12 @@ func BenchmarkAdd(b *testing.B) {
 		buf:      make([]Message, 1024),
 		msgIDSet: make(map[int64]struct{}, 1024),
 	}
-	msg := Message{MsgID: 1, GroupID: "1", UserID: "1", Nick: "张三", Content: "今天好累"}
+	msg := Message{MessageID: 1, GroupID: "1", UserID: "1", Nickname: "张三", Content: "今天好累"}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		msg.MsgID = int64(i + 1)
+		msg.MessageID = int64(i + 1)
 		gc.Add(msg)
 	}
 }
@@ -37,7 +37,7 @@ func BenchmarkGetAll(b *testing.B) {
 		msgIDSet: make(map[int64]struct{}, 20),
 	}
 	for i := 0; i < 20; i++ {
-		gc.Add(Message{MsgID: int64(i + 1), Content: "消息" + strconv.Itoa(i)})
+		gc.Add(Message{MessageID: int64(i + 1), Content: "消息" + strconv.Itoa(i)})
 	}
 
 	b.ReportAllocs()
@@ -54,7 +54,7 @@ func BenchmarkHasMsgID(b *testing.B) {
 		msgIDSet: make(map[int64]struct{}, 1024),
 	}
 	for i := 0; i < 512; i++ {
-		gc.Add(Message{MsgID: int64(i + 1)})
+		gc.Add(Message{MessageID: int64(i + 1)})
 	}
 
 	b.ReportAllocs()
@@ -70,10 +70,10 @@ func BenchmarkBuildChatLog(b *testing.B) {
 	msgs := make([]Message, 20)
 	for i := range msgs {
 		msgs[i] = Message{
-			MsgID:   int64(i + 1),
-			UserID:  "123456",
-			Nick:    "张三",
-			Content: "今天好累啊，谁来陪我说说话",
+			MessageID: int64(i + 1),
+			UserID:    "123456",
+			Nickname:  "张三",
+			Content:   "今天好累啊，谁来陪我说说话",
 		}
 	}
 

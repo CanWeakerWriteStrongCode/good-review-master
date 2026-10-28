@@ -323,7 +323,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 	msgs := make([]cache.Message, 0, 10)
 	for i := 0; i < 10; i++ {
 		msgs = append(msgs, cache.Message{
-			MsgID: int64(i + 1), GroupID: "10001", UserID: "1", Nick: "张三", Content: "今天好累啊",
+			MessageID: int64(i + 1), GroupID: "10001", UserID: "1", Nickname: "张三", Content: "今天好累啊",
 		})
 	}
 	groupID := "guard-test-group"
@@ -370,8 +370,8 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 			t.Fatal("工具 token 未计入护栏，窗口没有收缩")
 		}
 		// 截断应保留最新消息
-		if got[len(got)-1].MsgID != 10 {
-			t.Fatalf("重置应保留最新的消息，得到最后 MsgID=%d", got[len(got)-1].MsgID)
+		if got[len(got)-1].MessageID != 10 {
+			t.Fatalf("重置应保留最新的消息，得到最后 MessageID=%d", got[len(got)-1].MessageID)
 		}
 		// 截断后的窗口（前缀 = systemPrompt + 工具清单）不得再超护栏（只剩 1 条仍超则豁免）
 		systemTokens := baseSystemTokens + mcpTokens

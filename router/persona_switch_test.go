@@ -100,7 +100,7 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 func (e *switchTestEnv) seedMsg(t *testing.T) {
 	t.Helper()
 	cache.GetGroupCache(e.groupID, 100).Add(cache.Message{
-		MsgID: time.Now().UnixNano(), GroupID: e.groupID, UserID: "1", Nick: "张三", Content: "今天好累",
+		MessageID: time.Now().UnixNano(), GroupID: e.groupID, UserID: "1", Nickname: "张三", Content: "今天好累",
 	})
 }
 
@@ -111,7 +111,7 @@ func (e *switchTestEnv) route(t *testing.T, text string, msgID int64) {
 		MessageType: "group",
 		GroupID:     e.groupID,
 		UserID:      "1",
-		Nickname:    "李四",
+		Sender:      onebot.Sender{Nickname: "李四"},
 		RawMessage:  text,
 		MessageID:   msgID,
 	}, e.groupID)

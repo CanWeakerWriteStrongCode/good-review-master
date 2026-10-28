@@ -70,14 +70,14 @@ rules:
 
 	// 3. 种入缓存消息，触发 锐评下
 	cache.GetGroupCache("10001", cfg.MaxCacheMsg).Add(cache.Message{
-		MsgID: 1, GroupID: "10001", UserID: "1", Nick: "张三", Content: "今天好累",
+		MessageID: 1, GroupID: "10001", UserID: "1", Nickname: "张三", Content: "今天好累",
 	})
 	router.RouteMessage(context.Background(), "[CQ:at,qq=123456] 锐评下", onebot.Event{
 		PostType:    "message",
 		MessageType: "group",
 		GroupID:     "10001",
 		UserID:      "1",
-		Nickname:    "李四",
+		Sender:      onebot.Sender{Nickname: "李四"},
 		RawMessage:  "[CQ:at,qq=123456] 锐评下",
 		MessageID:   2,
 	}, "10001")

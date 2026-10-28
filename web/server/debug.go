@@ -69,19 +69,19 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 		now := time.Now().Unix()
 		for _, m := range body.Messages {
 			msg := cache.Message{
-				GroupID: body.GroupID,
-				UserID:  m.UserID,
-				Nick:    m.Nick,
-				Card:    m.Card,
-				Content: m.Content,
-				Time:    m.Time,
+				GroupID:  body.GroupID,
+				UserID:   m.UserID,
+				Nickname: m.Nick,
+				Card:     m.Card,
+				Content:  m.Content,
+				Time:     m.Time,
 			}
 			if m.MsgID != 0 {
-				msg.MsgID = m.MsgID
+				msg.MessageID = m.MsgID
 			} else {
 				state.mu.Lock()
 				state.msgSeq++
-				msg.MsgID = state.msgSeq
+				msg.MessageID = state.msgSeq
 				state.mu.Unlock()
 			}
 			if msg.UserID == "" {
@@ -162,7 +162,7 @@ func (s *Server) handleDebugTrigger(router MessageRouter) gin.HandlerFunc {
 			MessageType: "group",
 			GroupID:     body.GroupID,
 			UserID:      "999",
-			Nickname:    "测试用户",
+			Sender:      onebot.Sender{Nickname: "测试用户"},
 			RawMessage:  body.Content,
 			MessageID:   time.Now().UnixNano(),
 		}

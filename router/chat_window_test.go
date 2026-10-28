@@ -13,11 +13,11 @@ func makeChatMsgs(n int) []cache.Message {
 	msgs := make([]cache.Message, n)
 	for i := 0; i < n; i++ {
 		msgs[i] = cache.Message{
-			MsgID:   int64(1001 + i),
-			GroupID: "10001",
-			UserID:  "1",
-			Nick:    "张三",
-			Content: fmt.Sprintf("消息%d", i),
+			MessageID: int64(1001 + i),
+			GroupID:   "10001",
+			UserID:    "1",
+			Nickname:  "张三",
+			Content:   fmt.Sprintf("消息%d", i),
 		}
 	}
 	return msgs
@@ -136,8 +136,8 @@ func TestDecideChatWindow(t *testing.T) {
 			if len(got.Window) == 0 {
 				t.Fatal("Window 为空")
 			}
-			if got.Window[0].MsgID != tc.wantFirstMsgID {
-				t.Fatalf("窗口首条 MsgID = %d，期望 %d", got.Window[0].MsgID, tc.wantFirstMsgID)
+			if got.Window[0].MessageID != tc.wantFirstMsgID {
+				t.Fatalf("窗口首条 MessageID = %d，期望 %d", got.Window[0].MessageID, tc.wantFirstMsgID)
 			}
 			if len(got.Window) != tc.wantLen {
 				t.Fatalf("窗口条数 = %d，期望 %d", len(got.Window), tc.wantLen)

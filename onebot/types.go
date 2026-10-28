@@ -3,6 +3,7 @@ package onebot
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 )
 
 // Event OneBot 11 群消息事件（本项目只消费这一种）。
@@ -18,8 +19,7 @@ type Event struct {
 	MessageType string          `json:"message_type"`
 	GroupID     string          `json:"group_id"`
 	UserID      string          `json:"user_id"`
-	Nickname    string          `json:"nickname"`
-	Card        string          `json:"card"`
+	Sender      Sender          `json:"sender"`
 	Message     json.RawMessage `json:"message"`
 	RawMessage  string          `json:"raw_message"`
 	// DisplayMessage 是桥接插件翻译后的可读文本：@ 已统一成「@昵称(稳定ID)」。
@@ -32,6 +32,23 @@ type Event struct {
 	// QQ 官方机器人的 @ 语义和 OneBot 的 CQ 码不同（group_openid/mentions），
 	// 让适配器把判断结果带进来，业务层就不必认识各平台的 @ 表示。
 	Mentioned bool `json:"mentioned"`
+}
+
+// Sender 消息发送者（OneBot 11 的 sender 结构，只保留本项目用到的字段）。
+type Sender struct {
+	Nickname string `json:"nickname"`
+	Card     string `json:"card"`
+}
+
+// DisplayName 返回展示名：昵称 → 群名片 → 稳定 ID。
+// 平台可能只给其中一项；用 ID 兜底可以避免日志和缓存里出现空昵称。
+func (e Event) DisplayName() string {
+	for _, name := range []string{e.Sender.Nickname, e.Sender.Card, e.UserID} {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // ReplyID 返回引用这条消息时应带的 ID。
@@ -53,10 +70,10 @@ func (e Event) BotID() string {
 	return e.SelfID
 }
 
-// QuoteMessageID 返回被引用消息在本项目里的 msg_id（没有引用时为 0）。
+// QuotedMessageID 返回被引用消息在本项目里的 message_id（没有引用时为 0）。
 // 引用是标准 OneBot 11 的 reply 消息段；桥接层把段里的 id 换成与入站 message_id
-// 同一套的 int64，因此能直接对上 chat log 的 msg_id。
-func (e Event) QuoteMessageID() int64 {
+// 同一套的 int64，因此能直接对上 chat log 的 message_id。
+func (e Event) QuotedMessageID() int64 {
 	var segments []struct {
 		Type string `json:"type"`
 		Data struct {

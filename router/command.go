@@ -246,7 +246,7 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona)
 	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
 		attribute.String("router.category", route.Category))
-	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
+	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, event.DisplayName(), extra)
 }
 
 // reply 回复触发消息：引用原消息并 @ 发送者。
@@ -354,7 +354,7 @@ func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Eve
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
-	r.chatReview(ctx, event, groupID, systemPrompt, "", event.Nickname, text)
+	r.chatReview(ctx, event, groupID, systemPrompt, "", event.DisplayName(), text)
 }
 
 // stripCQPrefix 去除消息开头的 @ 标记，让后面的文本能命中关键字。

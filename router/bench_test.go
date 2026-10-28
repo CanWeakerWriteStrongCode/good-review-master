@@ -64,12 +64,12 @@ func benchMessages(n int) []cache.Message {
 	msgs := make([]cache.Message, n)
 	for i := range msgs {
 		msgs[i] = cache.Message{
-			MsgID:   int64(i + 1),
-			GroupID: "1",
-			UserID:  "123456",
-			Nick:    "张三",
-			Content: "今天好累啊，谁来陪我说说话",
-			Time:    int64(1700000000 + i),
+			MessageID: int64(i + 1),
+			GroupID:   "1",
+			UserID:    "123456",
+			Nickname:  "张三",
+			Content:   "今天好累啊，谁来陪我说说话",
+			Time:      int64(1700000000 + i),
 		}
 	}
 	return msgs
