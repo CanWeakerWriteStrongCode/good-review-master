@@ -443,7 +443,10 @@ placeholders). Member names come from a per-workspace in-memory directory seeded
 messages/`mentions` and refreshed asynchronously via `get_group_member_info`; a brand-new member
 may therefore render as `@用户(ID)` on first sight. `alt_message` is only the fallback when the
 segment list renders empty. Chat-log lines stay compact JSONL (`message_id`, `user_id`,
-`nickname`, `message`, `reply_id`) — `reply_id` is the `reply` segment's `message_id`.
+`nickname`, `message`, `reply_id`) — `message_id` is a window-local sequence (1..N), not the
+platform id (QQ official ids are ~100 chars and the model never emits them); `reply_id` is the
+sequence of the quoted message when it is in the window, otherwise omitted. The full platform
+id stays in cache/SQLite/anchors for passive replies and persistence.
 Platform name comes from `self.platform`; group name comes from `get_group_info`.
 
 ## LLM client (`llm/`)

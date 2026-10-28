@@ -6,28 +6,64 @@ import (
 )
 
 func TestBuildChatLog保留字符串UserID(t *testing.T) {
-	log := BuildChatLog([]Message{{
-		MessageID: "1",
-		UserID:    "79EBED44D996F294D8548AA8B0767D4C",
-		Nickname:  "薛定谔的价值",
-		Content:   "@用户(3319D76763F54481B6E5C25D68A787FA) test",
-		ReplyToID: "42",
-	}})
+	log := BuildChatLog([]Message{
+		{
+			MessageID: "ROBOT1.0_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			UserID:    "79EBED44D996F294D8548AA8B0767D4C",
+			Nickname:  "薛定谔的价值",
+			Content:   "@用户(3319D76763F54481B6E5C25D68A787FA) test",
+		},
+		{
+			MessageID: "ROBOT1.0_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+			UserID:    "FB7B890D38D41845542F14F25BC7A3E5",
+			Nickname:  "小助理",
+			Content:   "你也好",
+			ReplyToID: "ROBOT1.0_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		},
+		{
+			MessageID: "ROBOT1.0_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+			UserID:    "u3",
+			Nickname:  "路人",
+			Content:   "插一句",
+			ReplyToID: "ROBOT1.0_不在窗口里的消息",
+		},
+	})
 
-	if !strings.Contains(log, `"message_id":"1"`) {
-		t.Fatalf("消息 ID 应以 OneBot 同名字段 message_id 出现：%s", log)
+	// 平台 ID 太长，发给大模型的是窗口内序号。
+	if strings.Contains(log, "ROBOT1.0_") {
+		t.Fatalf("不应把平台 message_id 发给大模型：%s", log)
+	}
+	for _, want := range []string{`"message_id":1`, `"message_id":2`, `"message_id":3`} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("缺少窗口序号 %s：%s", want, log)
+		}
+	}
+	if !strings.Contains(log, `"reply_id":1`) {
+		t.Fatalf("窗口内的引用应映射成序号：%s", log)
+	}
+	if strings.Count(log, `"reply_id"`) != 1 {
+		t.Fatalf("引用目标不在窗口时应省略 reply_id：%s", log)
 	}
 	if !strings.Contains(log, `"user_id":"79EBED44D996F294D8548AA8B0767D4C"`) {
 		t.Fatalf("openid 应原样保留在 user_id 中：%s", log)
 	}
-	if !strings.Contains(log, `"nickname":"薛定谔的价值"`) {
-		t.Fatalf("昵称应以 nickname 字段出现：%s", log)
-	}
 	if !strings.Contains(log, `"message":"@用户(3319D76763F54481B6E5C25D68A787FA) test"`) {
 		t.Fatalf("message 应保留 @昵称(ID) 形态：%s", log)
 	}
-	if !strings.Contains(log, `"reply_id":"42"`) {
-		t.Fatalf("引用关系应作为 reply_id 出现在聊天记录里：%s", log)
+}
+
+// 空内容消息不占序号，序号仍从 1 连续。
+func TestBuildChatLog空消息不占序号(t *testing.T) {
+	log := BuildChatLog([]Message{
+		{MessageID: "a", Content: ""},
+		{MessageID: "b", Content: "第一条"},
+		{MessageID: "c", Content: "第二条"},
+	})
+	if !strings.Contains(log, `"message_id":1`) || !strings.Contains(log, `"message_id":2`) {
+		t.Fatalf("序号应连续：%s", log)
+	}
+	if strings.Contains(log, `"message_id":3`) {
+		t.Fatalf("空消息不应占序号：%s", log)
 	}
 }
 

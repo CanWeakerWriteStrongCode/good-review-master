@@ -17,7 +17,7 @@ func TestComposeSystemPrompt包含稳定身份与at约定(t *testing.T) {
 	if !strings.Contains(prompt, "user_id 是发言者的稳定ID") || !strings.Contains(prompt, "@昵称(ID)") {
 		t.Fatalf("提示词应说明 @昵称(ID) 与 user_id 的约定：%s", prompt)
 	}
-	if !strings.Contains(prompt, "message_id 是消息ID") || !strings.Contains(prompt, "nickname 是昵称") {
+	if !strings.Contains(prompt, "message_id 是本窗口内的消息序号") || !strings.Contains(prompt, "nickname 是昵称") {
 		t.Fatalf("提示词应说明与 OneBot 对齐的字段名：%s", prompt)
 	}
 	if !strings.Contains(prompt, "reply_id") {

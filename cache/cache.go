@@ -222,38 +222,58 @@ func (gc *GroupMsgCache) Len() int {
 
 // chatLine 单条群聊消息在 JSON 行中的字段（发给大模型的表示）。
 // UserID 是发言者的稳定标识（QQ 官方机器人是 openid，aiocqhttp 是数字 QQ），
-// 昵称会变，它不会；为空时省略。MessageID 为空时省略。
+// 昵称会变，它不会；为空时省略。
+//
+// MessageID/ReplyID 用的是本窗口内的序号，不是平台消息 ID：真实 ID 有上百个字符
+// （QQ 官方 ROBOT1.0_…），模型既不输出也不寻址，白占 token。序号只在本次
+// 聊天记录内有效；引用目标不在窗口里时 reply_id 省略。
 type chatLine struct {
-	MessageID string `json:"message_id,omitempty"`
+	MessageID int    `json:"message_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
 	Nickname  string `json:"nickname"`
 	Message   string `json:"message"`
-	ReplyID   string `json:"reply_id,omitempty"`
+	ReplyID   int    `json:"reply_id,omitempty"`
 }
 
 // BuildChatLog 将消息列表组装为发给大模型的群聊上下文：每条消息一行 JSON 对象，如
 //
-//	{"message_id":1001,"user_id":"3319D767...","nickname":"张三","message":"今天好累"}
-//	{"message_id":1002,"user_id":"79EBED44...","nickname":"李四","message":"你也好","reply_id":1001}
+//	{"message_id":1,"user_id":"3319D767...","nickname":"张三","message":"今天好累"}
+//	{"message_id":2,"user_id":"79EBED44...","nickname":"李四","message":"你也好","reply_id":1}
 //
-// 字段名对齐 OneBot 11 群消息事件：message_id / user_id / message，nickname 对应
-// sender.nickname。刻意不搬 sender 嵌套、group_id、post_type 这些每行都重复的传输字段：
-// 它们只增加 token，模型用不上。reply_id 是 reply 段的 data.id（被引用消息的
-// message_id），OneBot 没有等价的顶层字段，保留为本项目扩展。
+// message_id 是本窗口内的序号（从 1 开始，跳过空消息）；reply_id 指向窗口内被引用
+// 消息的序号，被引消息不在窗口里时不输出。平台原始 message_id 仍保留在缓存/数据库/
+// 锚点里，用于被动回复窗口与持久化，只有这份给大模型的文本用短序号。
 // user_id 用字符串保留 openid / 数字 QQ 原值：昵称会变，稳定 ID 不会。
 // 用 json.Marshal 保证昵称/内容里的引号、换行等被正确转义。空内容消息跳过。
 func BuildChatLog(msgs []Message) string {
+	// 先给会输出的行编号，reply_id 才能反查到窗口内序号。
+	seq := make(map[string]int, len(msgs))
+	next := 0
+	for _, msg := range msgs {
+		if msg.Content == "" {
+			continue
+		}
+		next++
+		if msg.MessageID != "" {
+			seq[msg.MessageID] = next
+		}
+	}
+
 	var buf strings.Builder
 	for _, msg := range msgs {
 		if msg.Content == "" {
 			continue
 		}
+		replyID := 0
+		if msg.ReplyToID != "" {
+			replyID = seq[msg.ReplyToID]
+		}
 		line, err := json.Marshal(chatLine{
-			MessageID: msg.MessageID,
+			MessageID: seq[msg.MessageID],
 			UserID:    msg.UserID,
 			Nickname:  msg.Nickname,
 			Message:   msg.Content,
-			ReplyID:   msg.ReplyToID,
+			ReplyID:   replyID,
 		})
 		if err != nil {
 			continue
