@@ -36,3 +36,6 @@ __pycache__/
 /tests/e2e/.workdir/
 /tests/e2e/playwright-report/
 /tests/e2e/test-results/
+
+# AstrBot 运行时数据（误提交过，Good-Review 不读取）
+/data/
