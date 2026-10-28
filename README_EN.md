@@ -119,6 +119,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `astrbot.http_api` | AstrBot bridge action proxy URL (default 6199) | `http://127.0.0.1:6199` |
 | `astrbot.access_token` | Shared token with the bridge plugin | `""` |
 | `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups) | `123456,789012` |
+| `bot.allow_self_ids` | Bot accounts managed by Go (`self_id`; `*` for all; empty hands every account back to AstrBot's own agent) | `*` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |
 | `llm.api_key` | LLM API key (**move to `secret.yaml`**) | `sk-xxx` |
 | `llm.api_base` | LLM API base URL | `https://api.deepseek.com` |

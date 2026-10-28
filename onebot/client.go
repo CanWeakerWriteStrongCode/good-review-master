@@ -78,12 +78,13 @@ func (ob *Client) GetGroupInfo(groupID string) (*GroupInfo, error) {
 
 // SendGroupMessage 发送纯文本群消息（兼容旧调用点）
 func (ob *Client) SendGroupMessage(groupID, content string) {
-	ob.SendGroupMessageSegments(groupID, []Segment{TextSegment(content)})
+	ob.SendGroupMessageSegments(groupID, "", []Segment{TextSegment(content)})
 }
 
 // SendGroupReply 发送「引用 + @ + 文本」的群消息。
-// replyID 为空时退化为普通文本；atUser 为空时不 @ 人。
-func (ob *Client) SendGroupReply(groupID, replyID, atUser, content string) {
+// selfID 是收到该消息的机器人账号：同一个群被多个账号同时收消息时，
+// 桥接插件靠它把回复交给正确的账号。replyID 为空时退化为普通文本；atUser 为空时不 @ 人。
+func (ob *Client) SendGroupReply(groupID, selfID, replyID, atUser, content string) {
 	segments := make([]Segment, 0, 3)
 	if replyID != "" {
 		segments = append(segments, ReplySegment(replyID))
@@ -93,21 +94,25 @@ func (ob *Client) SendGroupReply(groupID, replyID, atUser, content string) {
 		content = " " + content
 	}
 	segments = append(segments, TextSegment(content))
-	ob.SendGroupMessageSegments(groupID, segments)
+	ob.SendGroupMessageSegments(groupID, selfID, segments)
 }
 
 // SendGroupMessageSegments 发送结构化群消息。
 //
 // 消息段由桥接插件按平台翻译：QQ 官方机器人支持文本、@、引用、图片、语音、
 // 视频、文件；AstrBot 的其他适配器按各自能力降级。发送失败只记日志，不阻塞业务。
-func (ob *Client) SendGroupMessageSegments(groupID string, segments []Segment) {
+func (ob *Client) SendGroupMessageSegments(groupID, selfID string, segments []Segment) {
 	body := map[string]any{"group_id": groupID, "message": segments}
+	if selfID != "" {
+		// 不是 OneBot 必填字段，但同群多账号部署时必须带上，否则插件只能猜账号。
+		body["self_id"] = selfID
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		logutil.Error("send_group_msg 请求序列化失败", "err", err, "group", groupID)
 		return
 	}
-	logutil.Debug("调用 OneBot API", "action", "send_group_msg", "group", groupID,
+	logutil.Debug("调用 OneBot API", "action", "send_group_msg", "group", groupID, "self", selfID,
 		"segments", len(segments), "types", segmentTypes(segments))
 	var result actionResponse[struct{}]
 	resp, err := ob.restyClient.R().
@@ -127,7 +132,7 @@ func (ob *Client) SendGroupMessageSegments(groupID string, segments []Segment) {
 		logutil.Error("send_group_msg 被平台拒绝", "err", err, "group", groupID, "request", string(payload))
 		return
 	}
-	logutil.Info("send_group_msg 成功", "group", groupID, "segments", len(segments), "request", string(payload))
+	logutil.Info("send_group_msg 成功", "group", groupID, "self", selfID, "segments", len(segments), "request", string(payload))
 }
 
 // segmentTypes 返回消息段类型列表，仅用于日志排查。

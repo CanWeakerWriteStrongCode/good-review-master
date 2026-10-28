@@ -160,6 +160,7 @@ func logStartup(application *App) {
 	logutil.Info("🚀 【不是好评大师】机器人启动成功")
 	logutil.Info("AstrBot 桥接 API：" + cfg.AstrBotHTTPAPI)
 	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
+	logutil.Info("Go 接管的机器人账号：" + cfg.AllowSelfIDsStr())
 	logutil.Info("IM 事件入口：" + cfg.IMListenAddr)
 }
 

@@ -121,6 +121,7 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 11 �
 | `astrbot.http_api`          | AstrBot 桥接动作代理地址（插件默认 6199） | `http://127.0.0.1:6199`    |
 | `astrbot.access_token`      | 与 AstrBot 插件共享的 token            | `""`                       |
 | `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群） | `123456,789012`            |
+| `bot.allow_self_ids`        | Go 接管的机器人账号（`self_id`；`*` 表示全部；空表示都不接管，交给 AstrBot Agent） | `*` |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |
 | `llm.api_key`               | 大模型 API Key（**建议移到 `secret.yaml`**） | `sk-xxx`                   |
 | `llm.api_base`              | 大模型接口地址                         | `https://api.deepseek.com` |

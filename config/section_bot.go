@@ -12,6 +12,11 @@ type botSection struct {
 	// 改形态会让所有存量配置失效。转换在 convert.go 里做。
 	// 填 "*" 表示允许所有群；空串表示不响应任何群。
 	AllowGroups string `yaml:"allow_groups"`
+
+	// AllowSelfIDs 是机器人账号（OneBot self_id）白名单，逗号分隔，填 "*" 表示全部。
+	// 空串表示 Go 不接管任何账号：桥接插件收到 200 ignored 后会把消息交还给
+	// AstrBot 自己的 Agent，因此多账号部署可以只让 Go 处理其中几个。
+	AllowSelfIDs string `yaml:"allow_self_ids"`
 }
 
 func (s *botSection) Name() string { return "bot" }
@@ -36,6 +41,17 @@ func (s *botSection) Validate() error {
 	for _, group := range groups {
 		if group == "*" {
 			logutil.Warn("bot.allow_groups 包含 *：所有群都会响应，注意大模型调用成本")
+			break
+		}
+	}
+
+	selfIDs := parseCommaList(s.AllowSelfIDs)
+	if len(selfIDs) == 0 {
+		logutil.Warn("bot.allow_self_ids 为空，Go 不接管任何机器人账号（消息会留给 AstrBot 自己的 Agent）")
+	}
+	for _, id := range selfIDs {
+		if id == "*" {
+			logutil.Warn("bot.allow_self_ids 包含 *：所有机器人账号都由 Go 接管")
 			break
 		}
 	}

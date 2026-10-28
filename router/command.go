@@ -253,7 +253,7 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 // 桥接层会按平台翻译：QQ 官方机器人用 message_reference + <qqbot-at-user>，
 // 其他 OneBot 平台用 reply / at 段；拿不到引用 ID 时退化为纯文本。
 func (r *Router) reply(event onebot.Event, groupID, text string) {
-	r.obClient.SendGroupReply(groupID, event.ReplyID(), event.UserID, text)
+	r.obClient.SendGroupReply(groupID, event.SelfID, event.ReplyID(), event.UserID, text)
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：

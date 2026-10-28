@@ -17,6 +17,7 @@ type Config struct {
 	AstrBotAccessToken string
 	BotNickname        string   // 运行时设置（GetLoginInfo 结果），不来自配置文件
 	AllowGroups        []string // 群白名单；含 "*" 表示全部群
+	AllowSelfIDs       []string // 机器人账号（self_id）白名单；含 "*" 表示全部账号
 	MaxCacheMsg        int      // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
 	LLMSendCount       int      // 每次发送 LLM 的消息条数（重置窗口）
 	LLMTimeout         time.Duration
@@ -109,6 +110,46 @@ func (cfg *Config) HasGroup(groupID string) bool {
 		}
 	}
 	return false
+}
+
+// HasSelfID 检查机器人账号是否由 Go 接管。白名单含 "*" 时放行所有账号。
+//
+// 适配器还没学到真实身份时 self_id 会是空串或占位值（QQ 官方常见），
+// 此时无法判断归属，放行并交给后续流程：否则刚启动的普通群消息会被丢掉，
+// 而 AstrBot 的 Agent 又会被插件放行，出现"同一账号两套行为"。
+func (cfg *Config) HasSelfID(selfID string) bool {
+	if len(cfg.AllowSelfIDs) == 0 {
+		return false
+	}
+	for _, id := range cfg.AllowSelfIDs {
+		if id == "*" || id == selfID {
+			return true
+		}
+	}
+	switch selfID {
+	case "", "qq_official", "unknown_selfid":
+		return true
+	}
+	return false
+}
+
+// IsManagedAccount 判断某个 user_id 是否是 Go 接管的机器人账号。
+// 用于把"另一个账号自己发的消息"从群聊上下文里过滤掉；通配符无法枚举，返回 false。
+func (cfg *Config) IsManagedAccount(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	for _, id := range cfg.AllowSelfIDs {
+		if id != "*" && id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowSelfIDsStr 返回逗号分隔的账号白名单（用于日志输出）
+func (cfg *Config) AllowSelfIDsStr() string {
+	return strings.Join(cfg.AllowSelfIDs, ",")
 }
 
 // AllowsAllGroups 返回白名单是否包含通配符 "*"。

@@ -31,16 +31,20 @@ func TestMain(m *testing.M) {
 }
 
 type fakeConsumer struct {
-	events []onebot.Event
-	err    error
+	events    []onebot.Event
+	err       error
+	rejectAll bool
 }
 
-func (f *fakeConsumer) AcceptEvent(_ context.Context, event onebot.Event) error {
+func (f *fakeConsumer) AcceptEvent(_ context.Context, event onebot.Event) (bool, error) {
 	if f.err != nil {
-		return f.err
+		return false, f.err
+	}
+	if f.rejectAll {
+		return false, nil
 	}
 	f.events = append(f.events, event)
-	return nil
+	return true, nil
 }
 
 func newTestServer(t *testing.T, token string, consumer EventConsumer) *Server {
@@ -170,6 +174,22 @@ func TestReadableEventJSONFallsBackToRaw(t *testing.T) {
 	raw := []byte(`{not json`)
 	if got := string(readableEventJSON(raw)); got != string(raw) {
 		t.Fatalf("解析失败应退回原文，got %q", got)
+	}
+}
+
+func TestServerReturnsIgnoredWhenConsumerDeclines(t *testing.T) {
+	consumer := &fakeConsumer{rejectAll: true}
+	server := newTestServer(t, "", consumer)
+
+	rec := postEvent(t, server, "", `{"post_type":"message","message_type":"group","group_id":"1","message_id":1,"self_id":"other-bot"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 ignored", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"ignored"`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if len(consumer.events) != 0 {
+		t.Fatal("declined event must not reach the queue")
 	}
 }
 

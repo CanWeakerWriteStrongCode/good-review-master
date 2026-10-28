@@ -15,8 +15,8 @@ import (
 // 跑法：go test -bench BenchmarkAdd -benchmem ./cache/
 func BenchmarkAdd(b *testing.B) {
 	gc := &GroupMsgCache{
-		buf:      make([]Message, 1024),
-		msgIDSet: make(map[int64]struct{}, 1024),
+		buf:     make([]Message, 1024),
+		seenSet: make(map[seenKey]struct{}, 1024),
 	}
 	msg := Message{MessageID: 1, GroupID: "1", UserID: "1", Nickname: "张三", Content: "今天好累"}
 
@@ -33,8 +33,8 @@ func BenchmarkAdd(b *testing.B) {
 // 记下来是为了让"n≈20 条的复制可以忽略"这句话有个具体数字。
 func BenchmarkGetAll(b *testing.B) {
 	gc := &GroupMsgCache{
-		buf:      make([]Message, 20),
-		msgIDSet: make(map[int64]struct{}, 20),
+		buf:     make([]Message, 20),
+		seenSet: make(map[seenKey]struct{}, 20),
 	}
 	for i := 0; i < 20; i++ {
 		gc.Add(Message{MessageID: int64(i + 1), Content: "消息" + strconv.Itoa(i)})
@@ -47,11 +47,11 @@ func BenchmarkGetAll(b *testing.B) {
 	}
 }
 
-// BenchmarkHasMsgID 去重是轮询热路径上每条消息都要做的 O(1) 查找，必须零分配。
-func BenchmarkHasMsgID(b *testing.B) {
+// BenchmarkHasSeen 去重是轮询热路径上每条消息都要做的 O(1) 查找，必须零分配。
+func BenchmarkHasSeen(b *testing.B) {
 	gc := &GroupMsgCache{
-		buf:      make([]Message, 1024),
-		msgIDSet: make(map[int64]struct{}, 1024),
+		buf:     make([]Message, 1024),
+		seenSet: make(map[seenKey]struct{}, 1024),
 	}
 	for i := 0; i < 512; i++ {
 		gc.Add(Message{MessageID: int64(i + 1)})
@@ -60,7 +60,7 @@ func BenchmarkHasMsgID(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = gc.HasMsgID(256)
+		_ = gc.HasSeen("", 256)
 	}
 }
 

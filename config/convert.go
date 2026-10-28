@@ -30,6 +30,7 @@ func assemble(sections *sections) *Config {
 		AstrBotHTTPAPI:     sections.AstrBot.HTTPAPI,
 		AstrBotAccessToken: astrBotToken,
 		AllowGroups:        parseCommaList(sections.Bot.AllowGroups),
+		AllowSelfIDs:       parseCommaList(sections.Bot.AllowSelfIDs),
 		MaxCacheMsg:        sections.Runtime.MaxCacheMsg,
 		LLMSendCount:       sections.Runtime.LLMSendCount,
 		LLMTimeout:         time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,

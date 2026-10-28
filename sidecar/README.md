@@ -83,6 +83,9 @@ astrbot:
 bot:
   # QQ 官方机器人填 group_openid，不是 QQ 群号；填 "*" 表示所有群都响应
   allow_groups: "<group_openid>"
+  # Go 接管的机器人账号（OneBot self_id）；填 "*" 表示全部。
+  # 不在列表里的账号会收到 200 ignored，插件不 stop_event()，消息交给 AstrBot 自己的 Agent。
+  allow_self_ids: "*"
 
 runtime:
   im_listen_addr: "127.0.0.1:18090"
@@ -96,6 +99,11 @@ runtime:
 `group_openid` 从哪来：插件第一次收到某个群的消息时会打一条
 `首次收到群消息：group_id=...` 的日志，复制到 `bot.allow_groups` 即可（多个用逗号分隔）。
 也可以从 AstrBot 的会话列表 / 日志里取 Unified Message Origin。
+
+多账号同时运行时，用 `bot.allow_self_ids` 指定哪些机器人账号归 Go 管。插件只在 Go 返回
+`202 accepted` 时调用 `stop_event()`；返回 `200 ignored`（账号不在名单里、私聊、WebChat）
+时消息会继续走到 AstrBot 自己的 Agent，因此两边不会互相抢消息。两个账号同群、同昵称时，
+出站动作会带 `self_id`，插件按它选择账号，不会把回复从另一个账号发出去。
 
 真正的 @ 触发由插件写入事件的 `mentioned` 字段决定，不依赖 `[CQ:at,qq=...]` 的号码匹配；
 QQ 官方机器人只有 `openid`，没有数字 QQ 号，因此配置里也不再需要 `bot.qq`。

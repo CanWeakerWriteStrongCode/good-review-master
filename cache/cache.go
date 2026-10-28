@@ -13,6 +13,7 @@ import (
 type Message struct {
 	MessageID int64    `json:"msg_id"`
 	GroupID   string   `json:"group_id"`
+	SelfID    string   `json:"self_id,omitempty"` // 收到这条消息的机器人账号；同一群多账号时用于去重
 	UserID    string   `json:"user_id"`
 	Nickname  string   `json:"nick"`
 	Card      string   `json:"card"`
@@ -22,13 +23,25 @@ type Message struct {
 	Time      int64    `json:"time"`
 }
 
+// duplicateWindowSec 是跨账号同一条消息的时间容差。
+// 两个机器人账号同时收到同一条群消息时，平台时间戳基本一致；
+// 留几秒余量吸收推送延迟，同时避免把同一账号里正常的重复发言误判成重复。
+const duplicateWindowSec = 5
+
+// seenKey 是去重键：同一个 message_id 在不同账号下是两条不同的事件。
+// 用结构体而不是拼字符串，避免 Add 热路径上每次分配一个新字符串。
+type seenKey struct {
+	selfID string
+	msgID  int64
+}
+
 // GroupMsgCache 群消息环形缓存（零拷贝实现）
 type GroupMsgCache struct {
-	buf      []Message          // 固定大小环形缓冲区，只分配一次
-	writeAt  int                // 下一个写入位置
-	msgIDSet map[int64]struct{} // O(1) 去重查找
-	filled   bool               // 是否已写满一圈
-	mu       sync.RWMutex
+	buf     []Message            // 固定大小环形缓冲区，只分配一次
+	writeAt int                  // 下一个写入位置
+	seenSet map[seenKey]struct{} // O(1) 去重查找
+	filled  bool                 // 是否已写满一圈
+	mu      sync.RWMutex
 }
 
 // LLMAnchor 缓存扩展窗口锚点（per-group）：记录上次发送窗口的首尾消息 message_id。
@@ -55,8 +68,8 @@ func GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 		cacheMu.Lock()
 		if gc, ok = cacheMap[groupID]; !ok {
 			gc = &GroupMsgCache{
-				buf:      make([]Message, maxSize),
-				msgIDSet: make(map[int64]struct{}, maxSize),
+				buf:     make([]Message, maxSize),
+				seenSet: make(map[seenKey]struct{}, maxSize),
 			}
 			cacheMap[groupID] = gc
 		}
@@ -75,19 +88,58 @@ func (gc *GroupMsgCache) Add(msg Message) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 
+	key := seenKey{selfID: msg.SelfID, msgID: msg.MessageID}
+	if msg.MessageID != 0 {
+		if _, ok := gc.seenSet[key]; ok {
+			return
+		}
+	}
+	// 同一个物理群被多个机器人账号同时收消息时，每条消息会到达两次（self_id 不同）。
+	// 内容、发送者、时间都相同就只保留第一份，避免聊天记录里每条都出现两遍。
+	if gc.isCrossAccountDuplicate(msg) {
+		return
+	}
+
 	// 淘汰即将被覆盖的老消息
 	old := gc.buf[gc.writeAt]
 	if old.MessageID != 0 {
-		delete(gc.msgIDSet, old.MessageID)
+		delete(gc.seenSet, seenKey{selfID: old.SelfID, msgID: old.MessageID})
 	}
 
 	gc.buf[gc.writeAt] = msg
-	gc.msgIDSet[msg.MessageID] = struct{}{}
+	if msg.MessageID != 0 {
+		gc.seenSet[key] = struct{}{}
+	}
 	gc.writeAt++
 	if gc.writeAt >= len(gc.buf) {
 		gc.writeAt = 0
 		gc.filled = true
 	}
+}
+
+// isCrossAccountDuplicate 判断这条消息是不是另一个机器人账号已经收过的同一条消息。
+// 只在 self_id 不同、发送者/内容/引用目标相同且时间接近时成立，避免误伤正常的重复发言。
+func (gc *GroupMsgCache) isCrossAccountDuplicate(msg Message) bool {
+	if msg.Content == "" || msg.UserID == "" || msg.Time == 0 {
+		return false
+	}
+	n := gc.writeAt
+	if gc.filled {
+		n = len(gc.buf)
+	}
+	for i := 0; i < n; i++ {
+		old := gc.buf[i]
+		if old.MessageID == 0 || old.SelfID == msg.SelfID {
+			continue
+		}
+		if old.UserID != msg.UserID || old.Content != msg.Content || old.ReplyToID != msg.ReplyToID {
+			continue
+		}
+		if diff := old.Time - msg.Time; diff >= -duplicateWindowSec && diff <= duplicateWindowSec {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAll 获取所有缓存消息（按时间排序的快照副本）
@@ -110,11 +162,15 @@ func (gc *GroupMsgCache) GetAll() []Message {
 	return msgs
 }
 
-// HasMsgID 检查消息 ID 是否已在缓存中（O(1) map 查找）
-func (gc *GroupMsgCache) HasMsgID(msgID int64) bool {
+// HasSeen 检查某个机器人账号是否已经处理过这条消息（O(1) map 查找）。
+// 用 (self_id, message_id) 而不是单独 message_id：同一个物理群可能被多个账号同时收到。
+func (gc *GroupMsgCache) HasSeen(selfID string, msgID int64) bool {
+	if msgID == 0 {
+		return false
+	}
 	gc.mu.RLock()
 	defer gc.mu.RUnlock()
-	_, ok := gc.msgIDSet[msgID]
+	_, ok := gc.seenSet[seenKey{selfID: selfID, msgID: msgID}]
 	return ok
 }
 

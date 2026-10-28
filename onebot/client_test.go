@@ -135,6 +135,7 @@ func TestSendGroupReplySendsSegments(t *testing.T) {
 		}
 		var body struct {
 			GroupID string    `json:"group_id"`
+			SelfID  string    `json:"self_id"`
 			Message []Segment `json:"message"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -142,6 +143,9 @@ func TestSendGroupReplySendsSegments(t *testing.T) {
 		}
 		if body.GroupID != "10001" || len(body.Message) != 3 {
 			t.Fatalf("body = %+v", body)
+		}
+		if body.SelfID != "999" {
+			t.Errorf("self_id = %q，期望 999", body.SelfID)
 		}
 		if body.Message[0].Type != "reply" || body.Message[0].Data["id"] != "42" {
 			t.Errorf("reply segment = %+v", body.Message[0])
@@ -155,5 +159,5 @@ func TestSendGroupReplySendsSegments(t *testing.T) {
 		writeAction(t, w, map[string]any{"status": "ok", "retcode": 0})
 	})
 
-	client.SendGroupReply("10001", "42", "42", "hi")
+	client.SendGroupReply("10001", "999", "42", "42", "hi")
 }

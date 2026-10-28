@@ -62,6 +62,7 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event) {
 	msg := cache.Message{
 		MessageID: event.MessageID,
 		GroupID:   groupID,
+		SelfID:    event.SelfID,
 		UserID:    event.UserID,
 		Nickname:  event.DisplayName(),
 		Card:      event.Sender.Card,

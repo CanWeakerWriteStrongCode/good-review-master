@@ -56,17 +56,24 @@ func (b *Bot) Run(ctx context.Context) {
 //
 // 不在 HTTP 处理器里直接处理：一次 @ 会触发大模型调用，让桥接层等上几十秒没有任何好处，
 // 而且会让 AstrBot 的事件循环跟着阻塞。
-func (b *Bot) AcceptEvent(ctx context.Context, event onebot.Event) error {
+//
+// 账号白名单在这里判定而不是消费侧：桥接插件要根据 accepted 决定是否 stop_event()，
+// 不在 Go 管辖范围内的账号必须让它继续走到 AstrBot 自己的 Agent。
+func (b *Bot) AcceptEvent(ctx context.Context, event onebot.Event) (bool, error) {
+	if !b.cfg().HasSelfID(event.SelfID) {
+		return false, nil
+	}
+
 	timer := time.NewTimer(enqueueTimeout)
 	defer timer.Stop()
 
 	select {
 	case b.queue <- event:
-		return nil
+		return true, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-timer.C:
-		return fmt.Errorf("消息队列已满（容量 %d）", eventQueueSize)
+		return false, fmt.Errorf("消息队列已满（容量 %d）", eventQueueSize)
 	}
 }
 
@@ -80,10 +87,14 @@ func (b *Bot) dispatch(ctx context.Context, event onebot.Event) {
 	if !cfg.HasGroup(event.GroupID) {
 		return
 	}
+	// 另一个被 Go 接管的机器人账号发的消息：既不进上下文，也不能触发回复。
+	if cfg.IsManagedAccount(event.UserID) {
+		return
+	}
 
 	gc := cache.GetGroupCache(event.GroupID, cfg.MaxCacheMsg)
-	if event.MessageID != 0 && gc.HasMsgID(event.MessageID) {
-		logutil.Debug("跳过重复消息", "group", event.GroupID, "msgID", event.MessageID)
+	if gc.HasSeen(event.SelfID, event.MessageID) {
+		logutil.Debug("跳过重复消息", "group", event.GroupID, "self", event.SelfID, "msgID", event.MessageID)
 		return
 	}
 

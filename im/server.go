@@ -40,10 +40,14 @@ const (
 
 // EventConsumer 消费一条已解码的入站事件。
 //
+// AcceptEvent 返回 accepted=false 表示这条事件不归 Go 管（例如账号不在
+// bot.allow_self_ids 里）。调用方会回 200 ignored，桥接插件据此不调用
+// stop_event()，把消息交还给 AstrBot 自己的 Agent。
+//
 // AcceptEvent 必须**快速返回**：HTTP 处理器在它返回后才回 202。
 // 真正的处理（缓存、大模型）由实现方丢进自己的队列，不能在这里同步做大模型调用。
 type EventConsumer interface {
-	AcceptEvent(ctx context.Context, event onebot.Event) error
+	AcceptEvent(ctx context.Context, event onebot.Event) (accepted bool, err error)
 }
 
 // Server 接收 AstrBot 桥接插件推送的事件。
@@ -132,10 +136,20 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.consumer.AcceptEvent(r.Context(), event); err != nil {
+	accepted, err := s.consumer.AcceptEvent(r.Context(), event)
+	if err != nil {
 		telemetry.IMEventsTotal.WithLabelValues(telemetry.IMEventQueueFull).Inc()
 		logutil.Warn("IM 事件入队失败", "group", event.GroupID, "msgID", event.MessageID, "err", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	if !accepted {
+		// 200 instead of 202: the bridge treats this as "Go did not take over"
+		// and leaves the event to AstrBot's own agent.
+		telemetry.IMEventsTotal.WithLabelValues(telemetry.IMEventIgnored).Inc()
+		logutil.Debug("忽略 IM 事件", "reason", "self_id 不在 bot.allow_self_ids", "self", event.SelfID,
+			"group", event.GroupID, "msgID", event.MessageID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "self_id not allowed"})
 		return
 	}
 

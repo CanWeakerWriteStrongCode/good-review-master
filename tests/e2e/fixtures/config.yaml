@@ -5,6 +5,7 @@ astrbot:
   access_token: ""
 bot:
   allow_groups: "10001,10002"
+  allow_self_ids: "*"
 runtime:
   llm_send_count: 3   # 小重置窗口：便于缓存成本用例用少量消息触发重置/扩展
   llm_timeout_sec: 20

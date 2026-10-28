@@ -42,6 +42,7 @@ astrbot:
   http_api: "http://127.0.0.1:6199"
 bot:
   allow_groups: "10001,10002"
+  allow_self_ids: "bot-openid-1,bot-openid-2"
 runtime:
   llm_send_count: 3
   llm_timeout_sec: 20
@@ -87,6 +88,9 @@ func TestLoad基本配置(t *testing.T) {
 	}
 	if len(cfg.AllowGroups) != 2 || cfg.AllowGroups[0] != "10001" {
 		t.Errorf("AllowGroups = %v", cfg.AllowGroups)
+	}
+	if len(cfg.AllowSelfIDs) != 2 || cfg.AllowSelfIDs[0] != "bot-openid-1" {
+		t.Errorf("AllowSelfIDs = %v", cfg.AllowSelfIDs)
 	}
 	if cfg.PollInterval.Seconds() != 3 {
 		t.Errorf("PollInterval = %v", cfg.PollInterval)
