@@ -99,3 +99,17 @@ func TestPlainText只取文本段(t *testing.T) {
 		t.Fatalf("PlainText = %q", got)
 	}
 }
+
+func TestAdapterAtMe只在哨兵时采信(t *testing.T) {
+	sentinel := Event{Self: Self{UserID: SentinelSelfID}, QQAtMe: true}
+	if !sentinel.AdapterAtMe() {
+		t.Fatal("哨兵 + qq.at_me 应视为实现端明确 @ 了本账号")
+	}
+	realID := Event{Self: Self{UserID: "bot-openid"}, QQAtMe: true}
+	if realID.AdapterAtMe() {
+		t.Fatal("已有真实 self.user_id 时不能靠扩展覆盖标准匹配")
+	}
+	if (Event{Self: Self{UserID: SentinelSelfID}}).AdapterAtMe() {
+		t.Fatal("没有 qq.at_me 扩展时哨兵仍不可比较")
+	}
+}

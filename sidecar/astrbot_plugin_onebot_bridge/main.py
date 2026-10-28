@@ -48,7 +48,7 @@ DEFAULT_LISTEN_PORT = 6199
 
 ONEBOT_VERSION = "12"
 IMPL_NAME = "astrbot-plugin-onebot-bridge"
-PLUGIN_VERSION = "1.7.1"
+PLUGIN_VERSION = "1.7.4"
 
 # AstrBot 适配器类型 → OB12 平台名。OB12 平台名不允许下划线，
 # 所以 qq_official 这类适配器名必须显式映射；其它（wecom/lark/telegram…）
@@ -77,7 +77,9 @@ QQOFFICIAL_FILE = 4
 # 而 Go 侧拿到的是哈希后的 int64，必须在这里留一层映射。
 REF_CACHE_MAX = 512
 
-# AstrBot 在"机器人没有被 @"时会把 self_id 填成占位值；这些值不能当成真实身份。
+# AstrBot 在拿不到本账号 openid 时会把 self_id 填成占位值；这些值不能当成真实身份。
+# 常见根因是QQ 群设置里没给机器人「查看群所有信息」权限：QQ 不下发 mentions，
+# 适配器只能补占位 At。补上权限后 mentions[].is_you 会带真实 openid（本机实测）。
 SELF_ID_PLACEHOLDERS = {"", "qq_official", "unknown_selfid"}
 
 # 每个群最多记住多少 openid → 昵称；群成员再多也只影响展示名，不影响功能。
@@ -93,7 +95,7 @@ CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
     PLUGIN_NAME,
     "good-review",
     "把 AstrBot 事件以 OneBot 12 转发给外部 Go 服务，并实现 OneBot 12 动作服务",
-    "1.7.1",
+    "1.7.4",
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -170,6 +172,7 @@ class OneBotBridge(Star):
             except Exception as exc:
                 # 动作服务起不来只影响"Go 发消息"，不该影响入站转发。
                 logger.error(f"[onebot-bridge] 动作服务启动失败: {exc}")
+            self._log_mention_diag(event, msg)
             payload = self._build_payload(event)
             if payload is None:
                 # 机器人自己发的消息：不转发，也不让 AstrBot 再回复一遍。
@@ -223,6 +226,12 @@ class OneBotBridge(Star):
             "group_id": group_id,
             "user_id": str(getattr(getattr(msg, "sender", None), "user_id", "") or ""),
         }
+        # 群内没给机器人「查看群所有信息」权限时，QQ 的群 @ 事件只给占位 At、
+        # mentions 为空（本机 A 账号实测）；补上权限后 mentions[].is_you 会带真实
+        # openid，这里自然就不生效。兜底用带前缀的扩展字段显式报告“这是 @ 本账号”，
+        # 不伪造 self.user_id。
+        if self._placeholder_at_me(msg):
+            payload["qq.at_me"] = True
 
         # Go 回复时会把 message_id 原样带回，这里顺手记下 REFIDX 供可见引用使用。
         self._remember_ref(raw_message_id, message_id, self._extract_ref_idx(msg))
@@ -301,7 +310,10 @@ class OneBotBridge(Star):
                 segments.append({"type": "mention_all", "data": {}})
             elif name == "at":
                 qq = str(getattr(comp, "qq", "") or "")
-                if qq:
+                # 占位 At 不是任何人：它是权限缺失时“@ 了本账号”的替身，由 qq.at_me 表达。
+                # 当成 mention 上报，Go 会渲染出「@用户(qq_official)」写进聊天记录，
+                # 模型再照抄进回复。这里直接丢弃。
+                if qq and qq not in SELF_ID_PLACEHOLDERS:
                     segments.append({"type": "mention", "data": {"user_id": qq}})
             elif name == "reply":
                 # Go 侧缓存/锚点用同一条 message_id，引用关系因此能直接落地。
@@ -369,6 +381,69 @@ class OneBotBridge(Star):
             return str(event.get_platform_id() or "")
         except Exception:
             return ""
+
+    @staticmethod
+    def _placeholder_at_me(msg) -> bool:
+        """AstrBot 用占位 At 表示群 @，但没给可比较的 openid。
+
+        权限缺失（QQ 群设置里没给机器人「查看群所有信息」）时 QQ 不下发 mentions，
+        适配器只能补占位 At；补上权限后 mentions[].is_you 带真实 openid，不再走这里。
+        只在 self_id 也是占位值时成立；有真实 self_id 时走标准 mention 匹配。
+        """
+        self_id = str(getattr(msg, "self_id", "") or "")
+        if self_id not in ("qq_official", "unknown_selfid"):
+            return False
+        for comp in getattr(msg, "message", []) or []:
+            if type(comp).__name__.lower() != "at":
+                continue
+            if str(getattr(comp, "qq", "") or "") in ("qq_official", "unknown_selfid"):
+                return True
+        return False
+
+    def _log_mention_diag(self, event, msg) -> None:
+        """临时诊断：占位 @ 事件到底有没有 mentions / 真实 openid。
+
+        只在“占位 self + 占位 At”时打印，避免普通群消息和唤醒前缀刷屏。
+        at_wake 是 AstrBot 的唤醒判断（含 @ 与唤醒前缀），不作为 @ 证据、也不触发。
+        确认 QQ 官方的 mentions 行为后可删除。
+        """
+        if not self._placeholder_at_me(msg):
+            return
+        chain = getattr(msg, "message", []) or []
+        self_id = str(getattr(msg, "self_id", "") or "")
+
+        raw = getattr(msg, "raw_message", None)
+        mentions = []
+        for mention in (getattr(raw, "mentions", None) or []):
+            mentions.append({
+                "id": str(getattr(mention, "id", "") or ""),
+                "is_you": getattr(mention, "is_you", None),
+                "username": str(getattr(mention, "username", "") or ""),
+            })
+        chain_dump = []
+        for comp in chain:
+            item = {"type": type(comp).__name__}
+            if item["type"].lower() == "at":
+                item["qq"] = str(getattr(comp, "qq", "") or "")
+            text = getattr(comp, "text", None)
+            if text is not None:
+                item["text"] = str(text)[:200]
+            chain_dump.append(item)
+        raw_data = getattr(raw, "raw_data", None)
+        raw_summary = {}
+        if isinstance(raw_data, dict):
+            for key in ("id", "content", "mentions", "message_scene", "group_openid"):
+                if key in raw_data:
+                    raw_summary[key] = raw_data[key]
+        logger.info(
+            "[onebot-bridge][diag] platform_id=%s self_id=%r "
+            "mentions=%s chain=%s raw=%s",
+            self._platform_id(event),
+            self_id,
+            json.dumps(mentions, ensure_ascii=False, default=str),
+            json.dumps(chain_dump, ensure_ascii=False, default=str),
+            json.dumps(raw_summary, ensure_ascii=False, default=str),
+        )
 
     def _account_for(self, platform_id: str) -> str:
         """入站上报路径里的账号：优先平台实例的 AppID，取不到才用配置兜底。

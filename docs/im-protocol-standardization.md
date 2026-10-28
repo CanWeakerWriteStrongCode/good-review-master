@@ -11,7 +11,9 @@
 - 契约整体换成 **OneBot 12**：`self = {platform, user_id}`、ID 全字符串、事件/动作/消息段统一。
 - 取消扩展字段 `receiver_bot_account_id`：**平台取标准字段 `self.platform`，账号取传输端点**，
   路由键在 Go 内部拼成 `{platform}_{account}`。
-- `self.user_id` 只放真实可比值；拿不到就写哨兵 `unknown_selfid`，Go 见到哨兵一律不触发。
+- `self.user_id` 只放真实可比值；拿不到就写哨兵 `unknown_selfid`。实现端若明确知道
+  “这是 @ 本账号”但拿不到 openid，用 `qq.at_me=true` 扩展表达；Go 只在哨兵时采信，
+  不伪造 `self.user_id`，也不覆盖真实 mention 匹配。
 - 入站只做 OB12 webhook：`204` 即成功；取消 202/200「接管 / 不接管」语义。
 - 出站改标准动作（`send_message`、`get_self_info`、`get_group_info`、`get_group_member_info`），
   默认共用一个 `im.api_base`（多实现端时可按账号覆盖），不再传扩展参数 `self_id`。
@@ -145,9 +147,15 @@ QQ 官方只给 URL、不给 `file_id`，按扩展规则补 `data["qq.url"]`（�
 | 观测（本机 log/bot.log） | 值 | 结论 |
 |---|---|---|
 | B 真实 @（16:59:16） | `self.user_id = mention.user_id = 0C2F9A2A…`，`is_you=true` | @ 判定成立 |
-| A 真实 @（17:00:01） | 平台只给占位值，没有 mentions | 没有可比值 → 哨兵、不触发 |
+| A 未授权时 @（17:00:01 / 21:42） | 平台只给占位 At，`mentions=[]` | 没有可比值 → 哨兵；插件加 `qq.at_me` 表达 @ |
+| A 授权后 @（22:03:31） | `self.user_id = mention.user_id = AB30C9A3…`，`is_you=true` | 与 B 一样走标准比较 |
 | B 收到 @A 的普通消息（16:55:32） | `is_you=false`，无 mention | 不会误触发 |
 | B 换群（17:48:02，群 6CC6…） | 群内 openid 变了 | 群作用域，不能跨群复用 |
+
+> **占位不是协议行为，而是 QQ 群内权限缺失**：在 QQ 群设置里没给机器人「查看群所有
+> 信息」权限时，QQ 不下发 mention 元数据（`mentions=[]`），AstrBot 只能填占位 At；
+> 在群里给机器人补上该权限后，@ 事件恢复 `mentions[].is_you` 和真实 openid
+> （2026-10-28 22:03 实测）。哨兵与 `qq.at_me` 只是权限缺失时的兜底，不是常态。
 
 所以 `self.user_id` 只能做 @ 比较，不能当账号键；账号由端点说明「这条事件是哪个实例收的」。
 
@@ -155,19 +163,29 @@ QQ 官方只给 URL、不给 `file_id`，按扩展规则补 `data["qq.url"]`（�
 
 拿不到本群真实 openid 时，`self.user_id` 写 `unknown_selfid`：
 
-- Go 见到哨兵直接判定「不可比较、不触发」，消息仍然入缓存；
+- 标准 mention 比较不可用，消息仍然入缓存；
 - 不用 `account`、AppID、`client.robot.id` 去填充 `self.user_id`：
   它们和 `mention.user_id` 不同命名空间，填进去再补一个 `mention` 只是伪造匹配；
-- 该账号的群 @ 事件因此**不会回复**，这是「宁可漏回，不伪造匹配」的选择。
-  要恢复回复只能从平台原始 `content` 解析真实 `<@!id>`（待确认，见 4.1 第 9 条）。
+- 例外：实现端如果从平台事件类型能确认「这是群 @ 事件」，在事件顶层加
+  `qq.at_me: true`（OB12 带前缀扩展）。Go 只在 `self.user_id` 为哨兵时采信这个标记，
+  有真实 openid 时仍走标准 mention 比较。这不是伪造 ID，只是把适配器已知的事实带过来；
+- 本机实测（权限缺失时）：A 账号的群 @ 事件 `mentions=[]`、`raw.content` 也没有
+  `<@...>`，因此只能靠 `qq.at_me`，不能从原始内容解析；
+- **根因是 QQ 群内权限**：群设置里没给机器人「查看群所有信息」权限时，QQ 不下发
+  mention 元数据。2026-10-28 22:03 在群里授予该权限后，A 的 @ 事件恢复
+  `self.user_id = mention.user_id`（`is_you=true`），哨兵与 `qq.at_me` 退回兜底角色。
 
 ### 3.4 触发判定
 
 ```
-self.user_id == unknown_selfid        → 不触发（只入缓存）
+self.user_id == unknown_selfid:
+    qq.at_me == true                  → 触发
+    否则                               → 不触发（只入缓存）
 存在 mention.user_id == self.user_id  → 触发
 否则                                   → 不触发（只入缓存）
 ```
+
+`qq.at_me` 只在哨兵时生效；真实 `self.user_id` 存在时它被忽略，避免扩展覆盖标准匹配。
 
 `mention_all` 不算触发；收到事件但没被 @ 是合法事件。
 
@@ -195,15 +213,20 @@ self.user_id == unknown_selfid        → 不触发（只入缓存）
 3. 每个事件必须带 `id`（UUID）、`time`（秒，float）、`type`、`detail_type`、`sub_type`、`self`。
 3. `self.user_id` 按 `(platform, group_id)` 缓存：只存 `mentions[].is_you` 学到的本群 openid；
    拿不到就写哨兵 `unknown_selfid`，**不跨群复用**。
-4. AstrBot 为群 @ 事件补的占位 `At(qq=qq_official)` **直接丢弃**，不改写成 `mention` 段：
-   它的目标值不是任何真实账号 ID。
+4. AstrBot 为群 @ 事件补的占位 `At(qq=qq_official)` 不改写成真实 `mention`：
+   它的目标值不是任何账号 ID。`self_id` 为占位且消息链里有占位 At 时，
+   在事件顶层加 `qq.at_me: true`，Go 只在哨兵时采信。
+   **不要用 `is_at_or_wake_command` 代替**：它是 AstrBot 的唤醒判断，包含唤醒前缀，
+   普通 `#` 命令也会为真；占位 At 只由 `on_group_at_message_create` 添加。
 5. `message` 段用真实 ID：`mention.user_id` = 被 @ 成员的 openid；
    `@全体` 输出 `mention_all`；引用输出 `reply` 段。
 6. `alt_message` 由插件生成（`@昵称(ID)`、`[图片]` 这类可读形式），只作纯文本替代。
 7. `message_id` 用平台原始 ID（字符串），不做哈希，出站 `reply` 段能原样回传。
 8. 媒体：`image` / `file` 等只带 `data["qq.url"]`（QQ 官方给的是 URL，没有 file_id）。
-9. 待确认：A 的原始 `content` 是否含真实 `<@!member_openid>`。若有，可填进 `self.user_id`
-   与 `mention.user_id`，A 就能正常触发；这是唯一能解除「A 不回」的正当途径。
+9. **占位 `self_id` 的根因是群内权限**：机器人没有「查看群所有信息」权限时，QQ
+   不下发 `mentions`（2026-10-28 21:42 实测 A：`mentions=[]`、`raw.content` 只有剥掉 @
+   后的文本），AstrBot 只能填占位 At；补上权限后（22:03:31 实测）@ 事件恢复
+   `mentions[].is_you`，`self.user_id` 可直接比较。`qq.at_me` 只在权限仍然缺失时兜底。
 10. 无论是否被 @ 都上报；是否回复由 Go 判断。`notice` / `request` 等事件可以不上报（v1 只消费消息）。
 
 插件同时提供 OB12 动作服务（`POST /`）：
@@ -345,7 +368,7 @@ OB12 只定义「204/200 = 推送成功，其它 = 失败」。本项目在此�
    非 `message` 事件直接 ack 丢弃。
 3. 工作空间：ID = `{platform}_{account}`（点号替换为下划线）；名单匹配 ID；
    删除 `platform_id` / `self_id` / `nickname` 归属逻辑。
-4. 触发：`self.user_id` 为哨兵 → 不触发；否则比较 `mention.user_id`。
+4. 触发：`self.user_id` 为哨兵时看 `qq.at_me`；否则比较 `mention.user_id`。
 5. 文本：从段渲染；`mention` 渲染成 `@昵称(ID)`，名称由成员目录补（异步查
    `get_group_member_info` 并缓存），没有名称时用 `@用户(ID)`；`alt_message` 仅兜底。
 6. 出站：按账号 `api_base` 调 `POST /`；`send_message`、`get_self_info`、`get_group_info`、
@@ -361,7 +384,8 @@ OB12 只定义「204/200 = 推送成功，其它 = 失败」。本项目在此�
 8. 事件改写：`id/time/type/detail_type/sub_type/self` + 群消息字段；
    `self.platform` 取平台实例的 `meta().name`（`qq_official` 映射为 `qq`）。
    上报账号取平台实例的 AppID，避免一份插件配置只能服务一个机器人。
-9. `self.user_id` 按 `(platform, group)` 学 openid，学不到发哨兵；占位 At 丢弃。
+9. `self.user_id` 按 `(platform, group)` 学 openid，学不到发哨兵；占位 At 不伪造 mention，
+   改为在事件顶层带 `qq.at_me=true`。
 10. 消息段映射：`text` / `mention` / `mention_all` / `reply` / `image(qq.url)`；
     `alt_message` 生成；`message_id` 原样透传。
 11. 动作服务：按 4.1 的表实现 `POST /`，响应外壳与 `retcode` 按标准；`echo` 原样回传。
@@ -381,27 +405,33 @@ OB12 只定义「204/200 = 推送成功，其它 = 失败」。本项目在此�
 
 ## 8. 验证
 
-- 单测：`{platform}_{account}` 拼接与 ID 合法化；哨兵不触发；`mention.user_id == self.user_id`
-  才触发；`mention_all` 不触发；动作响应 `status/retcode` 解析；`echo` 回传；4xx 视为失败。
+- 单测：`{platform}_{account}` 拼接与 ID 合法化；哨兵默认不触发、带 `qq.at_me` 才触发；
+  `mention.user_id == self.user_id` 才触发；`mention_all` 不触发；动作响应
+  `status/retcode` 解析；`echo` 回传；4xx 视为失败。
 - E2E（mock OB12 实现端）：向 `/im/event/1906xxxx` 推两条事件——
   1. `self={qq, openid}` + `mention={openid}` → 204、工作空间入库、Go 调 mock 的 `POST /`
      发 `send_message{detail_type=group}`；
   2. `self={qq, openid}` + 无 mention → 204、入缓存、不发送。
 - E2E（QQ 官方，按本机日志复现）：
   1. B 的真实 @：`self.user_id == mention.user_id` → 触发；
-  2. A 的真实 @：`self.user_id = unknown_selfid`、无 mention → 不触发（预期）；
+  2. A 权限缺失时的 @：`self.user_id = unknown_selfid`、无 mention、`qq.at_me=true` → 触发；
+     授权后再补一条标准形态（`self.user_id == mention.user_id`）验证走常规路径；
   3. B 收到 @A 的普通消息：无 mention → 入 B 的缓存，不触发。
 - 稳定性：同一账号跨两个群时 `account` 不变、`self.user_id` 可以不同；
   归属始终按 `{platform}_{account}` 走。
-- 真实端：B 换群后仍归到 B 的工作空间；A 的哨兵事件不丢缓存。
+- 真实端：B 换群后仍归到 B 的工作空间；A 的哨兵事件带 `qq.at_me` 时能回复，普通消息不触发。
 - Satori：mock 一条 `message-created` → OB12 事件 → 回复经 sidecar 回到 Satori。
 
 ## 9. 风险
 
 - **`self.user_id` 群作用域**：QQ 官方换群后 openid 变化（6CC6 群已复现），
   只能做 @ 比较；账号必须来自端点，否则会出现「换群后归属丢失」。
-- **A 类账号不回复**：没有 mentions 的群 @ 事件只能发哨兵。需要先抓原始 `content`，
-  确认是否有真实 `<@!id>` 可解析；没有的话这是平台限制，不要用 AppID 伪造。
+- **`mentions` 缺失是权限问题，不是协议常态**：QQ 群设置里没给机器人「查看群所有信息」
+  权限时，QQ 不下发 mention 元数据，事件里只剩占位 At；补上权限后 `is_you` 与真实
+  openid 恢复（2026-10-28 22:03 实测）。部署时先确认权限，再依赖占位兜底。
+- **`qq.at_me` 依赖实现端行为**：权限缺失时群 @ 事件 `mentions=[]`，只能由插件在
+  “占位 self + 占位 At”时标 `qq.at_me`。如果适配器把普通消息也标成占位 At，会误触发；
+  因此 Go 只在 `self.user_id` 为哨兵时采信，且该扩展不覆盖真实 mention 比较。
 - **平台命名**：必须符合 `[a-z][-a-z0-9]*(\.[-a-z0-9]+)*`，`qq_official` 这类下划线非法；
   统一用 `qq` 需要和其它实现作者保持一致。
 - **生态薄**：现成 OB12 实现端少，AstrBot 没有官方支持，排障只能靠本地 mock；

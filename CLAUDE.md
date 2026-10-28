@@ -426,6 +426,13 @@ flag (`mentions[].is_you` on QQ official, `self_id` on aiocqhttp) and is learned
 cannot provide a comparable id, the bridge sends the sentinel `unknown_selfid`; `Event.MentionsBot()`
 is then always false and Go only caches the message — it never fakes a match with AppID/robot.id.
 
+The usual root cause of a missing id is group permission, not the protocol: without the bot's
+"view group members / group info" permission, QQ omits `mentions` entirely and the adapter can
+only emit a placeholder `At(qq="qq_official")`. After granting the bot the "view all group
+info" permission **inside the QQ group** (not on the QQ open platform), @ events carry
+`mentions[].is_you` plus the real group-scoped openid again (verified 2026-10-28). The
+sentinel and `qq.at_me` are fallbacks for the permission-missing case.
+
 `isAtBot(content, cfg, allowNickname)` is the fallback for adapters that emit no `mention`
 segment: it accepts a leading `@昵称` (only when that nickname uniquely belongs to one
 workspace) or `@你`. `@全体` / `mention_all` never triggers.

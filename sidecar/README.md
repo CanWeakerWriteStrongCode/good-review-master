@@ -129,8 +129,11 @@ runtime:
   `mention.user_id == self.user_id` 判定。
 - **`self.user_id` 按群学习**。QQ 官方的 openid 按群分配，插件按
   `(平台实例, 群)` 记住 `mentions[].is_you` 的那个 openid；没学到时发
-  `unknown_selfid`。哨兵事件只进缓存、不触发回复——不要拿 AppID / robot.id 去填，
-  它们和 mention 里的 openid 不是一个命名空间。
+  `unknown_selfid`。**拿不到通常是群内权限问题**：没给机器人「查看群所有信息」
+  权限时，QQ 不下发 `mentions`，只剩占位 At；在 QQ 群设置里给机器人授予该权限后，@ 事件就会带
+  `is_you` 和真实 openid（2026-10-28 实测）。不要拿 AppID / robot.id 去填，它们和
+  mention 里的 openid 不是一个命名空间。权限仍缺失时，插件在事件顶层加
+  `qq.at_me: true`；Go 只在哨兵时采信，普通消息不触发。
 - **`self.user_id` 不参与工作空间归属**：归属永远是 `{platform}_{路径 account}`。
 - `alt_message` 把 @ 渲染成 `@昵称(openid)`：昵称会变、也可能重名，括号里的 ID 才是
   模型判断「同一个人」的依据；成员名来自入站消息与 `mentions`，查不到时回落成 `@用户(ID)`。
@@ -189,8 +192,10 @@ AstrBot 的既有策略移除 `msg_id`，这类消息可能受主动推送额度
   （按 `workspace_id` 区分账号）；换机器或删库后从新消息开始攒。
 - **被动回复有 `msg_id` 窗口**：超出窗口的主动推送受官方频率/额度限制，失败会返回 retcode。
 - **消息 ID 是 `ROBOT1.0_...` 字符串**：OB12 原样透传，Go 侧从头到尾按字符串处理。
-- **拿不到 `is_you` 的 @ 不会触发**：适配器只能发 `unknown_selfid`，这是平台限制，
-  不要用 AppID 伪造匹配。
+- **拿不到 `is_you` 的 @ 不会触发**：先查 QQ 群设置里是否给了机器人「查看群所有信息」
+  权限——没有权限时 QQ 不下发 `mentions`，事件只能带占位 At / `unknown_selfid`；
+  补上权限后 `is_you` 与真实 openid 恢复（2026-10-28 实测）。仍拿不到时不要用
+  AppID 伪造匹配。
 
 ## 9. 验证
 
@@ -224,7 +229,8 @@ Go 返回 204 表示已接管；日志里会出现 `已自动开通工作空间`
 | Go 返回 503 | 事件队列满，检查是否卡在大模型调用 |
 | Go 返回 400 | 路径 account 非法，或 `self.platform` 缺失 / 不是合法平台名 |
 | 插件日志 `Go 未接管事件` | 按上一条确认；4xx 是预期的 AstrBot 兜底路径 |
-| 机器人被 @ 但不回复 | `self.user_id` 是 `unknown_selfid`（适配器没给 `is_you`）；看事件日志里的 `mentions` |
+| 机器人被 @ 但不回复 | 先查 QQ 群设置里是否给了机器人「查看群所有信息」权限；没权限时 `mentions=[]`、`self.user_id` 是 `unknown_selfid`，补上权限后重启 AstrBot 复测 |
+| 回复里出现 `@用户(qq_official)` | 旧版插件把占位 At 当 mention 上报（v1.7.4 已丢弃占位 At）；升级插件并重启 Go 清掉内存里的旧聊天记录 |
 | 回复发到另一个账号 | 两个账号用了不同的动作端口却只配了全局 `im.api_base`；给该账号加 `im.accounts[].api_base` 覆盖 |
 | 面板工作空间为空 | 还没收到任何事件；账号开通发生在第一条事件到达时 |
 | 官方机器人回复报主动消息额度/频率 | 超出被动回复窗口；减少主动推送，或在窗口内回复 |

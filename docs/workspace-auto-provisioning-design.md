@@ -268,7 +268,7 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 3. `astrbot.http_api` 迁到 `im.api_base`（旧值可自动接住）；
    `astrbot.access_token` 迁到 `im.token`。
 4. 插件 `go_event_url` 保持 `http://127.0.0.1:18090/im/event`（账号自动拼到路径），
-   同时升级到 1.7.1 的 OB12 事件格式；`account` 通常留空。
+   同时升级到 1.7.3 的 OB12 事件格式；`account` 通常留空。
 5. `bot.allow_self_ids` 删除；接管范围改由 `workspace_accounts` 判断。
 6. `platform_id` / `mentioned` / `display_message` 在 Go 与插件两侧同步删除；
    两侧必须一起升级，否则旧插件发的事件无法被新 Go 解析。
@@ -282,7 +282,8 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 - **卡片基数**：工作空间 ID 会进指标/面板，数量由名单与档案约束；
   名单用 `*` 时建议同时在网关层限制来源。
 - **哨兵 `self.user_id` 不影响归属**：路由用 `{platform}_{account}`，`self.user_id` 只用于 @ 判定；
-  哨兵只导致「本条不触发回复」，事件仍入缓存。
+  哨兵且实现端没有 `qq.at_me` 标记时只入缓存、不触发回复。哨兵本身多是群内权限
+  （「查看群所有信息」）缺失导致 `mentions` 不下发，授权后恢复真实 openid。
 - **`account` 必须稳定**：同一账号跨群、跨重启必须得到同一个值；不要用群内 openid
   或机器人昵称，优先 AppID。它变了会导致同一账号被开通成两个工作空间。
 - **平台名变化**：`self.platform` 从 `qq` 改成别的值会变成另一个工作空间；

@@ -79,9 +79,10 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 	// 只有值变化时才写库，避免每条消息一次同步 INSERT。
 	ws.LearnIdentity(groupID, event.Self.UserID)
 
-	// 触发只看标准 mention：收到事件不等于被 @，@全体也不等于 @ 本账号。
-	// self.user_id 为哨兵时 MentionsBot 恒为 false，这条消息只进缓存。
-	if event.MentionsBot() || isAtBot(content, cfg, b.allowNicknameFallback(ws, cfg.BotNickname)) {
+	// 触发优先级：标准 mention > 实现端显式 @ 标记（无 openid 时）> 昵称兜底。
+	// 收到事件不等于被 @，@全体也不等于 @ 本账号。
+	if event.MentionsBot() || event.AdapterAtMe() ||
+		isAtBot(content, cfg, b.allowNicknameFallback(ws, cfg.BotNickname)) {
 		// 把消费循环的 ctx 传下去：一次"消息 → 路由 → 大模型 → 工具调用"
 		// 因此成为同一条链路（trace span 能串起来），关机也能取消在途调用。
 		ws.Router.RouteMessage(ctx, content, event, groupID)

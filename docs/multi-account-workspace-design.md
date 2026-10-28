@@ -56,7 +56,7 @@
 
 ### 3.1 问题
 
-`self_id` 在 QQ 官方群消息里可能是占位值 `qq_official` / `unknown_selfid`（`onebot/types.go:65`）。它来自 mention 元数据，拿不到 @ 时无法解析；用它做工作空间主键会出现"同一条消息归属不明"。
+`self_id` 在 QQ 官方群消息里可能是占位值 `qq_official` / `unknown_selfid`（`onebot/types.go:65`）。它来自 mention 元数据：QQ 群设置里没给机器人「查看群所有信息」权限时 QQ 不下发 `mentions`，补上权限后才会带 `is_you` 和真实 openid（2026-10-28 实测）。拿不到时无法解析；用它做工作空间主键会出现"同一条消息归属不明"。
 
 ### 3.2 方案
 

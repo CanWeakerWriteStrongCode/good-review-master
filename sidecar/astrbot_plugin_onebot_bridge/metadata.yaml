@@ -1,6 +1,6 @@
 name: astrbot_plugin_onebot_bridge
 display_name: OneBot 12 桥接
 desc: 把 AstrBot 收到的消息以 OneBot 12 事件推送到外部 Go 服务，并实现 OneBot 12 的 send_message / 查询动作服务
-version: v1.7.1
+version: v1.7.4
 author: good-review
 astrbot_version: ">=4.0,<5"

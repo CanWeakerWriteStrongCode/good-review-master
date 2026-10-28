@@ -14,8 +14,11 @@ type Self struct {
 
 // SentinelSelfID 表示「本条事件里没有可与 mention.user_id 比较的机器人 ID」。
 //
-// QQ 官方在拿不到 mentions 时只给占位值；这时不能拿账号、AppID 或 robot.id 去填
-// self.user_id——它们与群内 openid 不同命名空间，填进去再补 mention 只是伪造匹配。
+// QQ 官方在拿不到 mentions 时只给占位值。根因通常是QQ 群设置里没给机器人
+// 「查看群所有信息」权限：此时平台不下发 mention 元数据，补上权限后
+// mentions[].is_you 会带真实 openid。哨兵只是这种权限缺失时的兜底。
+// 这时不能拿账号、AppID 或 robot.id 去填 self.user_id——它们与群内 openid
+// 不同命名空间，填进去再补 mention 只是伪造匹配。
 // Go 见到哨兵一律判定「不可比较」，只入缓存、不触发回复。
 const SentinelSelfID = "unknown_selfid"
 
@@ -35,6 +38,11 @@ type Event struct {
 	AltMessage string    `json:"alt_message"`
 	GroupID    string    `json:"group_id"`
 	UserID     string    `json:"user_id"`
+
+	// QQAtMe 是平台扩展（qq.at_me）：实现端明确知道这是一条群 @ 事件，
+	// 但拿不到本账号可比较的 openid（群内权限缺 mention 元数据时）。
+	// 只在 self.user_id 为哨兵时才采信；授权后走标准 mention 比较。
+	QQAtMe bool `json:"qq.at_me"`
 
 	Account string `json:"-"`
 }
@@ -78,6 +86,14 @@ func (e Event) MentionsBot() bool {
 		}
 	}
 	return false
+}
+
+// AdapterAtMe 判断实现端是否明确标记了“本事件 @ 了本账号”。
+//
+// 这是 qq.at_me 扩展的受控用法：只在 self.user_id 不可比较（哨兵/占位）时采信。
+// 有真实 self.user_id 时仍走标准 mention 匹配，扩展不能覆盖它。
+func (e Event) AdapterAtMe() bool {
+	return e.QQAtMe && e.BotID() == ""
 }
 
 // MentionsAll 判断是否 @ 全体（@全体不等于 @ 本账号，不触发回复）。
