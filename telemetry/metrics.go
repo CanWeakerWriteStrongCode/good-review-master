@@ -41,6 +41,13 @@ const (
 	IMEventQueueFull    = "queue_full"
 )
 
+// 主动插话裁判的结论取值。
+const (
+	ProactiveJudgeYes   = "yes"
+	ProactiveJudgeNo    = "no"
+	ProactiveJudgeError = "error"
+)
+
 var (
 	// ---------------- HTTP ----------------
 
@@ -99,6 +106,15 @@ var (
 		Help: "大模型累计成本（相对单位，由缓存命中/未命中单价折算），按 workspace 分组",
 	}, []string{"workspace"})
 
+	// LLMResponseFormatTotal 结构化输出实际使用的档位。
+	//
+	// json_schema → json_object → none 是逐级降级：后端不支持严格 schema 时
+	// 会自动退到 JSON 模式甚至纯提示词约束。降级是静默的，没有这条曲线就发现不了。
+	LLMResponseFormatTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_response_format_total",
+		Help: "结构化输出实际使用的 response_format 档位（json_schema/json_object/none）",
+	}, []string{"mode"})
+
 	// ---------------- 缓存窗口（本项目的核心业务指标） ----------------
 
 	// LLMWindowModeTotal 每次锐评选了哪种窗口：extend（吃缓存命中）还是 reset。
@@ -114,8 +130,15 @@ var (
 		Help: "累计命中的缓存前缀 token 数，按 workspace 分组",
 	}, []string{"workspace"})
 
-	// CacheMessages 各群当前缓存的消息条数。
-	//
+	// ProactiveJudgeTotal 主动插话（非 @）的裁判结论。
+	// 持续看 no 的比例可以判断提示词是否过保守；error 持续增长说明判定链路有问题
+	// （多半是结构化输出不被后端支持，见 LLMResponseFormatTotal）。
+	ProactiveJudgeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "proactive_judge_total",
+		Help: "主动插话裁判结论，按 workspace/result(yes/no/error) 分组",
+	}, []string{"workspace", "result"})
+
+	// CacheMessages 各群当前缓存的消息条数。	//
 	// 这里的 group 标签基数**有界**：只会为白名单里的群产生时间线（allow_groups 是显式配置的短名单）。
 	// 但它是全仓库唯一一个按业务 ID 打标签的指标，加新指标时不要照抄这个做法——
 	// route / status 这类无界标签会随请求内容增长，是 metrics 落地的经典事故。
@@ -239,9 +262,11 @@ func allCollectors() []prometheus.Collector {
 		LLMTokensTotal,
 		LLMRejectedTotal,
 		LLMCostTotal,
+		LLMResponseFormatTotal,
 
 		LLMWindowModeTotal,
 		LLMCacheHitTotal,
+		ProactiveJudgeTotal,
 		CacheMessages,
 		WorkspaceResolveTotal,
 

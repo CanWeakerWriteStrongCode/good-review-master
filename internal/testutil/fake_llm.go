@@ -3,6 +3,7 @@ package testutil
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"good-review-master/llm"
@@ -13,6 +14,13 @@ type LLMCall struct {
 	ChatLog      string `json:"chat_log"`
 	SystemPrompt string `json:"system_prompt"`
 	Reply        string `json:"reply"`
+}
+
+// JSONCall 记录一次 ChatJSON 调用（裁判用），含下发的 schema 与返回内容
+type JSONCall struct {
+	Messages []llm.Message
+	Schema   json.RawMessage
+	Response string
 }
 
 // ChatCall 记录一次 Chat 调用（完整消息快照、下发的工具名、本轮返回）
@@ -29,13 +37,18 @@ type FakeLLM struct {
 	mu        sync.Mutex
 	calls     []LLMCall
 	chatCalls []ChatCall
+	jsonCalls []JSONCall
 	script    []*llm.ChatResponse // Chat 的依次返回值，用完后回落固定 reply
 	reply     string
+	jsonReply string // ChatJSON 的固定返回（默认不回复）
 }
 
 // NewFakeLLM 创建返回固定回复的 FakeLLM
 func NewFakeLLM() *FakeLLM {
-	return &FakeLLM{reply: "【测试回复】锐评完毕"}
+	return &FakeLLM{
+		reply:     "【测试回复】锐评完毕",
+		jsonReply: `{"reply": false, "reason": "测试默认不回复"}`,
+	}
 }
 
 // SetReply 自定义固定回复内容
@@ -43,6 +56,13 @@ func (f *FakeLLM) SetReply(reply string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reply = reply
+}
+
+// SetJSONReply 自定义 ChatJSON 的固定返回（裁判结论）
+func (f *FakeLLM) SetJSONReply(reply string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jsonReply = reply
 }
 
 // Review 实现 llm.Client，记录调用并返回固定回复
@@ -102,6 +122,26 @@ func (f *FakeLLM) MutiChatWithTool(_ context.Context, messages []llm.Message, to
 	return resp, nil
 }
 
+// ChatJSON 实现 llm.Client：记录下发的 schema 与消息，返回预设的裁判结论
+func (f *FakeLLM) ChatJSON(_ context.Context, messages []llm.Message, schema json.RawMessage) (*llm.ChatResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	call := JSONCall{Schema: schema, Response: f.jsonReply}
+	call.Messages = make([]llm.Message, len(messages))
+	copy(call.Messages, messages)
+	f.jsonCalls = append(f.jsonCalls, call)
+	return &llm.ChatResponse{Content: f.jsonReply}, nil
+}
+
+// JSONCalls 返回已记录的 ChatJSON 调用副本
+func (f *FakeLLM) JSONCalls() []JSONCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]JSONCall, len(f.jsonCalls))
+	copy(out, f.jsonCalls)
+	return out
+}
+
 // ChatCalls 返回已记录 Chat 调用的副本
 func (f *FakeLLM) ChatCalls() []ChatCall {
 	f.mu.Lock()
@@ -117,5 +157,6 @@ func (f *FakeLLM) Reset() {
 	defer f.mu.Unlock()
 	f.calls = nil
 	f.chatCalls = nil
+	f.jsonCalls = nil
 	f.script = nil
 }

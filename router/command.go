@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"good-review-master/async"
 	"good-review-master/cache"
@@ -125,6 +126,10 @@ type Router struct {
 	// 同一分发路径读写，加锁防未来并发扩展。
 	groupPersonaMu sync.RWMutex
 	groupPersona   map[string]*groupPersonaBinding // groupID → 本群当前人格
+
+	// proactive 主动插话的每群状态。键是 groupID，但因为 Router 每个工作空间一个，
+	// 实际语义是 (workspace, group) 联合——同一个群里的两个机器人互不阻塞。
+	proactive proactiveRegistry
 
 	// personaStore 可选：把群人格的**源关键字**持久化到共享 state.db（带 workspace_id）。
 	// 只存关键字而不是渲染后的文本：提示词热更新后要按新版本重新绑定。
@@ -297,8 +302,17 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 // 引用的是 event.MessageID（别人 @ 我的那条），不是 event.QuotedMessageID()
 // （那条是发送者自己引用的消息）。QQ 官方用 message_reference + at 段；
 // 拿不到该消息的 REFIDX 时插件会退化成只 @ 不引用。
+//
+// 被点名回复同时清空主动插话的"连续发言"计数：对话对象已经切回机器人。
 func (r *Router) reply(event onebot.Event, groupID, text string) {
 	r.obClient.SendGroupReply(groupID, event.MessageID, event.UserID, text)
+	r.proactive.noteDirect(groupID, text, time.Now())
+}
+
+// replyQuoted 引用触发消息、不 @ 人（主动插话用）。
+// 主动接话不该把某人"架"出来回答，引用只用来让群友知道在接哪一句。
+func (r *Router) replyQuoted(event onebot.Event, groupID, text string) {
+	r.obClient.SendGroupReply(groupID, event.MessageID, "", text)
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
@@ -309,6 +323,17 @@ func (r *Router) reply(event onebot.Event, groupID, text string) {
 // 评测集若自己再拼一份，防的就是"评测全绿但线上照样回归"这种最没用的结果——
 // 而 5 处字符串拼接正是最容易各改各的那种代码。
 func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock string) string {
+	return composeSystemPrompt(cfg, botID, personaBlock, false)
+}
+
+// ComposeProactiveSystemPrompt 主动插话变体：聊天记录约定、身份、人格块都与上面一致，
+// 只把"【要求】"那句换成主动参与的说法——那条消息并没有 @ 机器人，
+// 继续沿用"根据最后@你的群友发的消息"会让模型找不到自己在回谁。
+func ComposeProactiveSystemPrompt(cfg *config.Config, botID, personaBlock string) string {
+	return composeSystemPrompt(cfg, botID, personaBlock, true)
+}
+
+func composeSystemPrompt(cfg *config.Config, botID, personaBlock string, proactive bool) string {
 	identity := ""
 	if cfg.BotNickname != "" {
 		identity = fmt.Sprintf("你的昵称是【%s】", cfg.BotNickname)
@@ -322,11 +347,16 @@ func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock string) string 
 	if identity != "" {
 		identity += "。"
 	}
+	requirement := "【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。"
+	if proactive {
+		requirement = "【要求】发给你的内容是聊天记录。你判断这条消息值得参与后才被唤起（主动参与群聊），" +
+			"请自然、简短地接话；不要复述别人说过的内容，也不要 @ 任何人。"
+	}
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
 		"%s【聊天记录】每行一条群消息，message_id 是本窗口内的消息序号，user_id 是发言者的稳定ID，nickname 是昵称，message 是正文；"+
 		"@昵称(ID) 表示 @ 了该用户，昵称可能变化，以括号里的 ID 为准。"+
 		"reply_id 表示该消息引用了哪条 message_id。"+
-		"【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。",
+		requirement,
 		cfg.LLMConfig.ModelName, identity)
 	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
 	if cfg.LLMConfig.ImageMax > 0 {

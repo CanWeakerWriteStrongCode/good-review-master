@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"good-review-master/logutil"
 )
@@ -482,6 +483,15 @@ func configsEqual(a, b *Config) bool {
 	if strings.Join(a.WorkspaceAccounts, ",") != strings.Join(b.WorkspaceAccounts, ",") {
 		return false
 	}
+	if a.ProactiveEnabled != b.ProactiveEnabled ||
+		a.ProactiveWindow != b.ProactiveWindow ||
+		a.ProactiveCooldown != b.ProactiveCooldown ||
+		a.ProactiveMaxStreak != b.ProactiveMaxStreak ||
+		a.ProactiveJudgeEvery != b.ProactiveJudgeEvery ||
+		a.ProactiveJudgeTimeout != b.ProactiveJudgeTimeout ||
+		a.ProactiveJudgeImages != b.ProactiveJudgeImages {
+		return false
+	}
 	if !reflect.DeepEqual(a.IMAccounts, b.IMAccounts) {
 		return false
 	}
@@ -503,4 +513,46 @@ func configsEqual(a, b *Config) bool {
 		}
 	}
 	return true
+}
+
+// TestProactive默认值 没写主动插话配置时，默认关闭且各阈值取文档里的缺省值。
+func TestProactive默认值(t *testing.T) {
+	cfg, err := loadWith(t, baseConfig, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if cfg.ProactiveEnabled {
+		t.Fatal("proactive_enabled 未配置时应默认关闭")
+	}
+	if cfg.ProactiveWindow != 15 || cfg.ProactiveCooldown != 90*time.Second ||
+		cfg.ProactiveMaxStreak != 5 || cfg.ProactiveJudgeEvery != 20*time.Second ||
+		cfg.ProactiveJudgeTimeout != 20*time.Second || cfg.ProactiveJudgeImages != 1 {
+		t.Fatalf("主动插话默认值不对：window=%d cooldown=%v streak=%d every=%v timeout=%v images=%d",
+			cfg.ProactiveWindow, cfg.ProactiveCooldown, cfg.ProactiveMaxStreak,
+			cfg.ProactiveJudgeEvery, cfg.ProactiveJudgeTimeout, cfg.ProactiveJudgeImages)
+	}
+}
+
+// TestProactive显式配置 显式写的值要原样进 Config，images=0 表示不判图（不能被默认值覆盖）。
+func TestProactive显式配置(t *testing.T) {
+	yaml := strings.Replace(baseConfig,
+		`workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
+		`workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  proactive_enabled: true
+  proactive_window_msgs: 8
+  proactive_cooldown_sec: 30
+  proactive_max_streak: 2
+  proactive_judge_interval_sec: 5
+  proactive_judge_timeout_sec: 3
+  proactive_judge_images: 0`, 1)
+	cfg, err := loadWith(t, yaml, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if !cfg.ProactiveEnabled || cfg.ProactiveWindow != 8 ||
+		cfg.ProactiveCooldown != 30*time.Second || cfg.ProactiveMaxStreak != 2 ||
+		cfg.ProactiveJudgeEvery != 5*time.Second || cfg.ProactiveJudgeTimeout != 3*time.Second ||
+		cfg.ProactiveJudgeImages != 0 {
+		t.Fatalf("显式配置未生效：%+v", cfg)
+	}
 }

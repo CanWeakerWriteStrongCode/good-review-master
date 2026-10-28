@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"good-review-master/logutil"
@@ -91,6 +94,10 @@ type Client interface {
 	// Chat 多轮对话；tools 非空时启用原生 function calling，
 	// 返回的 ToolCalls 非空表示模型要求调工具而非已给出最终答案
 	MutiChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error)
+	// ChatJSON 单轮、无工具、约束输出为 JSON。
+	// 优先用 response_format=json_schema(strict)，后端不支持时自动降级
+	// json_object → 不传 response_format（纯提示词约束），档位会被记住。
+	ChatJSON(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error)
 }
 
 // OpenAIAdapter 适配所有OpenAI协议的大模型（基于 go-openai SDK）
@@ -99,7 +106,20 @@ type OpenAIAdapter struct {
 	model  string
 	temp   float32
 	topP   float32
+
+	// jsonMode 记录 ChatJSON 可用的 response_format 档位（0=schema 1=object 2=none）。
+	// 后端对不支持的字段会回 400，降级一次后就不必每条消息都重试同一档。
+	jsonMode atomic.Int32
 }
+
+// ChatJSON 的 response_format 档位。
+const (
+	jsonModeSchema int32 = iota
+	jsonModeObject
+	jsonModeNone
+)
+
+var jsonModeNames = [...]string{"json_schema", "json_object", "none"}
 
 // NewOpenAIAdapter 创建OpenAI兼容的大模型客户端
 func NewOpenAIAdapter(apiKey, apiBase, model string, temp, topP float64) Client {
@@ -128,6 +148,56 @@ func (adapter *OpenAIAdapter) SingleChat(ctx context.Context, chatLog, systemPro
 
 // Chat 多轮对话；tools 非空时下发原生 function calling 工具清单
 func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error) {
+	return adapter.chatCompletion(ctx, messages, tools, nil)
+}
+
+// ChatJSON 见 Client 接口。按 schema → json_object → 无 的档位逐级降级：
+// 只有"看起来是 response_format 被拒"的 4xx 才降级，其它错误原样返回，
+// 避免把超时/鉴权问题误当成能力缺失。
+func (adapter *OpenAIAdapter) ChatJSON(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error) {
+	for {
+		mode := adapter.jsonMode.Load()
+		var format *openai.ChatCompletionResponseFormat
+		switch mode {
+		case jsonModeSchema:
+			format = &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+					Name:   "structured_output",
+					Strict: true,
+					Schema: schema,
+				},
+			}
+		case jsonModeObject:
+			format = &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+			}
+		}
+
+		resp, err := adapter.chatCompletion(ctx, messages, nil, format)
+		if err == nil {
+			telemetry.LLMResponseFormatTotal.WithLabelValues(jsonModeNames[mode]).Inc()
+			return resp, nil
+		}
+		if mode == jsonModeNone || !responseFormatRejected(err) {
+			return nil, err
+		}
+		next := mode + 1
+		if adapter.jsonMode.CompareAndSwap(mode, next) {
+			logutil.Warn("模型不支持该 response_format，已降级",
+				"model", adapter.model,
+				"from", jsonModeNames[mode], "to", jsonModeNames[next], "err", err)
+		}
+	}
+}
+
+// chatCompletion 是两条调用路径的公共实现：组装请求、打日志、计时、埋点、解析响应。
+// responseFormat 为 nil 时不带 response_format 字段（与改造前的请求字节一致）。
+func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Message, tools []Tool, responseFormat *openai.ChatCompletionResponseFormat) (*ChatResponse, error) {
+	formatName := "none"
+	if responseFormat != nil {
+		formatName = string(responseFormat.Type)
+	}
 	// 大模型调用是整条链路里最慢、最贵、最可能失败的一跳，span 与指标都埋在这里。
 	// 放在适配器而不是调用方：SingleChat 也走这个函数，两处入口都能覆盖到。
 	ctx, span := telemetry.StartSpan(ctx, "llm.chat",
@@ -135,16 +205,18 @@ func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []M
 		trace.WithAttributes(
 			attribute.String("llm.model", adapter.model),
 			attribute.Int("llm.tool_count", len(tools)),
+			attribute.String("llm.response_format", formatName),
 		))
 	defer span.End()
 
 	req := openai.ChatCompletionRequest{
-		Model:       adapter.model,
-		Messages:    toOpenAIMessages(messages),
-		Temperature: adapter.temp,
-		TopP:        adapter.topP,
-		Tools:       toOpenAITools(tools),
-		ToolChoice:  "auto",
+		Model:          adapter.model,
+		Messages:       toOpenAIMessages(messages),
+		Temperature:    adapter.temp,
+		TopP:           adapter.topP,
+		Tools:          toOpenAITools(tools),
+		ToolChoice:     "auto",
+		ResponseFormat: responseFormat,
 	}
 	// Debug 级把「发给大模型的完整请求 JSON」整段打出来。
 	// 字段顺序按模型 chat template 的渲染顺序排列（tools 在 messages 之前），
@@ -206,6 +278,33 @@ func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []M
 		})
 	}
 	return out, nil
+}
+
+// responseFormatRejected 判断错误是否像"后端不认识 response_format"。
+//
+// 只看 400/404/422/501 这类参数错误：鉴权(401/403)、限流(429)、超时(5xx 其他)
+// 与输出格式无关，降级只会把同一个错误再打两遍。
+// 部分中转的报错很笼统（不写 response_format），但同一份 messages 在没有该字段时
+// 是能通的，所以参数类状态码就够用了。
+func responseFormatRejected(err error) bool {
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		return formatRejectStatus(apiErr.HTTPStatusCode)
+	}
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		return formatRejectStatus(reqErr.HTTPStatusCode)
+	}
+	return false
+}
+
+func formatRejectStatus(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusNotFound,
+		http.StatusUnprocessableEntity, http.StatusNotImplemented:
+		return true
+	}
+	return false
 }
 
 // marshalRequestForLog 序列化调试日志用的请求体：tools 放在最前，messages 在后，

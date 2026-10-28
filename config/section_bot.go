@@ -22,6 +22,24 @@ type botSection struct {
 	// 只控制新建：已经有目录的工作空间不受名单限制，删名字不会让它停止工作。
 	// 必须匹配完整 ID 而不是单独的 account：不同平台可能出现相同的 account。
 	WorkspaceAccounts []string `yaml:"workspace_accounts"`
+
+	// ---- 主动插话（非 @ 时由大模型裁决要不要接话） ----
+	// 全局一份，所有工作空间共用；关闭时行为与改造前完全一致。
+
+	// ProactiveEnabled 主动插话总开关。默认 false。
+	ProactiveEnabled bool `yaml:"proactive_enabled"`
+	// ProactiveWindowMsgs 裁判能看到最近多少条消息。默认 15。
+	ProactiveWindowMsgs int `yaml:"proactive_window_msgs"`
+	// ProactiveCooldownSec 机器人主动发言后，该群多久内不再判定。默认 90。
+	ProactiveCooldownSec int `yaml:"proactive_cooldown_sec"`
+	// ProactiveMaxStreak 同一话题最多连续主动发言次数。默认 5。
+	ProactiveMaxStreak int `yaml:"proactive_max_streak"`
+	// ProactiveJudgeIntervalSec 两次判定的最小间隔（防止每条消息都调一次裁判）。默认 20。
+	ProactiveJudgeIntervalSec int `yaml:"proactive_judge_interval_sec"`
+	// ProactiveJudgeTimeoutSec 单次判定调用超时，超时按"不回复"处理。默认 20。
+	ProactiveJudgeTimeoutSec int `yaml:"proactive_judge_timeout_sec"`
+	// ProactiveJudgeImages 每次判定最多附几张图（纯图片消息）。默认 1；0 = 图片消息不判定。
+	ProactiveJudgeImages *int `yaml:"proactive_judge_images"`
 }
 
 func (s *botSection) Name() string { return "bot" }
@@ -30,8 +48,36 @@ func (s *botSection) Unmarshal(document *yaml.Node) error {
 	return decodeSection(document, s.Name(), s)
 }
 
-// SetDefaults 该域没有需要补齐的缺省值；保留空实现以满足 Section 接口。
-func (s *botSection) SetDefaults() {}
+// SetDefaults 补齐主动插话的默认值。
+//
+// 必须幂等：配置热更新的 informer 会反复调 Load。
+// 这里用 <=0 判定"没写"：判定间隔/冷却/上限写成 0 在业务上都没有意义，
+// 只有 proactive_judge_images 用指针区分"没写"与"显式写 0（不判图）"。
+func (s *botSection) SetDefaults() {
+	if s.ProactiveWindowMsgs <= 0 {
+		s.ProactiveWindowMsgs = 15
+	}
+	if s.ProactiveCooldownSec <= 0 {
+		s.ProactiveCooldownSec = 90
+	}
+	if s.ProactiveMaxStreak <= 0 {
+		s.ProactiveMaxStreak = 5
+	}
+	if s.ProactiveJudgeIntervalSec <= 0 {
+		s.ProactiveJudgeIntervalSec = 20
+	}
+	if s.ProactiveJudgeTimeoutSec <= 0 {
+		s.ProactiveJudgeTimeoutSec = 20
+	}
+	if s.ProactiveJudgeImages == nil {
+		defaultImages := 1
+		s.ProactiveJudgeImages = &defaultImages
+	}
+	if *s.ProactiveJudgeImages < 0 {
+		zero := 0
+		s.ProactiveJudgeImages = &zero
+	}
+}
 
 // Validate 只做"不可能工作"的判定。
 //

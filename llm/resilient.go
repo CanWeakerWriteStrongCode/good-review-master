@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -97,6 +98,18 @@ func (c *resilientClient) MutiChatWithTool(ctx context.Context, messages []Messa
 	err := c.guard(func() error {
 		var callErr error
 		response, callErr = c.inner.MutiChatWithTool(ctx, messages, tools)
+		return callErr
+	})
+	return response, err
+}
+
+// ChatJSON 见 Client 接口。判定调用也要过同一套限速与熔断：
+// 上游已经连续失败时，没必要再为"要不要接话"多打一次请求。
+func (c *resilientClient) ChatJSON(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error) {
+	var response *ChatResponse
+	err := c.guard(func() error {
+		var callErr error
+		response, callErr = c.inner.ChatJSON(ctx, messages, schema)
 		return callErr
 	})
 	return response, err

@@ -92,7 +92,7 @@ func TestRunChatWithTools_单轮工具调用后作答(t *testing.T) {
 	mcp := weatherMCP("晴，32℃，东南风 2 级")
 	r := newToolLoopRouter(fakeLLM, mcp, 5, 2000)
 
-	reply, err := r.runChatWithTools(context.Background(), "你是锐评大师", "以下是群聊记录：\n张三：今天好热")
+	reply, err := r.runChatWithTools(context.Background(), "你是锐评大师", "以下是群聊记录：\n张三：今天好热", nil)
 	if err != nil {
 		t.Fatalf("期望成功，得到错误: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestRunChatWithTools_轮数上限后撤回工具(t *testing.T) {
 	mcp := weatherMCP("晴，32℃")
 	r := newToolLoopRouter(fakeLLM, mcp, 2, 2000)
 
-	reply, err := r.runChatWithTools(context.Background(), "你是锐评大师", "以下是群聊记录：\n张三：今天好热")
+	reply, err := r.runChatWithTools(context.Background(), "你是锐评大师", "以下是群聊记录：\n张三：今天好热", nil)
 	if err != nil {
 		t.Fatalf("期望成功，得到错误: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestRunChatWithTools_工具报错回填给模型(t *testing.T) {
 		mcp.errs = map[string]error{"get_weather": errors.New("连接超时")}
 		r := newToolLoopRouter(fakeLLM, mcp, 5, 2000)
 
-		if _, err := r.runChatWithTools(context.Background(), "s", "u"); err != nil {
+		if _, err := r.runChatWithTools(context.Background(), "s", "u", nil); err != nil {
 			t.Fatalf("工具失败不该中断对话，得到错误: %v", err)
 		}
 		got := fakeLLM.ChatCalls()[1].Messages[3].Content
@@ -205,7 +205,7 @@ func TestRunChatWithTools_工具报错回填给模型(t *testing.T) {
 		mcp.errs = map[string]error{"get_weather": errors.New("工具执行报错")}
 		r := newToolLoopRouter(fakeLLM, mcp, 5, 2000)
 
-		if _, err := r.runChatWithTools(context.Background(), "s", "u"); err != nil {
+		if _, err := r.runChatWithTools(context.Background(), "s", "u", nil); err != nil {
 			t.Fatalf("期望成功，得到错误: %v", err)
 		}
 		got := fakeLLM.ChatCalls()[1].Messages[3].Content
@@ -222,7 +222,7 @@ func TestRunChatWithTools_工具报错回填给模型(t *testing.T) {
 		)
 		r := newToolLoopRouter(fakeLLM, weatherMCP("晴"), 5, 2000)
 
-		if _, err := r.runChatWithTools(context.Background(), "s", "u"); err != nil {
+		if _, err := r.runChatWithTools(context.Background(), "s", "u", nil); err != nil {
 			t.Fatalf("期望成功，得到错误: %v", err)
 		}
 		got := fakeLLM.ChatCalls()[1].Messages[3].Content
@@ -243,7 +243,7 @@ func TestRunChatWithTools_工具结果按字符数截断(t *testing.T) {
 	long := strings.Repeat("晴", 30)
 	r := newToolLoopRouter(fakeLLM, weatherMCP(long), 5, 10)
 
-	if _, err := r.runChatWithTools(context.Background(), "s", "u"); err != nil {
+	if _, err := r.runChatWithTools(context.Background(), "s", "u", nil); err != nil {
 		t.Fatalf("期望成功，得到错误: %v", err)
 	}
 	got := fakeLLM.ChatCalls()[1].Messages[3].Content
@@ -259,7 +259,7 @@ func TestRunChatWithTools_空回复算失败(t *testing.T) {
 	fakeLLM.SetChatScript(&llm.ChatResponse{Content: "   "})
 	r := newToolLoopRouter(fakeLLM, weatherMCP("晴"), 5, 2000)
 
-	if _, err := r.runChatWithTools(context.Background(), "s", "u"); !errors.Is(err, errEmptyReply) {
+	if _, err := r.runChatWithTools(context.Background(), "s", "u", nil); !errors.Is(err, errEmptyReply) {
 		t.Fatalf("期望 errEmptyReply，得到: %v", err)
 	}
 }
@@ -280,7 +280,7 @@ func TestRunReviewLLM_无工具时走单轮调用(t *testing.T) {
 			fakeLLM.SetReply("单轮回复")
 			r := newToolLoopRouter(fakeLLM, tc.provider, 5, 2000)
 
-			reply, err := r.runReviewLLM(context.Background(), "系统提示", "用户消息")
+			reply, err := r.runReviewLLM(context.Background(), "系统提示", "用户消息", nil)
 			if err != nil {
 				t.Fatalf("期望成功，得到错误: %v", err)
 			}
@@ -305,7 +305,7 @@ func TestRunReviewLLM_有工具时走工具循环(t *testing.T) {
 	fakeLLM.SetReply("带工具的回复")
 	r := newToolLoopRouter(fakeLLM, weatherMCP("晴"), 5, 2000)
 
-	if _, err := r.runReviewLLM(context.Background(), "系统提示", "用户消息"); err != nil {
+	if _, err := r.runReviewLLM(context.Background(), "系统提示", "用户消息", nil); err != nil {
 		t.Fatalf("期望成功，得到错误: %v", err)
 	}
 	if len(fakeLLM.ChatCalls()) != 1 {

@@ -33,17 +33,13 @@ type MCPProvider interface {
 // 但第 2 轮起前缀与上一轮完全一致，走大模型的 prefix cache 命中价，边际成本很低；
 // 真正的新增开销只有 assistant 的 tool_calls 和 tool 结果那几条消息。
 // 轮数用尽后撤回 tools 字段，模型只能基于已拿到的信息直接作答，杜绝无限调用。
-func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg string) (string, error) {
+func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg string, images []llm.Image) (string, error) {
 	// 一次工具循环全程用同一份配置：轮数上限与看图上限是同一次对话的两条硬约束，
 	// 中途换掉会让"最多 N 轮"这类保证失去意义
 	cfg := r.appCfg()
 	tools := r.mcp.Tools()
 	maxRounds := cfg.MCPConfig.MaxToolRounds
 	logutil.Info("对话走 MCP 工具循环", "注入工具数", len(tools), "最大轮数", maxRounds, "工具token", r.mcp.ToolsTokens())
-	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: systemPrompt},
-		{Role: llm.RoleUser, Content: userMsg},
-	}
 
 	// 实际看图硬上限：真正烧视觉 token 的是「把图回传」，不是候选列表。
 	// viewLimit<=0 表示不限制（此时不会有内置 view_image 工具注入）。
@@ -52,6 +48,27 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 	// 本次回复内已展示过的图片（按 data URL 去重）：图一旦以 user 消息喂回就会留在
 	// 后续所有轮次的上下文里，模型再次点名同一张无需重复载入，也不占用查看上限。
 	seenImages := make(map[string]bool)
+
+	// 主动插话时裁判已经下载过的图直接随首条 user 消息喂进来：
+	// 否则生成阶段只能看到"[图片]"占位（或再走一次 view_image），
+	// 会出现"裁判看懂了新闻、回复却在说图拍得不错"的割裂。这些图同样计入查看上限。
+	userMessage := llm.Message{Role: llm.RoleUser, Content: userMsg}
+	for _, img := range images {
+		if viewLimit > 0 && viewed >= viewLimit {
+			break
+		}
+		url := llm.DataURL(img.MIMEType, img.Data)
+		if seenImages[url] {
+			continue
+		}
+		seenImages[url] = true
+		userMessage.ImageDataURLs = append(userMessage.ImageDataURLs, url)
+		viewed++
+	}
+	messages := []llm.Message{
+		{Role: llm.RoleSystem, Content: systemPrompt},
+		userMessage,
+	}
 
 	for round := 1; ; round++ {
 		roundTools := tools

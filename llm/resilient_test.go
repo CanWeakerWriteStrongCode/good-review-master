@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -37,6 +38,13 @@ func (s *stubClient) SingleChat(context.Context, string, string) (string, error)
 }
 
 func (s *stubClient) MutiChatWithTool(context.Context, []Message, []Tool) (*ChatResponse, error) {
+	if err := s.record(); err != nil {
+		return nil, err
+	}
+	return &ChatResponse{Content: s.reply}, nil
+}
+
+func (s *stubClient) ChatJSON(context.Context, []Message, json.RawMessage) (*ChatResponse, error) {
 	if err := s.record(); err != nil {
 		return nil, err
 	}

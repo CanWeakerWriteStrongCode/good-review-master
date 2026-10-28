@@ -12,6 +12,15 @@ bot:
   # 空列表 = 不自动开通（安全默认）；已记录在 state.db 里的工作空间不受名单影响，
   # 重启会直接恢复。QQ 官方机器人的账号填 AppID，平台名固定 qq，所以是 qq_<AppID>。
   workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
+  # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
+  proactive_enabled: true
+  proactive_window_msgs: 15
+  proactive_cooldown_sec: 90
+  proactive_max_streak: 5
+  proactive_judge_interval_sec: 20
+  proactive_judge_timeout_sec: 20
+  proactive_judge_images: 1        # 0 = 图片消息不判定；需 llm.image_max>0 才有效
 
 # ===== IM 接入（OneBot 12） =====
 # 入站事件由实现端（AstrBot 插件 / Satori sidecar）推送到 runtime.im_listen_addr，

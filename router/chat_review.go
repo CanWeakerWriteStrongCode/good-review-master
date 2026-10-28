@@ -7,6 +7,7 @@ import (
 
 	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
 	"good-review-master/telemetry"
@@ -20,43 +21,70 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 	logutil.InfoCtx(parent, "触发锐评", "group", groupID, "user", r.nameOf(groupID, event.UserID), "user_id", event.UserID)
 	// 一次锐评是一个完整的业务动作，全程用同一份配置：
 	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
-	cfg := r.appCfg()
 	r.GoCtx(parent, func(ctx context.Context) error {
-		msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
-		if len(msgs) == 0 {
-			r.reply(event, groupID, "暂无群聊记录，无法锐评~")
-			return nil
-		}
-
-		// 按 token 成本决定扩展/重置，得到本次要发送的窗口
-		chatLogMsgs := r.selectChatWindow(msgs, groupID, systemPrompt, cfg)
-		chatLog := cache.BuildChatLog(chatLogMsgs)
-
-		ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)
-		defer cancel()
-		userMsg := BuildUserMsg(chatLog, keywordPrompt)
-		// agent「看图」：窗口内有图片且 view_image 工具在线时，附上候选图列表（懒加载，图不随文本常驻）
-		if cfg.LLMConfig.ImageMax > 0 && r.mcp != nil && len(r.mcp.Tools()) > 0 {
-			if block := r.imageCandidatesBlock(chatLogMsgs); block != "" {
-				userMsg += "\n" + block
-			}
-		}
-
-		reply, err := r.runReviewLLM(ctx, systemPrompt, userMsg)
-		if err != nil {
-			logutil.Error("大模型调用失败", "err", err)
-			r.reply(event, groupID, "大师今天罢工了，稍后再试~")
-			return nil
-		}
-		r.reply(event, groupID, reply)
-
-		// 保存锚点（窗口首条 + 末条 message_id）
-		r.cacheStore().SetLLMAnchor(groupID, cache.LLMAnchor{
-			Start:    chatLogMsgs[0].MessageID,
-			LastSent: chatLogMsgs[len(chatLogMsgs)-1].MessageID,
-		})
+		r.chatReplyNow(ctx, event, groupID, systemPrompt, keywordPrompt, true, nil)
 		return nil
 	})
+}
+
+// chatReplyNow 同步完成一次"选窗 → 调模型 → 发送 → 记录锚点"。
+//
+// @ 链路由 chatReview 包成 goroutine；主动插话的 worker 本身已在串行 goroutine 里，
+// 直接同步调用——它需要知道有没有产出可发送的回复，才能决定要不要记冷却与连续计数。
+// mention=false 时只引用触发消息、不 @ 人（主动接话不该把人架出来回答）。
+func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image) (string, bool) {
+	cfg := r.appCfg()
+	msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
+	if len(msgs) == 0 {
+		if mention {
+			r.reply(event, groupID, "暂无群聊记录，无法锐评~")
+		}
+		return "", false
+	}
+
+	// 按 token 成本决定扩展/重置，得到本次要发送的窗口
+	chatLogMsgs := r.selectChatWindow(msgs, groupID, systemPrompt, cfg)
+	chatLog := cache.BuildChatLog(chatLogMsgs)
+
+	ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)
+	defer cancel()
+	userMsg := BuildUserMsg(chatLog, keywordPrompt)
+	// agent「看图」：窗口内有图片且 view_image 工具在线时，附上候选图列表（懒加载，图不随文本常驻）
+	if cfg.LLMConfig.ImageMax > 0 && r.mcp != nil && len(r.mcp.Tools()) > 0 {
+		if block := r.imageCandidatesBlock(chatLogMsgs); block != "" {
+			userMsg += "\n" + block
+		}
+	}
+	// 主动插话的候选消息图片由裁判阶段下载好，随本次请求直接附上；
+	// 必须明确告诉模型"图已经给你了"，否则它只会看到聊天记录里的"[图片]"占位。
+	if len(images) > 0 {
+		userMsg += "\n【图片】最后一条消息附带图片，已随本次请求提供，请结合图片内容回答。"
+	}
+
+	reply, err := r.runReviewLLM(ctx, systemPrompt, userMsg, images)
+	if err != nil {
+		logutil.Error("大模型调用失败", "err", err, "group", groupID)
+		if mention {
+			r.reply(event, groupID, "大师今天罢工了，稍后再试~")
+		}
+		return "", false
+	}
+	if strings.TrimSpace(reply) == "" {
+		return "", false
+	}
+
+	if mention {
+		r.reply(event, groupID, reply)
+	} else {
+		r.replyQuoted(event, groupID, reply)
+	}
+
+	// 保存锚点（窗口首条 + 末条 message_id）
+	r.cacheStore().SetLLMAnchor(groupID, cache.LLMAnchor{
+		Start:    chatLogMsgs[0].MessageID,
+		LastSent: chatLogMsgs[len(chatLogMsgs)-1].MessageID,
+	})
+	return reply, true
 }
 
 // selectChatWindow 按 token 成本决定扩展还是重置，返回本次要发送的窗口消息。
@@ -97,16 +125,32 @@ func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPr
 // runReviewLLM 按当前是否有可用 MCP 工具决定走工具循环还是单轮调用。
 // 工具清单为空（MCP 未启用 / 服务全挂 / inject 全关）时走原来的单轮路径，
 // 请求体里不带 tools 字段，与改造前的字节完全一致，不会无故击穿缓存。
-func (r *Router) runReviewLLM(ctx context.Context, systemPrompt, userMsg string) (string, error) {
+// images 非空时以多模态消息下发（目前只有主动插话会传：裁判已下载过的最新图片）。
+func (r *Router) runReviewLLM(ctx context.Context, systemPrompt, userMsg string, images []llm.Image) (string, error) {
 	if r.mcp != nil && len(r.mcp.Tools()) > 0 {
-		return r.runChatWithTools(ctx, systemPrompt, userMsg)
+		return r.runChatWithTools(ctx, systemPrompt, userMsg, images)
 	}
 	if r.mcp == nil {
 		logutil.Info("MCP 未注入：路由器没有 MCP 提供者，走单轮调用")
 	} else {
 		logutil.Info("MCP 未注入：当前无在线可注入工具（服务全挂或 inject 全关），走单轮调用")
 	}
-	return r.llmClient.SingleChat(ctx, userMsg, systemPrompt)
+	if len(images) == 0 {
+		return r.llmClient.SingleChat(ctx, userMsg, systemPrompt)
+	}
+
+	dataURLs := make([]string, 0, len(images))
+	for _, img := range images {
+		dataURLs = append(dataURLs, llm.DataURL(img.MIMEType, img.Data))
+	}
+	resp, err := r.llmClient.MutiChatWithTool(ctx, []llm.Message{
+		{Role: llm.RoleSystem, Content: systemPrompt},
+		{Role: llm.RoleUser, Content: userMsg, ImageDataURLs: dataURLs},
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
 }
 
 // mcpToolsTokens MCP 工具清单折算的 token 数（未启用时 0）

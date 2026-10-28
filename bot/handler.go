@@ -103,7 +103,12 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 		// 把消费循环的 ctx 传下去：一次"消息 → 路由 → 大模型 → 工具调用"
 		// 因此成为同一条链路（trace span 能串起来），关机也能取消在途调用。
 		ws.Router.RouteMessage(ctx, content, event, groupID)
+		return
 	}
+
+	// 没被点名：交给主动插话链路，由大模型裁决要不要接话。
+	// 门控、冷却、串行 worker 全在 Router 内，功能关闭时这里是空操作。
+	ws.Router.TryProactive(ctx, event, groupID, content)
 }
 
 // allowNicknameFallback 昵称兜底只在昵称唯一归属一个工作空间时可信。

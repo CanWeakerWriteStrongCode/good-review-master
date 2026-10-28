@@ -19,25 +19,34 @@ type Config struct {
 	BotNickname       string      // 运行时设置（get_self_info 结果），不来自配置文件
 	AllowGroups       []string    // 群白名单；含 "*" 表示全部群
 	WorkspaceAccounts []string    // 允许自动开通的工作空间 ID；含 "*" 表示全部
-	MaxCacheMsg       int         // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
-	LLMSendCount      int         // 每次发送 LLM 的消息条数（重置窗口）
-	LLMTimeout        time.Duration
-	MaxMsgRune        int
-	PollInterval      time.Duration // 旧轮询间隔（保留兼容，sidecar 推送模型不再使用）
-	IMListenAddr      string        // AstrBot sidecar 推送事件的监听地址
-	BackfillOnStart   bool          // 旧配置兼容字段；OneBot 12 无历史动作，历史来自 state.db
-	WebPort           int           // Web 管理面板端口，<=0 禁用
-	WebUsername       string        // Web 管理面板登录账号
-	WebPassword       string        // Web 管理面板登录密码
-	JWTSecret         string        // JWT 签名密钥；未配置时回退为 WebPassword
-	McpBuiltinToken   string        // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
-	CorsOrigins       []string      // 允许跨域访问管理面板的来源白名单；空=仅同源
-	EnablePprof       bool          // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
-	ShutdownDelay     time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
-	MetricsAddr       string        // Prometheus /metrics 的独立监听地址；等于 config.MetricsAddrOff 表示关闭
-	OTLPEndpoint      string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
-	LLMConfig         LLMConf
-	MCPConfig         MCPConf
+
+	// 主动插话（非 @ 时由大模型裁决）。全局一份，所有工作空间共用。
+	ProactiveEnabled      bool
+	ProactiveWindow       int           // 裁判看的最近消息条数
+	ProactiveCooldown     time.Duration // 主动发言后该群的冷却
+	ProactiveMaxStreak    int           // 同一话题最多连续主动发言次数
+	ProactiveJudgeEvery   time.Duration // 两次判定的最小间隔
+	ProactiveJudgeTimeout time.Duration // 单次判定超时（超时=不回复）
+	ProactiveJudgeImages  int           // 每次判定最多附几张图；0=图片消息不判定
+	MaxCacheMsg           int           // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
+	LLMSendCount          int           // 每次发送 LLM 的消息条数（重置窗口）
+	LLMTimeout            time.Duration
+	MaxMsgRune            int
+	PollInterval          time.Duration // 旧轮询间隔（保留兼容，sidecar 推送模型不再使用）
+	IMListenAddr          string        // AstrBot sidecar 推送事件的监听地址
+	BackfillOnStart       bool          // 旧配置兼容字段；OneBot 12 无历史动作，历史来自 state.db
+	WebPort               int           // Web 管理面板端口，<=0 禁用
+	WebUsername           string        // Web 管理面板登录账号
+	WebPassword           string        // Web 管理面板登录密码
+	JWTSecret             string        // JWT 签名密钥；未配置时回退为 WebPassword
+	McpBuiltinToken       string        // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
+	CorsOrigins           []string      // 允许跨域访问管理面板的来源白名单；空=仅同源
+	EnablePprof           bool          // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
+	ShutdownDelay         time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
+	MetricsAddr           string        // Prometheus /metrics 的独立监听地址；等于 config.MetricsAddrOff 表示关闭
+	OTLPEndpoint          string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
+	LLMConfig             LLMConf
+	MCPConfig             MCPConf
 }
 
 // IMAccount 一个机器人账号的出站地址覆盖。
