@@ -107,8 +107,26 @@ func (m MemberInfo) DisplayName() string {
 }
 
 // GetSelfInfo 查询机器人自身信息。
+//
+// 不带账号身份时，实现端只能按"最近一次事件的平台"猜；多账号共用一个实现端时
+// 请用 GetSelfInfoFor 指定 selfID / groupID。
 func (c *Client) GetSelfInfo() (*SelfInfo, error) {
-	info, err := call[SelfInfo](c, "get_self_info", map[string]any{})
+	return c.GetSelfInfoFor("", "")
+}
+
+// GetSelfInfoFor 查询某个账号的自身信息。
+//
+// selfID（真实机器人 openid）最精确，groupID 次之；两者都为空等价于 GetSelfInfo。
+// 实现端据此定位平台实例，避免把 A 账号的昵称写成 B 账号的。
+func (c *Client) GetSelfInfoFor(selfID, groupID string) (*SelfInfo, error) {
+	params := map[string]any{}
+	if selfID != "" {
+		params["self_id"] = selfID
+	}
+	if groupID != "" {
+		params["group_id"] = groupID
+	}
+	info, err := call[SelfInfo](c, "get_self_info", params)
 	if err != nil {
 		return nil, err
 	}

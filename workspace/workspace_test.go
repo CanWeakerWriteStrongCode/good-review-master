@@ -2,14 +2,21 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/logutil"
+	"good-review-master/onebot"
+	"good-review-master/workspace/state"
 )
 
 // TestMain 把 cwd 切到临时目录：logutil 默认把日志写到 cwd/log，
@@ -357,5 +364,196 @@ func Test群档案与成员随消息入库(t *testing.T) {
 	groups, err := ws2.State.LoadGroups()
 	if err != nil || groups["g1"] != "" {
 		t.Fatalf("群档案应从库里恢复：%+v, %v", groups, err)
+	}
+}
+
+// TestWorkspace入站时核对昵称改名 昵称可能在平台侧被改：加载沿用 state.db 的旧名，
+// 收到第一条入站消息时按 self_id / group_id 精确定位账号核对一次，变了就同时更新内存与 meta。
+func TestWorkspace入站时核对昵称改名(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := state.Open(filepath.Join(dir, state.FileName))
+	if err != nil {
+		t.Fatalf("打开 state.db：%v", err)
+	}
+	scope := store.Scope("qq_100")
+	scope.SetMeta("platform", "qq")
+	scope.SetMeta("account", "100")
+	scope.SetMeta("name", "旧名")
+	// 机器人自己在两个群里的成员行：g1 没设群名片（显示名等于账号名），
+	// g2 设了独立名片——改名时前者要跟着改，后者不能被覆盖。
+	scope.SaveIdentity("g1", "openid-100")
+	scope.SaveMember("g1", "openid-100", "旧名", "旧名")
+	scope.SaveIdentity("g2", "openid-100")
+	scope.SaveMember("g2", "openid-100", "旧名", "专属名片")
+	store.Close()
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body struct {
+			Action string         `json:"action"`
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Action != "get_self_info" {
+			t.Errorf("action = %q", body.Action)
+		}
+		// 多账号共用一个实现端时，必须靠这两个参数定位是哪个机器人
+		if body.Params["group_id"] != "g1" || body.Params["self_id"] != "openid-100" {
+			t.Errorf("应带上定位账号的参数，实际 %+v", body.Params)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok", "retcode": 0,
+			"data": map[string]any{"user_id": "openid-100", "user_name": "新名"},
+		})
+	}))
+	defer server.Close()
+
+	obClient := onebot.NewClient(server.URL, nil, "").For("qq_100")
+	m, err := New(func() *config.Config { return &config.Config{} }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, obClient, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer m.Close()
+
+	list := m.List()
+	if len(list) != 1 {
+		t.Fatalf("应恢复 1 个工作空间，实际 %d", len(list))
+	}
+	ws := list[0]
+	// 启动只读缓存，不查网络：有缓存名时保持旧名
+	if got := ws.Name(); got != "旧名" {
+		t.Fatalf("启动应沿用缓存昵称，实际 %q", got)
+	}
+
+	ws.SyncSelfName("openid-100", "g1")
+	deadline := time.Now().Add(3 * time.Second)
+	for ws.Name() != "新名" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := ws.Name(); got != "新名" {
+		t.Fatalf("内存昵称应更新为新名，实际 %q", got)
+	}
+	if got := ws.State.Meta("name"); got != "新名" {
+		t.Fatalf("meta.name 应更新为新名，实际 %q", got)
+	}
+
+	// members 表也要跟着改：g1 跟随账号名，g2 的独立群名片保留
+	deadline = time.Now().Add(3 * time.Second)
+	for ws.DisplayNameFor("g1")("openid-100") != "新名" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := ws.DisplayNameFor("g1")("openid-100"); got != "新名" {
+		t.Fatalf("g1 内存成员名应更新为新名，实际 %q", got)
+	}
+	members, err := ws.State.LoadMembers()
+	if err != nil {
+		t.Fatalf("读取成员表：%v", err)
+	}
+	if got := members["g1"]["openid-100"]; got != "新名" {
+		t.Fatalf("g1 members 行应更新为新名，实际 %q", got)
+	}
+	if got := members["g2"]["openid-100"]; got != "专属名片" {
+		t.Fatalf("g2 独立群名片不应被覆盖，实际 %q", got)
+	}
+
+	// 节流：短时间内再来消息不会再打实现端
+	ws.SyncSelfName("openid-100", "g1")
+	time.Sleep(100 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("同一节流窗口内只应核对一次，实际请求 %d 次", got)
+	}
+}
+
+// TestWorkspace成员名先写members再镜像meta 名字的落点顺序：
+// 群友/机器人的名字先落到成员目录（members），机器人自己那一行变了才镜像到 meta；
+// 群友改名只留在 members，不能动工作空间展示名。
+func TestWorkspace成员名先写members再镜像meta(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := state.Open(filepath.Join(dir, state.FileName))
+	if err != nil {
+		t.Fatalf("打开 state.db：%v", err)
+	}
+	scope := store.Scope("qq_100")
+	scope.SetMeta("platform", "qq")
+	scope.SetMeta("account", "100")
+	scope.SetMeta("name", "旧名")
+	scope.SaveIdentity("g1", "openid-100")
+	store.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Action string         `json:"action"`
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		userID, _ := body.Params["user_id"].(string)
+		name := "张三"
+		if userID == "openid-100" {
+			name = "群里的机器人名"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok", "retcode": 0,
+			"data": map[string]any{"user_id": userID, "user_name": name, "user_displayname": name},
+		})
+	}))
+	defer server.Close()
+
+	obClient := onebot.NewClient(server.URL, nil, "").For("qq_100")
+	m, err := New(func() *config.Config { return &config.Config{} }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, obClient, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer m.Close()
+	ws := m.List()[0]
+
+	// 群友：只更新 members，工作空间展示名保持不动
+	ws.DisplayNameFor("g1")("u1") // 未命中会异步查成员信息
+	deadline := time.Now().Add(3 * time.Second)
+	for ws.DisplayNameFor("g1")("u1") != "张三" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := ws.DisplayNameFor("g1")("u1"); got != "张三" {
+		t.Fatalf("群友名字应写入 members，实际 %q", got)
+	}
+	if got := ws.Name(); got != "旧名" {
+		t.Fatalf("群友改名不应影响 meta.name，实际 %q", got)
+	}
+
+	// 机器人自己：members 先更新，随后镜像到 meta
+	ws.DisplayNameFor("g1")("openid-100")
+	deadline = time.Now().Add(3 * time.Second)
+	for ws.Name() != "群里的机器人名" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := ws.Name(); got != "群里的机器人名" {
+		t.Fatalf("机器人成员名变化应镜像到 meta.name，实际 %q", got)
+	}
+	if got := ws.DisplayNameFor("g1")("openid-100"); got != "群里的机器人名" {
+		t.Fatalf("机器人成员名应先写入 members，实际 %q", got)
+	}
+	members, err := ws.State.LoadMembers()
+	if err != nil {
+		t.Fatalf("读取成员表：%v", err)
+	}
+	if got := members["g1"]["openid-100"]; got != "群里的机器人名" {
+		t.Fatalf("members 行应为新名，实际 %q", got)
+	}
+	if got := ws.State.Meta("name"); got != "群里的机器人名" {
+		t.Fatalf("meta.name 应为新名，实际 %q", got)
 	}
 }

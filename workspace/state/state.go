@@ -425,6 +425,25 @@ func (s *Scope) SaveMember(groupID, userID, name, displayName string) {
 	}
 }
 
+// RenameSelfMember 把「机器人自己」在某个群的成员行改成新名字。
+//
+// name（账号名）一律更新；display_name（群名片）只在它本来就等于旧账号名或为空时跟随，
+// 否则说明该群单独设过名片，不能因为账号改名就覆盖掉。
+func (s *Scope) RenameSelfMember(groupID, userID, oldName, newName string) {
+	if s == nil || s.store == nil || groupID == "" || userID == "" || newName == "" || s.store.closed.Load() {
+		return
+	}
+	_, err := s.store.db.Exec(`UPDATE members SET
+			name = ?,
+			display_name = CASE WHEN display_name = '' OR display_name = ? THEN ? ELSE display_name END,
+			updated_at = ?
+		WHERE workspace_id = ? AND group_id = ? AND user_id = ?`,
+		newName, oldName, newName, time.Now().Unix(), s.workspaceID, groupID, userID)
+	if err != nil {
+		s.store.noteFailure("更新成员名", err)
+	}
+}
+
 // LoadMembers 返回 group → user → 显示名。
 func (s *Scope) LoadMembers() (map[string]map[string]string, error) {
 	if s == nil || s.store == nil {

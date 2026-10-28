@@ -399,6 +399,19 @@ There is no history backfill: OneBot 12 has no standard group-history action. At
 workspace restores the most recent `runtime.max_cache_msg` messages from the shared `state.db`,
 filtered by its `workspace_id`.
 
+**Bot nickname** lives in the workspace, not in `config.yaml`: `meta.name` in `state.db` is the
+cache, filled once from `get_self_info` when missing. Name writes flow **members → meta**: the
+`members` table is the source of truth for what people see; `meta.name` is only the bot's mirror.
+When a member row is fetched, Go compares it with what `members` already has and skips the write if
+unchanged; if the row is the bot itself, the new name is mirrored into `meta.name`. Because the bot
+can be renamed, inbound messages also trigger a throttled (`nameSyncInterval`, 10 min) `get_self_info`
+pass (`SyncSelfName`) that updates the bot's rows in `members` first and `meta.name` second. The
+bot's own rows are only touched in groups whose `self.user_id` was learned (no id, no safe way to
+tell which row is the bot); `display_name` follows only when it was empty or identical to the old
+account name, so a per-group card is never clobbered. That lookup always carries `self_id`/`group_id`:
+one bridge can serve several accounts, and without them the bridge can only guess the platform from
+the most recent event — which would write bot A's name onto bot B.
+
 ## Adding a new command type
 
 1. Write a handler method: `func (r *Router) handlerName(event onebot.Event, groupID string, prompt string)`

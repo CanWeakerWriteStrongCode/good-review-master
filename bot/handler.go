@@ -95,6 +95,9 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 	// self.user_id 按群学习（QQ 官方是群作用域 openid），重启后仍能对 @ 做比较。
 	// 只有值变化时才写库，避免每条消息一次同步 INSERT。
 	ws.LearnIdentity(groupID, event.Self.UserID)
+	// 借本条消息的身份核对一次机器人昵称（平台侧改名后 state.db 的缓存不会自己失效）。
+	// 传 self_id + group_id：多账号共用一个实现端时，只有它们能让实现端定位到本机器人。
+	ws.SyncSelfName(event.BotID(), groupID)
 
 	// 触发优先级：标准 mention > 实现端显式 @ 标记（无 openid 时）> 昵称兜底。
 	// 收到事件不等于被 @，@全体也不等于 @ 本账号。

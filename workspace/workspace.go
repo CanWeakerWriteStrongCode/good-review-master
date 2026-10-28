@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"good-review-master/cache"
 	"good-review-master/config"
@@ -33,6 +34,10 @@ var platformPattern = regexp.MustCompile(`^[a-z][-a-z0-9]*(\.[-a-z0-9]+)*$`)
 
 // idPattern 约束工作空间 ID：它会进数据库列与面板 URL。
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// nameSyncInterval 是「入站时核对机器人昵称」的最小间隔：改名不常见，
+// 每条消息都去问实现端没有意义，但也不能像缓存那样永远不失效。
+const nameSyncInterval = 10 * time.Minute
 
 // WorkspaceID 把平台名与接收账号拼成工作空间 ID。
 //
@@ -83,6 +88,9 @@ type Workspace struct {
 
 	nameMu sync.RWMutex
 	name   string // 面板展示名（get_self_info 的 user_name，或 meta 缓存）
+	// 昵称核对（平台侧可能改名）的节流：每工作空间最快 nameSyncInterval 查一次。
+	nameSyncMu sync.Mutex
+	nameSyncAt time.Time
 
 	identityMu sync.RWMutex
 	identities map[string]string // group_id -> 本群学到的 self.user_id（避免每条消息都写库）
@@ -252,6 +260,7 @@ func (m *Manager) load(id, platform, account string) (*Workspace, error) {
 		groups:     make(map[string]string),
 	}
 	ws.members = newDirectory(ws.ob, st)
+	ws.members.onSelfName = ws.onChangeMemberName
 	ws.appCfg = func() *config.Config { return ws.snapshot(m.appCfg()) }
 
 	ws.Router = router.NewRouter(ws.appCfg, m.prompt, m.llmClient, ws.ob, m.mcp, m.shutdownCtx)
@@ -328,6 +337,9 @@ func (w *Workspace) restore(cfg *config.Config) {
 }
 
 // scheduleNameLookup 异步补昵称：网络调用不能挡在入站路径上。
+//
+// 只负责「缓存缺失时补一次」；改名后的核对走 SyncSelfName——那需要一条入站消息
+// 提供账号身份（self_id / group_id），否则多账号共用一个实现端时可能问错机器人。
 func (w *Workspace) scheduleNameLookup(st *state.Scope) {
 	if w.name != "" || w.ob == nil || w.ob.Base() == "" {
 		return
@@ -351,6 +363,70 @@ func (w *Workspace) scheduleNameLookup(st *state.Scope) {
 		}
 		logutil.Info("已补全工作空间昵称", "workspace", w.ID, "name", name)
 	}()
+}
+
+// SyncSelfName 借入站消息核对机器人昵称：昵称可能在平台侧被改，
+// 而 state.db 里的缓存不会自己失效。每工作空间最快 nameSyncInterval 查一次。
+//
+// 必须带上 self_id（真实 openid）或 group_id：一个实现端可能同时服务多个账号，
+// 只有这两个参数能让它定位到「本条消息属于哪个机器人」，不带就会按最近事件猜。
+func (w *Workspace) SyncSelfName(selfID, groupID string) {
+	if w.ob == nil || w.ob.Base() == "" {
+		return
+	}
+	w.nameSyncMu.Lock()
+	if !w.nameSyncAt.IsZero() && time.Since(w.nameSyncAt) < nameSyncInterval {
+		w.nameSyncMu.Unlock()
+		return
+	}
+	w.nameSyncAt = time.Now()
+	w.nameSyncMu.Unlock()
+
+	go func() {
+		info, err := w.ob.GetSelfInfoFor(selfID, groupID)
+		if err != nil {
+			logutil.Debug("核对机器人昵称失败（沿用缓存）", "workspace", w.ID, "err", err)
+			return
+		}
+		name := info.UserDisplayName
+		if name == "" {
+			name = info.UserName
+		}
+		if name == "" {
+			return
+		}
+		old := w.Name()
+		// 先改 members：群友看到的 @ 名字来自成员目录，meta 只是它的镜像，
+		// 所以成员目录先更新；即使 meta 已经是新名也要检查一次（可能只有库里的行还旧）。
+		w.renameSelfInMembers(old, name)
+		if old == name {
+			return
+		}
+		w.setName(name)
+		if w.State != nil {
+			w.State.SetMeta("name", name)
+		}
+		logutil.Info("机器人昵称已更新", "workspace", w.ID, "old", old, "name", name)
+	}()
+}
+
+// renameSelfInMembers 把机器人自己在各群成员目录里的旧名改掉。
+//
+// 只处理学到过 self openid 的群：没有身份的群无法区分哪一行是机器人，
+// 按名字猜会误改群友。内存与 members 表一起改，否则 @ 渲染还会用旧名。
+func (w *Workspace) renameSelfInMembers(oldName, newName string) {
+	w.identityMu.RLock()
+	targets := make(map[string]string, len(w.identities))
+	for groupID, selfID := range w.identities {
+		targets[groupID] = selfID
+	}
+	w.identityMu.RUnlock()
+	for groupID, selfID := range targets {
+		if onebot.IsSelfPlaceholder(selfID) {
+			continue
+		}
+		w.members.rename(groupID, selfID, oldName, newName)
+	}
 }
 
 // Snapshot 返回带上本工作空间昵称的配置快照。
@@ -655,6 +731,8 @@ type directory struct {
 	pending map[string]map[string]struct{}
 	ob      *onebot.Client
 	state   *state.Scope
+	// onSelfName 在机器人自己那一行成员名被更新后回调，用于把名字镜像到 meta。
+	onSelfName func(groupID, userID, name string)
 }
 
 func newDirectory(ob *onebot.Client, st *state.Scope) *directory {
@@ -725,6 +803,33 @@ func (d *directory) name(groupID, userID string) string {
 	return ""
 }
 
+// rename 更新某个成员的内存显示名，并把改名落到 state.db。
+//
+// 先看成员目录里已有的名字：已经是新名就什么都不做；只有确实要改（为空或仍是旧名）
+// 才更新内存，随后再写库。内存里已有独立群名片（不等于旧账号名）时保持原样，
+// 与 RenameSelfMember 的 SQL 语义一致：账号改名不该覆盖群管理员单独设的名片。
+func (d *directory) rename(groupID, userID, oldName, newName string) {
+	if groupID == "" || userID == "" || newName == "" {
+		return
+	}
+	d.mu.Lock()
+	current := d.names[groupID][userID]
+	if current == newName {
+		d.mu.Unlock()
+		return
+	}
+	if current == "" || current == oldName {
+		if d.names[groupID] == nil {
+			d.names[groupID] = make(map[string]string)
+		}
+		d.names[groupID][userID] = newName
+	}
+	d.mu.Unlock()
+	if d.state != nil {
+		d.state.RenameSelfMember(groupID, userID, oldName, newName)
+	}
+}
+
 func (d *directory) fetchAsync(groupID, userID string) {
 	if d.ob == nil || d.ob.Base() == "" {
 		return
@@ -754,7 +859,14 @@ func (d *directory) fetchAsync(groupID, userID string) {
 		if name == "" {
 			return
 		}
+		// 先看 members 里已有的名字：一样就不写内存、不写库；
+		// 不一样才更新成员目录，机器人自己那一行再顺手镜像到 meta。
 		d.mu.Lock()
+		current := d.names[groupID][userID]
+		if current == name {
+			d.mu.Unlock()
+			return
+		}
 		if d.names[groupID] == nil {
 			d.names[groupID] = make(map[string]string)
 		}
@@ -767,5 +879,26 @@ func (d *directory) fetchAsync(groupID, userID string) {
 		if d.state != nil {
 			d.state.SaveMember(groupID, userID, info.UserName, info.UserDisplayName)
 		}
+		if d.onSelfName != nil {
+			d.onSelfName(groupID, userID, name)
+		}
 	}()
+}
+
+// onChangeMemberName 在成员目录写入新名字之后回调（目前只有 Workspace 注册）。
+// 机器人自己的名字要同步到工作空间展示名（meta），群友的只留在 members。
+func (w *Workspace) onChangeMemberName(groupID, userID, name string) {
+	w.identityMu.RLock()
+	selfID := w.identities[groupID]
+	w.identityMu.RUnlock()
+	if selfID == "" || selfID != userID || name == "" || w.Name() == name {
+		return
+	}
+	old := w.Name()
+	w.setName(name)
+	if w.State != nil {
+		w.State.SetMeta("name", name)
+	}
+	w.renameSelfInMembers(old, name)
+	logutil.Info("机器人昵称已更新", "workspace", w.ID, "old", old, "name", name)
 }

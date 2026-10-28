@@ -170,3 +170,29 @@ func TestFor优先账号覆盖其次全局地址(t *testing.T) {
 		t.Fatalf("都没配时应返回空地址，实际 %q", got)
 	}
 }
+
+// TestGetSelfInfoFor带定位参数 多账号共用一个实现端时，昵称查询必须能指明是哪个账号，
+// 否则实现端只能按最近事件猜，可能把 A 的名字写给 B。
+func TestGetSelfInfoFor带定位参数(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		action, params := decodeAction(t, r)
+		if action != "get_self_info" {
+			t.Errorf("action = %q", action)
+		}
+		if params["self_id"] != "openid-1" || params["group_id"] != "g1" {
+			t.Errorf("params = %+v", params)
+		}
+		writeAction(t, w, map[string]any{
+			"status": "ok", "retcode": 0,
+			"data": map[string]any{"user_id": "openid-1", "user_name": "bot-a"},
+		})
+	})
+
+	info, err := client.GetSelfInfoFor("openid-1", "g1")
+	if err != nil {
+		t.Fatalf("GetSelfInfoFor: %v", err)
+	}
+	if info.UserID != "openid-1" || info.UserName != "bot-a" {
+		t.Fatalf("info = %+v", info)
+	}
+}
