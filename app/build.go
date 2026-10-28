@@ -120,7 +120,7 @@ func New(opts Options) (*App, error) {
 func buildLLMClient(opts Options, cfg *config.Config) (llm.Client, *testutil.FakeLLM, error) {
 	if opts.TestMode {
 		fakeLLM := testutil.NewFakeLLM()
-		logutil.Warn("测试模式已启用：使用 FakeLLM，出站地址仍由 im.accounts 决定")
+		logutil.Warn("测试模式已启用：使用 FakeLLM，出站地址仍由 im.api_base / im.accounts 决定")
 		return fakeLLM, fakeLLM, nil
 	}
 
@@ -154,11 +154,14 @@ func buildLLMClient(opts Options, cfg *config.Config) (llm.Client, *testutil.Fak
 func logStartup(application *App) {
 	cfg := application.Config()
 	logutil.Info("🚀 【不是好评大师】机器人启动成功")
-	if len(cfg.IMAccounts) == 0 {
-		logutil.Warn("未配置 im.accounts：可以接收事件，但发不出任何消息")
+	if cfg.IMAPIBase == "" && len(cfg.IMAccounts) == 0 {
+		logutil.Warn("未配置 im.api_base / im.accounts：可以接收事件，但发不出任何消息")
+	}
+	if cfg.IMAPIBase != "" {
+		logutil.Info("出站默认地址：" + cfg.IMAPIBase)
 	}
 	for _, account := range cfg.IMAccounts {
-		logutil.Info("出站账号：" + account.ID + " → " + account.APIBase)
+		logutil.Info("出站账号覆盖：" + account.ID + " → " + account.APIBase)
 	}
 	logutil.Info("允许响应群（全局）：" + cfg.AllowGroupsStr())
 	logutil.Info("允许自动开通的工作空间：" + cfg.WorkspaceAccountsStr())
@@ -212,8 +215,8 @@ func warnRestartOnlyChanges(previous, next *config.Config) {
 		previous.MCPConfig.BreakerCooldown != next.MCPConfig.BreakerCooldown {
 		logutil.Warn("mcp 的熔断参数已变化，但需要重启才能生效（熔断器在启动时已按服务构造）")
 	}
-	if !sameIMAccounts(previous.IMAccounts, next.IMAccounts) {
-		logutil.Warn("im.accounts 已变化，但需要重启才能生效（OneBot 客户端在启动时已按当时的地址构造）")
+	if previous.IMAPIBase != next.IMAPIBase || !sameIMAccounts(previous.IMAccounts, next.IMAccounts) {
+		logutil.Warn("im.api_base 或 im.accounts 已变化，但需要重启才能生效（OneBot 客户端在启动时已按当时的地址构造）")
 	}
 }
 

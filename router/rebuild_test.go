@@ -48,7 +48,7 @@ func TestRebuild拾取提示词变化(t *testing.T) {
 		LLMConfig:   config.LLMConf{MaxContextTokens: 50000},
 	}
 	instance := NewRouter(staticSnapshot(cfg), promptCfg,
-		testutil.NewFakeLLM(), onebot.NewClient(nil, ""), nil, context.Background())
+		testutil.NewFakeLLM(), onebot.NewClient("", nil, ""), nil, context.Background())
 
 	if matches(instance, "新增的词") {
 		t.Fatal("配置里还没有这个词，不该命中")
@@ -104,7 +104,7 @@ func TestRebuild保留内部指令(t *testing.T) {
 
 	cfg := &config.Config{MaxCacheMsg: 10, LLMConfig: config.LLMConf{MaxContextTokens: 50000}}
 	instance := NewRouter(staticSnapshot(cfg), promptCfg,
-		testutil.NewFakeLLM(), onebot.NewClient(nil, ""), nil, context.Background())
+		testutil.NewFakeLLM(), onebot.NewClient("", nil, ""), nil, context.Background())
 
 	internalBefore := countInternal(instance)
 	if internalBefore == 0 {
@@ -143,7 +143,7 @@ func TestRebuild不重复累积(t *testing.T) {
 	}
 	cfg := &config.Config{MaxCacheMsg: 10, LLMConfig: config.LLMConf{MaxContextTokens: 50000}}
 	instance := NewRouter(staticSnapshot(cfg), promptCfg,
-		testutil.NewFakeLLM(), onebot.NewClient(nil, ""), nil, context.Background())
+		testutil.NewFakeLLM(), onebot.NewClient("", nil, ""), nil, context.Background())
 
 	before := len(instance.routesSnapshot())
 	for i := 0; i < 3; i++ {

@@ -40,9 +40,7 @@ func TestMain(m *testing.M) {
 const baseConfig = `
 im:
   token: "im-token"
-  accounts:
-    - id: "qq_1906xxxx"
-      api_base: "http://127.0.0.1:6199"
+  api_base: "http://127.0.0.1:6199"
 bot:
   allow_groups: "10001,10002"
   workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
@@ -98,9 +96,8 @@ func TestLoad基本配置(t *testing.T) {
 	if cfg.IMToken != "im-token" {
 		t.Errorf("IMToken = %q", cfg.IMToken)
 	}
-	if len(cfg.IMAccounts) != 1 || cfg.IMAccounts[0].ID != "qq_1906xxxx" ||
-		cfg.IMAccounts[0].APIBase != "http://127.0.0.1:6199" {
-		t.Errorf("IMAccounts = %+v", cfg.IMAccounts)
+	if cfg.IMAPIBase != "http://127.0.0.1:6199" {
+		t.Errorf("IMAPIBase = %q", cfg.IMAPIBase)
 	}
 	if cfg.PollInterval.Seconds() != 3 {
 		t.Errorf("PollInterval = %v", cfg.PollInterval)
@@ -165,16 +162,14 @@ func Test旧napcat键仍可迁移(t *testing.T) {
 	}
 }
 
-func Test旧astrbot段仍能接住token(t *testing.T) {
+func Test旧astrbot段仍能接住token和地址(t *testing.T) {
 	legacyConfig := `
 astrbot:
   http_api: "http://127.0.0.1:6199"
   access_token: "legacy-ast-token"
 ` + strings.Replace(baseConfig, `im:
   token: "im-token"
-  accounts:
-    - id: "qq_1906xxxx"
-      api_base: "http://127.0.0.1:6199"
+  api_base: "http://127.0.0.1:6199"
 `, "", 1)
 	cfg, err := loadWith(t, legacyConfig, "")
 	if err != nil {
@@ -183,8 +178,33 @@ astrbot:
 	if cfg.IMToken != "legacy-ast-token" {
 		t.Errorf("旧段的 access_token 应迁移为 IMToken，实际 %q", cfg.IMToken)
 	}
+	if cfg.IMAPIBase != "http://127.0.0.1:6199" {
+		t.Errorf("旧段的 http_api 应迁移为 IMAPIBase，实际 %q", cfg.IMAPIBase)
+	}
 	if len(cfg.IMAccounts) != 0 {
 		t.Errorf("旧段没有账号维度，不应凭空生成连接：%+v", cfg.IMAccounts)
+	}
+}
+
+func TestIM账号可覆盖全局地址(t *testing.T) {
+	configYAML := strings.Replace(baseConfig, `  api_base: "http://127.0.0.1:6199"`,
+		`  api_base: "http://127.0.0.1:6199"
+  accounts:
+    - id: "qq_1906xxxx"
+    - id: "qq_1904xxxx"
+      api_base: "http://127.0.0.1:6200"`, 1)
+	cfg, err := loadWith(t, configYAML, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if len(cfg.IMAccounts) != 2 {
+		t.Fatalf("应有 2 条覆盖，实际 %+v", cfg.IMAccounts)
+	}
+	if cfg.IMAccounts[0].APIBase != "" {
+		t.Errorf("第一条未写 api_base，应留空表示沿用全局，实际 %q", cfg.IMAccounts[0].APIBase)
+	}
+	if cfg.IMAccounts[1].APIBase != "http://127.0.0.1:6200" {
+		t.Errorf("第二条应使用自己的地址，实际 %q", cfg.IMAccounts[1].APIBase)
 	}
 }
 
@@ -347,9 +367,9 @@ func TestValidate报错要指明字段与原因(t *testing.T) {
 			wantContain: "provider",
 		},
 		{
-			name: "im.accounts 地址没有 scheme",
+			name: "im.api_base 地址没有 scheme",
 			configYAML: strings.Replace(baseConfig,
-				`      api_base: "http://127.0.0.1:6199"`, `      api_base: "127.0.0.1:6199"`, 1),
+				`  api_base: "http://127.0.0.1:6199"`, `  api_base: "127.0.0.1:6199"`, 1),
 			wantContain: "api_base",
 		},
 		{
@@ -446,7 +466,7 @@ func dirEntries(t *testing.T, dir string) []string {
 
 // configsEqual 逐字段比较两份配置。用 == 会漏掉切片与 map 的内部差异。
 func configsEqual(a, b *Config) bool {
-	if a.IMToken != b.IMToken ||
+	if a.IMToken != b.IMToken || a.IMAPIBase != b.IMAPIBase ||
 		a.MaxCacheMsg != b.MaxCacheMsg ||
 		a.LLMSendCount != b.LLMSendCount || a.LLMTimeout != b.LLMTimeout ||
 		a.MaxMsgRune != b.MaxMsgRune || a.PollInterval != b.PollInterval ||

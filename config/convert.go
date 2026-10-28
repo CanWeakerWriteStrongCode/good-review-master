@@ -29,6 +29,7 @@ func assemble(sections *sections) *Config {
 
 	return &Config{
 		IMToken:           imToken,
+		IMAPIBase:         strings.TrimRight(strings.TrimSpace(sections.IM.APIBase), "/"),
 		IMAccounts:        convertIMAccounts(sections.IM.Accounts),
 		BotNickname:       "",
 		AllowGroups:       parseCommaList(sections.Bot.AllowGroups),

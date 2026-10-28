@@ -11,8 +11,8 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// Account 一个机器人账号的出站连接：ID 是工作空间 ID（platform_account），
-// APIBase 是该账号在实现端的 OneBot 12 HTTP API 根地址。
+// Account 一个机器人账号的出站地址覆盖：ID 是工作空间 ID（platform_account），
+// APIBase 是该账号专属的 OneBot 12 HTTP API 根地址。
 type Account struct {
 	ID      string
 	APIBase string
@@ -22,15 +22,18 @@ type Account struct {
 //
 // 一个进程里只有一个根 Client（持有共享的 resty 连接），按工作空间 ID 用 For()
 // 取到绑定该账号 base URL 的轻量副本；动作请求因此不需要扩展参数 self_id。
+// defaultBase 是所有账号共用的地址，accounts 只用于按账号覆盖。
 type Client struct {
-	token string
-	base  string
-	bases map[string]string
-	resty *resty.Client
+	token       string
+	base        string
+	defaultBase string
+	bases       map[string]string
+	resty       *resty.Client
 }
 
-// NewClient 创建多账号客户端。base URL 末尾的 / 会被去掉，调用时统一拼 /。
-func NewClient(accounts []Account, token string) *Client {
+// NewClient 创建客户端。defaultBase 是所有账号共用地址，accounts 是可选的按账号覆盖。
+// base URL 末尾的 / 会被去掉，调用时统一拼 /。
+func NewClient(defaultBase string, accounts []Account, token string) *Client {
 	bases := make(map[string]string, len(accounts))
 	for _, account := range accounts {
 		id := strings.TrimSpace(account.ID)
@@ -46,16 +49,25 @@ func NewClient(accounts []Account, token string) *Client {
 	if token != "" {
 		restyClient.SetAuthToken(token)
 	}
-	return &Client{token: token, bases: bases, resty: restyClient}
+	return &Client{
+		token:       token,
+		defaultBase: strings.TrimRight(strings.TrimSpace(defaultBase), "/"),
+		bases:       bases,
+		resty:       restyClient,
+	}
 }
 
-// For 返回绑定指定工作空间的客户端。没有配置 base URL 时返回一个不可用的客户端，
-// 调用动作会报错而不是悄悄发到别的账号。
+// For 返回绑定指定工作空间的客户端：优先用账号覆盖，其次用全局地址。
+// 都没有时返回一个不可用的客户端，调用动作会报错而不是悄悄发到别的账号。
 func (c *Client) For(workspaceID string) *Client {
 	if c == nil {
 		return nil
 	}
-	return &Client{token: c.token, base: c.bases[workspaceID], bases: c.bases, resty: c.resty}
+	base := c.bases[workspaceID]
+	if base == "" {
+		base = c.defaultBase
+	}
+	return &Client{token: c.token, base: base, defaultBase: c.defaultBase, bases: c.bases, resty: c.resty}
 }
 
 // Base 返回当前客户端绑定的 base URL（空表示未配置）。

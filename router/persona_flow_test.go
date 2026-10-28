@@ -65,7 +65,7 @@ rules:
 		},
 	}
 	fakeLLM := testutil.NewFakeLLM()
-	obClient := onebot.NewClient(nil, "") // 无出站地址，调用失败仅日志
+	obClient := onebot.NewClient("", nil, "") // 无出站地址，调用失败仅日志
 	router := NewRouter(staticSnapshot(cfg), promptCfg, fakeLLM, obClient, nil, context.Background())
 
 	// 3. 种入缓存消息，触发 锐评下

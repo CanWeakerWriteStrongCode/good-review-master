@@ -118,7 +118,8 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | Key | Description | Example |
 |-----|-------------|---------|
 | `im.token` | Shared OneBot token (prefer `secret.yaml` `im_token`) | `""` |
-| `im.accounts` | Per-account outbound endpoints `[{id, api_base}]`; `id` = `platform_account` | see example config |
+| `im.api_base` | Default outbound endpoint shared by all accounts | `http://127.0.0.1:6199` |
+| `im.accounts` | Optional per-account overrides `[{id, api_base}]`; `id` = `platform_account` | usually unset |
 | `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups) | `123456,789012` |
 | `bot.workspace_accounts` | Workspace IDs allowed to auto-provision (`qq_1906xxxx`; `*` for all) | `["qq_1906xxxx"]` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |

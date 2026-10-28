@@ -33,7 +33,7 @@ func newClientFor(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return NewClient([]Account{{ID: testAccount, APIBase: server.URL}}, "shared-token").For(testAccount)
+	return NewClient(server.URL, nil, "shared-token").For(testAccount)
 }
 
 func writeAction(t *testing.T, w http.ResponseWriter, body any) {
@@ -143,15 +143,30 @@ func TestGetGroupMemberInfo参数(t *testing.T) {
 	}
 }
 
-// TestFor未知账号不带地址 锁住多账号选路：没配 api_base 的账号必须失败，
-// 不能悄悄发到别的账号（QQ 官方的 self.user_id 无法用来选账号）。
-func TestFor未知账号不带地址(t *testing.T) {
-	root := NewClient([]Account{{ID: testAccount, APIBase: "http://127.0.0.1:1"}}, "")
+// TestFor完全没有地址时调用失败 锁住"不发到猜出来的地址"：
+// 全局和账号覆盖都没配时，动作必须报错而不是静默成功。
+func TestFor完全没有地址时调用失败(t *testing.T) {
+	root := NewClient("", nil, "")
 	other := root.For("qq_other")
 	if other.Base() != "" {
-		t.Fatalf("未配置的账号不应有 base，实际 %q", other.Base())
+		t.Fatalf("没配地址时不应有 base，实际 %q", other.Base())
 	}
 	if _, err := other.GetSelfInfo(); err == nil {
 		t.Fatal("未配置地址的账号调用动作必须失败")
+	}
+}
+
+func TestFor优先账号覆盖其次全局地址(t *testing.T) {
+	client := NewClient("http://default:6199/", []Account{
+		{ID: "qq_a", APIBase: "http://a:6199/"},
+	}, "")
+	if got := client.For("qq_a").Base(); got != "http://a:6199" {
+		t.Fatalf("账号覆盖地址 = %q", got)
+	}
+	if got := client.For("qq_b").Base(); got != "http://default:6199" {
+		t.Fatalf("未覆盖账号应回退全局地址，实际 %q", got)
+	}
+	if got := NewClient("", nil, "").For("qq_a").Base(); got != "" {
+		t.Fatalf("都没配时应返回空地址，实际 %q", got)
 	}
 }

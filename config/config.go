@@ -14,7 +14,8 @@ import (
 // 这不只是图省事：mcpclient / router / web/server 的测试都直接构造这个结构体的字面量。
 type Config struct {
 	IMToken           string      // OneBot 12 接入共享 token（入站校验 + 出站 Bearer）
-	IMAccounts        []IMAccount // 每个机器人账号的出站连接；按工作空间 ID 选
+	IMAPIBase         string      // 所有账号默认的出站根地址
+	IMAccounts        []IMAccount // 可选的按账号覆盖；api_base 为空表示沿用 IMAPIBase
 	BotNickname       string      // 运行时设置（get_self_info 结果），不来自配置文件
 	AllowGroups       []string    // 群白名单；含 "*" 表示全部群
 	WorkspaceAccounts []string    // 允许自动开通的工作空间 ID；含 "*" 表示全部
@@ -39,10 +40,10 @@ type Config struct {
 	MCPConfig         MCPConf
 }
 
-// IMAccount 一个机器人账号的出站连接。
+// IMAccount 一个机器人账号的出站地址覆盖。
 //
-// ID 是工作空间 ID（platform_account），不是平台内部账号：QQ 官方的群内 openid
-// 会随群变化，只有 AppID 这类外部稳定值才能当工作空间 ID 和路由键。
+// ID 是工作空间 ID（platform_account）。只有多套实现端/多端口时才需要；
+// 常见部署只配 im.api_base，账号 ID 由入站事件自动得到。
 type IMAccount struct {
 	ID      string
 	APIBase string

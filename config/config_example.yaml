@@ -19,13 +19,13 @@ bot:
 im:
   # 入站校验与出站请求共用的 token；留空表示不校验（仅建议监听回环地址时这么用）
   token: ""                 # 【密钥】→ secret.yaml 的 im_token
-  # 每个机器人账号一条连接。id 必须等于工作空间 ID（平台名_接收账号），
-  # 不要多个账号共用一个根地址再靠 self 选路：QQ 官方的 self.user_id 是群作用域 openid。
-  accounts:
-    - id: "qq_1906xxxx"
-      api_base: "http://127.0.0.1:6199"
-    # - id: "qq_1904xxxx"
-    #   api_base: "http://127.0.0.1:6200"
+  # 所有账号默认的出站地址（实现端 OneBot 12 动作服务）。
+  # 常见部署一个 AstrBot 插件服务所有账号，只配这一行即可；账号 ID 从入站事件自动得到。
+  api_base: "http://127.0.0.1:6199"
+  # 可选：多套实现端/多端口时按账号覆盖；不写 api_base 表示沿用上面的默认地址。
+  # accounts:
+  #   - id: "qq_1904xxxx"
+  #     api_base: "http://127.0.0.1:6200"
 
 # ===== 运行时参数 =====
 runtime:

@@ -82,9 +82,11 @@ Router 并挂上自己的 `Scope`。原因：
 ```yaml
 im:
   token: ""
-  accounts:
-    - id: "qq_1906xxxx"                 # 出站连接：按工作空间 ID 选
-      api_base: "http://127.0.0.1:6199"
+  api_base: "http://127.0.0.1:6199"    # 所有账号默认的出站地址
+  # 可选：多套实现端时按账号覆盖；不写 api_base 表示沿用全局
+  # accounts:
+  #   - id: "qq_1904xxxx"
+  #     api_base: "http://127.0.0.1:6200"
 
 bot:
   # 允许自动开通的工作空间 ID；"*" 表示全部。
@@ -96,7 +98,7 @@ bot:
 - 名单用完整 ID 的原因：不同平台可能出现相同的 `account`，只比 account 会一起放行。
 - `*` 时任何能拿到共享 token 的调用方都能创建状态；监听非回环地址启动告警。
 - 档案里已有工作空间不受名单影响：名单只管新建。
-- **自动开通只建状态，不建连接**：新账号必须同时在 `im.accounts` 里配 `api_base`，
+- **自动开通只建状态，不建连接**：至少要有 `im.api_base`（或该账号的覆盖地址），
   否则能收事件、发不出消息（发送时记 warn 并按失败处理）。
 - 删除 `bot.workspaces` 和 `bot.allow_self_ids`：范围统一由这份名单表达。
 
@@ -226,7 +228,7 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 | D4 | 已有工作空间 | 启动从 `state.db` 的 `meta` 全部恢复，名单只管新建 | 纯懒加载 |
 | D5 | 展示名 | 先用 ID；异步用 `get_self_info.user_name` 补，写入 `state.db` 的 `meta` | 只放内存 |
 | D6 | 群白名单 | v1 全部继承全局；需要每工作空间覆盖再加状态文件 | 现在做覆盖 |
-| D7 | 出站选账号 | 按工作空间 ID 找 `im.accounts[].api_base`，每账号一条连接 | 共用连接 + 动作请求带 `self` |
+| D7 | 出站选账号 | 默认 `im.api_base`，多实现端时按账号覆盖 | 每账号强制一条连接 |
 | D8 | 调试/兼容入口 | 不再有隐式 default；`workspace_id` 必填或唯一已加载时自动选 | 保留一个空壳 default |
 | D9 | 本地持久化 | 单库 `state.db`（SQLite，WAL）+ `workspace_id` 列，见 7.1 | 每工作空间一库 / 不持久化 |
 
@@ -234,7 +236,8 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 
 - `config`：删除 `Workspaces []WorkspaceConf`、`EffectiveWorkspaces`、`WorkspaceByID`、
   `allow_self_ids`、`astrbot.http_api`、`astrbot.access_token`；新增
-  `im.token`、`im.accounts[{id, api_base}]`、`WorkspaceAccounts []string`（完整 ID）。
+  `im.token`、`im.api_base`、可选的 `im.accounts[{id, api_base}]`、
+  `WorkspaceAccounts []string`（完整 ID）。
 - `workspace.Manager`：新增 `byID` 索引、`ResolveOrCreate(platform, account)`、互斥锁、
   启动扫描；删除 `byPlatform` / `bySelfID` / `byNickname` / `single`。
 - `onebot.Event`：换成 OB12 结构（`Self{Platform,UserID}`、字符串 `MessageID`、
@@ -262,7 +265,7 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 2. 删除旧目录 `workspaces/haoping`、`workspaces/bushi`：工作空间不再使用目录或
    `prompt_system.yaml` / `prompt_custom.yaml` 私有副本；提示词统一用根目录那份。
    删除前先备份目录里的自定义指令，需要保留的内容手工合并进根 `prompt_custom.yaml`。
-3. `astrbot.http_api` 迁到 `im.accounts[].api_base`，每个账号一条；
+3. `astrbot.http_api` 迁到 `im.api_base`（旧值可自动接住）；
    `astrbot.access_token` 迁到 `im.token`。
 4. 插件 `go_event_url` 保持 `http://127.0.0.1:18090/im/event`（账号自动拼到路径），
    同时升级到 1.7.1 的 OB12 事件格式；`account` 通常留空。

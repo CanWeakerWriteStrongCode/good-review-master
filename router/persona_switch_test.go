@@ -85,7 +85,7 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 		},
 	}
 	fake := testutil.NewFakeLLM()
-	obClient := onebot.NewClient(nil, "") // 死地址，SendGroupMessage 仅日志
+	obClient := onebot.NewClient("", nil, "") // 死地址，SendGroupMessage 仅日志
 	router := NewRouter(staticSnapshot(cfg), promptCfg, fake, obClient, nil, context.Background())
 
 	// 收尾顺序（t.Cleanup 是 LIFO，所以先登记日志、后登记排空 = 先排空、后关日志）：

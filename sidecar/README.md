@@ -69,7 +69,7 @@ QQ 官方机器人的平台条目（WebUI 里填，或加到 `data/config/cmd_co
 | `go_event_url` | `http://127.0.0.1:18090/im/event` | Go 的事件入口前缀，实际路径追加 `/{account}` |
 | `token` | 空 | 与 Go 的 `im_token`（`secret.yaml`）相同 |
 | `action_listen_host` | `127.0.0.1` | OneBot 12 动作服务监听地址 |
-| `action_listen_port` | `6199` | Go 的 `im.accounts[].api_base` 指向 `http://host:port` |
+| `action_listen_port` | `6199` | Go 的 `im.api_base` 指向 `http://host:port` |
 | `forward_self_messages` | `false` | 是否转发机器人自己发的消息 |
 | `action_timeout_sec` | `10` | 单个动作超时 |
 | `event_retry` | `3` | 事件推送失败重试次数 |
@@ -83,10 +83,8 @@ QQ 官方机器人的平台条目（WebUI 里填，或加到 `data/config/cmd_co
 ```yaml
 im:
   token: "换成一个随机长串"          # 也可以写进 secret.yaml 的 im_token
-  accounts:
-    # id 等于工作空间 ID（平台名_接收账号）；QQ 官方账号是 qq_<AppID>
-    - id: "qq_<AppID>"
-      api_base: "http://127.0.0.1:6199"
+  # 插件动作服务地址；所有账号共用，账号 ID 由入站路径自动得到
+  api_base: "http://127.0.0.1:6199"
 
 bot:
   # QQ 官方机器人填 group_openid，不是 QQ 群号；填 "*" 表示所有群都响应
@@ -227,6 +225,6 @@ Go 返回 204 表示已接管；日志里会出现 `已自动开通工作空间`
 | Go 返回 400 | 路径 account 非法，或 `self.platform` 缺失 / 不是合法平台名 |
 | 插件日志 `Go 未接管事件` | 按上一条确认；4xx 是预期的 AstrBot 兜底路径 |
 | 机器人被 @ 但不回复 | `self.user_id` 是 `unknown_selfid`（适配器没给 `is_you`）；看事件日志里的 `mentions` |
-| 回复发到另一个账号 | 该账号没有配置 `im.accounts[].api_base`，或两个账号共用了同一个根地址；每账号一条连接 |
+| 回复发到另一个账号 | 两个账号用了不同的动作端口却只配了全局 `im.api_base`；给该账号加 `im.accounts[].api_base` 覆盖 |
 | 面板工作空间为空 | 还没收到任何事件；账号开通发生在第一条事件到达时 |
 | 官方机器人回复报主动消息额度/频率 | 超出被动回复窗口；减少主动推送，或在窗口内回复 |

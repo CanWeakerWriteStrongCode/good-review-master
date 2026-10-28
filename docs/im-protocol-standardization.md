@@ -14,7 +14,7 @@
 - `self.user_id` 只放真实可比值；拿不到就写哨兵 `unknown_selfid`，Go 见到哨兵一律不触发。
 - 入站只做 OB12 webhook：`204` 即成功；取消 202/200「接管 / 不接管」语义。
 - 出站改标准动作（`send_message`、`get_self_info`、`get_group_info`、`get_group_member_info`），
-  每个账号一条独立 OneBot Connect（独立 `api_base`），不再传扩展参数 `self_id`。
+  默认共用一个 `im.api_base`（多实现端时可按账号覆盖），不再传扩展参数 `self_id`。
 - 删除 `platform_id` / `mentioned` / `display_message`；`message_sent` 归一逻辑取消
   （OB12 没有该事件）。
 
@@ -35,7 +35,7 @@
 - 所有 ID 都是 `string`，QQ 官方 openid 直接可用，不需要宽类型；
 - 事件只有 `type` / `detail_type` / `sub_type`，群消息字段稳定；
 - 动作与响应结构统一（`action` / `params` / `echo` → `status` / `retcode` / `data` / `message`），
-  多账号可以用「每账号一条连接」表达，不需要私有选路参数；
+  多账号可以用「共用地址 + 按账号覆盖」表达，不需要私有选路参数；
 - 允许带前缀的扩展字段（`qq.xxx`），媒体这类标准表达不了的信息有正规出口。
 
 ### 1.3 换 12 的代价（已接受）
@@ -268,25 +268,26 @@ Koishi 自身就是 Satori 服务端，不为它写 Koishi 插件，写一个独
 
 ### 5.2 出站
 
-每个账号一条 OneBot Connect：`im.accounts[].api_base`，Go 用 `POST <base>/` 发动作，
-按 `workspace_id` 选连接；不再有 `self_id` 参数。
+出站默认用一个全局地址 `im.api_base`，Go 用 `POST <base>/` 发动作；账号选择由
+`workspace_id` 决定，动作请求不带 `self`。一个实现端服务所有账号时（AstrBot 插件
+就是这种），配一行地址即可。多套实现端/多端口时，才用 `im.accounts[].api_base`
+按账号覆盖，留空表示沿用全局。
 
-「一条连接」指**一个 base URL**，不是必须一个端口：sidecar 可以在同一端口上为每个账号
-暴露 `/accounts/<account>/` 作为连接根路径（POST 它的 `/`），也可以每账号一个端口。
-Go 只读配置里的 `api_base`，不感知实现方式。
-
-为什么不能共用根路径 + 动作请求带 `self`：`self` 是 `{platform, user_id}`，QQ 官方的
-`user_id` 是群作用域 openid，拿它选账号会在换群或未学到时失效；用 AppID 顶替又会让
-「动作身份」和「事件身份」不一致。账号选择留在 Go，投递地址用每账号一个 base URL。
+为什么用 `workspace_id` 而不是请求里带 `self`：`self` 是 `{platform, user_id}`，
+QQ 官方的 `user_id` 是群作用域 openid，拿它选账号会在换群或未学到时失效；用 AppID
+顶替又会让「动作身份」和「事件身份」不一致。账号选择留在 Go，实现端只负责把动作
+交给正确的平台实例。
 
 ### 5.3 配置
 
 ```yaml
 im:
   token: ""                      # 入站/出站共用，可空
-  accounts:                      # 每账号一条连接（出站用）
-    - id: "qq_1906xxxx"          # 工作空间 ID = platform_account
-      api_base: "http://127.0.0.1:6199"
+  api_base: "http://127.0.0.1:6199"  # 所有账号默认的出站地址
+  # 可选：多套实现端时按账号覆盖；不写 api_base 表示沿用全局
+  # accounts:
+  #   - id: "qq_1904xxxx"        # 工作空间 ID = platform_account
+  #     api_base: "http://127.0.0.1:6200"
 
 bot:
   # 允许自动开通工作空间的工作空间 ID（platform_account）
@@ -294,10 +295,10 @@ bot:
 ```
 
 - `bot.workspaces`、`bot.allow_self_ids` 删除；旧 `astrbot.http_api` / `astrbot.access_token`
-  迁移为 `im.accounts[].api_base` / `im.token`。
+  迁移为 `im.api_base` / `im.token`。
 - 名单匹配完整工作空间 ID，避免两个平台用同一个 account 时被一起放行。
-- **自动开通只建状态，不建连接**：新账号必须同时在 `im.accounts` 里配 `api_base`，
-  否则能收事件、发不出消息（发送时记一条 warn 并按失败处理）。
+- **自动开通只建状态，不建连接**：没有 `im.api_base` 且该账号没有覆盖地址时，
+  能收事件、发不出消息（发送时记一条 warn 并按失败处理）。
 
 ### 5.4 响应语义（部署约定）
 
@@ -414,7 +415,7 @@ OB12 只定义「204/200 = 推送成功，其它 = 失败」。本项目在此�
 - **2xx/4xx 语义**：这是本项目的部署约定，不是标准；插件与 Go 必须成对升级，
   否则会出现「Go 已接管但插件还让 AstrBot 回复」或反过来。
 - **同连接多账号**：账号选择在 Go（`platform + account → workspace`），投递地址是
-  `im.accounts[].api_base`。不要让多个账号共用一个根路径再靠 `self` 选路：QQ 官方的
-  `self.user_id` 是群作用域 openid，无法稳定选账号。sidecar 用不同 base path 或不同端口区分账号即可。
+  `im.api_base`（可按账号覆盖）。不要把账号选择塞进动作请求靠 `self`：QQ 官方的
+  `self.user_id` 是群作用域 openid，无法稳定选账号。
 - **迁移期**：旧 OB11 事件结构与新插件不兼容，两侧要同时升级；Go 可短暂保留旧解码器
   并打 warn，但不能长期双协议并存。

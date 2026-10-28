@@ -119,7 +119,8 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | 配置项                         | 说明                              | 示例值                        |
 |-----------------------------|---------------------------------|----------------------------|
 | `im.token`                  | 入站/出站共用的 OneBot token（建议放 `secret.yaml` 的 `im_token`） | `""` |
-| `im.accounts`               | 每个机器人账号的出站地址 `[{id, api_base}]`；`id` = `平台名_接收账号` | 见示例配置 |
+| `im.api_base`               | 所有账号默认的出站地址（实现端动作服务） | `http://127.0.0.1:6199` |
+| `im.accounts`               | 可选：多实现端时按账号覆盖出站地址 `[{id, api_base}]`；`id` = `平台名_接收账号` | 一般不用配 |
 | `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群） | `123456,789012`            |
 | `bot.workspace_accounts`    | 允许自动开通的工作空间 ID（如 `qq_1906xxxx`；`*` 表示全部） | `["qq_1906xxxx"]` |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |

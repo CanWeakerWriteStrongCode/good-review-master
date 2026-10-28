@@ -108,14 +108,13 @@ func provideDefaultPrompt(manager *workspace.Manager) *config.PromptConfig {
 }
 
 // provideOneBot 建 OneBot 12 出站客户端。
-// 一个账号一份 base URL：QQ 官方的 self.user_id 是群作用域 openid，无法用来选账号，
-// 所以按工作空间 ID 绑定地址，动作请求本身不带任何私有路由字段。
+// 常见部署所有账号共用一个实现端地址（im.api_base）；im.accounts 只做按账号覆盖。
 func provideOneBot(loaded loadedConfig) *onebot.Client {
 	accounts := make([]onebot.Account, 0, len(loaded.IMAccounts))
 	for _, account := range loaded.IMAccounts {
 		accounts = append(accounts, onebot.Account{ID: account.ID, APIBase: account.APIBase})
 	}
-	return onebot.NewClient(accounts, loaded.IMToken)
+	return onebot.NewClient(loaded.IMAPIBase, accounts, loaded.IMToken)
 }
 
 // provideIMServer 建 IM 入站入口。

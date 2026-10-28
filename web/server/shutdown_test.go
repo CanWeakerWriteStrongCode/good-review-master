@@ -62,7 +62,7 @@ func TestShutdown等待期间readyz转503且仍接受新连接(t *testing.T) {
 		WebPassword:   "pw",
 		JWTSecret:     "test-secret",
 		ShutdownDelay: shutdownDelay,
-	}), onebot.NewClient(nil, ""), nil)
+	}), onebot.NewClient("", nil, ""), nil)
 
 	go func() { _ = server.Start() }()
 	waitForServer(t, port)
@@ -112,7 +112,7 @@ func TestShutdown默认等到在途请求收尾(t *testing.T) {
 		WebPassword: "pw",
 		JWTSecret:   "test-secret",
 		// 不设 ShutdownDelay：默认 0
-	}), onebot.NewClient(nil, ""), nil)
+	}), onebot.NewClient("", nil, ""), nil)
 
 	// 测试专用路由：卡在 handler 里直到测试放行，用来制造在途请求。
 	// 用 channel 协调而不是 sleep，时序是确定的。

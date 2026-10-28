@@ -290,7 +290,7 @@ cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X througho
 | --- | --- |
 | `prompt_system.yaml` / `prompt_custom.yaml` | within ~2s (`PromptConfig.Reload()` **and** `Router.Rebuild()`) |
 | `allow_groups`, `workspace_accounts` (new provisioning), thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
-| `im.accounts`, `web_port`, `im_listen_addr`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
+| `im.api_base`, `im.accounts`, `web_port`, `im_listen_addr`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
 
 The limiter and breaker are **stateful** (a token bucket, a consecutive-failure counter), so
 re-reading their numbers mid-flight would silently change what the counters mean. That's why
