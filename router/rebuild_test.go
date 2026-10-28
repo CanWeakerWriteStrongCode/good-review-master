@@ -42,7 +42,6 @@ func TestRebuild拾取提示词变化(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		BotQQ:       "123456",
 		BotNickname: "bot",
 		MaxCacheMsg: 100,
 		LLMTimeout:  5 * time.Second,
@@ -103,7 +102,7 @@ func TestRebuild保留内部指令(t *testing.T) {
 		t.Fatalf("加载提示词失败：%v", err)
 	}
 
-	cfg := &config.Config{BotQQ: "1", MaxCacheMsg: 10, LLMConfig: config.LLMConf{MaxContextTokens: 50000}}
+	cfg := &config.Config{MaxCacheMsg: 10, LLMConfig: config.LLMConf{MaxContextTokens: 50000}}
 	instance := NewRouter(staticSnapshot(cfg), promptCfg,
 		testutil.NewFakeLLM(), onebot.NewClient("http://127.0.0.1:1", ""), nil, context.Background())
 
@@ -142,7 +141,7 @@ func TestRebuild不重复累积(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载提示词失败：%v", err)
 	}
-	cfg := &config.Config{BotQQ: "1", MaxCacheMsg: 10, LLMConfig: config.LLMConf{MaxContextTokens: 50000}}
+	cfg := &config.Config{MaxCacheMsg: 10, LLMConfig: config.LLMConf{MaxContextTokens: 50000}}
 	instance := NewRouter(staticSnapshot(cfg), promptCfg,
 		testutil.NewFakeLLM(), onebot.NewClient("http://127.0.0.1:1", ""), nil, context.Background())
 

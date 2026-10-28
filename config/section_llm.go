@@ -19,10 +19,11 @@ type llmSection struct {
 	CacheHitCost  float64 `yaml:"cache_hit_cost"`
 	CacheMissCost float64 `yaml:"cache_miss_cost"`
 
-	MaxContextTokens int     `yaml:"max_context_tokens"`
-	ImageMax         int     `yaml:"image_max"`
-	Temperature      float64 `yaml:"temperature"`
-	TopP             float64 `yaml:"top_p"`
+	MaxContextTokens int      `yaml:"max_context_tokens"`
+	ImageMax         int      `yaml:"image_max"`
+	ImageLocalDirs   []string `yaml:"image_local_dirs"`
+	Temperature      float64  `yaml:"temperature"`
+	TopP             float64  `yaml:"top_p"`
 
 	RateLimitPerSec    float64 `yaml:"rate_limit_per_sec"`
 	RateLimitBurst     int     `yaml:"rate_limit_burst"`
@@ -72,6 +73,14 @@ func (s *llmSection) SetDefaults() {
 	}
 	if s.MaxContextTokens <= 0 {
 		s.MaxContextTokens = defaultMaxContextTokens
+	}
+	if len(s.ImageLocalDirs) == 0 {
+		// AstrBot 把 QQ 官方机器人收到的图片落在 data/temp，这里给默认值；
+		// 自定义 AstrBot 数据目录时可覆盖。
+		s.ImageLocalDirs = []string{"~/.astrbot/data/temp"}
+	}
+	for i, dir := range s.ImageLocalDirs {
+		s.ImageLocalDirs[i] = strings.TrimSpace(dir)
 	}
 	if s.BreakerFailures == 0 {
 		// 只把"没写"（0）当作缺省；负数留给用户显式关闭（见 Validate 的说明）

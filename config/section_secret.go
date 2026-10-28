@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 
+	"good-review-master/logutil"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,20 +21,22 @@ import (
 // "secret > config.yaml 旧位置" 两层，环境变量天然排在最前——
 // 三层优先级压成两层，少一处可能写错的地方。
 type secretSection struct {
-	LLMAPIKey         string            `yaml:"llm_api_key"`
-	WebPassword       string            `yaml:"web_password"`
-	JWTSecret         string            `yaml:"jwt_secret"`
-	NapCatAccessToken string            `yaml:"napcat_access_token"`
-	McpBuiltinToken   string            `yaml:"mcp_builtin_token"`
-	McpServerTokens   map[string]string `yaml:"mcp_server_tokens"`
+	LLMAPIKey          string            `yaml:"llm_api_key"`
+	WebPassword        string            `yaml:"web_password"`
+	JWTSecret          string            `yaml:"jwt_secret"`
+	AstrBotAccessToken string            `yaml:"astrbot_access_token"`
+	McpBuiltinToken    string            `yaml:"mcp_builtin_token"`
+	McpServerTokens    map[string]string `yaml:"mcp_server_tokens"`
 }
 
 // 环境变量名。只覆盖这三个全局值；MCP 每个服务的 token 只走文件
 // （按服务名做环境变量太容易撞名，收益也不大）。
 const (
-	envLLMAPIKey   = "GOOD_REVIEW_LLM_API_KEY"
-	envWebPassword = "GOOD_REVIEW_WEB_PASSWORD"
-	envNapCatToken = "GOOD_REVIEW_NAPCAT_TOKEN"
+	envLLMAPIKey         = "GOOD_REVIEW_LLM_API_KEY"
+	envWebPassword       = "GOOD_REVIEW_WEB_PASSWORD"
+	envAstrBotToken      = "GOOD_REVIEW_ASTRBOT_TOKEN"
+	envLegacyBridgeToken = "GOOD_REVIEW_NAPCAT_TOKEN" // 一次性迁移：旧环境变量名
+	legacyBridgeTokenKey = "napcat_access_token"      // 一次性迁移：旧 secret.yaml 键
 )
 
 func (s *secretSection) Name() string { return "secret" }
@@ -42,7 +46,17 @@ func (s *secretSection) Unmarshal(document *yaml.Node) error {
 	if document == nil {
 		return nil
 	}
-	return document.Decode(s)
+	if err := document.Decode(s); err != nil {
+		return err
+	}
+	// 一次性迁移：旧键名仍可用，但提示用户改名。
+	if s.AstrBotAccessToken == "" {
+		if node := topLevelValue(document, legacyBridgeTokenKey); node != nil {
+			s.AstrBotAccessToken = strings.TrimSpace(node.Value)
+			logutil.Warn("secret.yaml 的 napcat_access_token 已更名为 astrbot_access_token，请尽快修改")
+		}
+	}
+	return nil
 }
 
 // applyEnv 应用环境变量覆盖。必须在 Unmarshal 之后、convert 之前调用。
@@ -53,8 +67,11 @@ func (s *secretSection) applyEnv() {
 	if value := strings.TrimSpace(os.Getenv(envWebPassword)); value != "" {
 		s.WebPassword = value
 	}
-	if value := strings.TrimSpace(os.Getenv(envNapCatToken)); value != "" {
-		s.NapCatAccessToken = value
+	if value := strings.TrimSpace(os.Getenv(envAstrBotToken)); value != "" {
+		s.AstrBotAccessToken = value
+	} else if value := strings.TrimSpace(os.Getenv(envLegacyBridgeToken)); value != "" {
+		s.AstrBotAccessToken = value
+		logutil.Warn("环境变量 GOOD_REVIEW_NAPCAT_TOKEN 已更名为 GOOD_REVIEW_ASTRBOT_TOKEN，请尽快修改")
 	}
 }
 
@@ -62,7 +79,7 @@ func (s *secretSection) SetDefaults() {
 	s.LLMAPIKey = strings.TrimSpace(s.LLMAPIKey)
 	s.WebPassword = strings.TrimSpace(s.WebPassword)
 	s.JWTSecret = strings.TrimSpace(s.JWTSecret)
-	s.NapCatAccessToken = strings.TrimSpace(s.NapCatAccessToken)
+	s.AstrBotAccessToken = strings.TrimSpace(s.AstrBotAccessToken)
 	s.McpBuiltinToken = strings.TrimSpace(s.McpBuiltinToken)
 	for name, token := range s.McpServerTokens {
 		s.McpServerTokens[name] = strings.TrimSpace(token)

@@ -68,7 +68,7 @@ func TestServerAcceptsGroupMessage(t *testing.T) {
 		"post_type":"message","message_type":"group",
 		"group_id":"123456","user_id":"42","nickname":"小明","card":"",
 		"raw_message":"[CQ:at,qq=123456] 锐评下","message_id":99,
-		"time":1700000000,"self_id":"123456","platform":"qq","mentioned":true
+		"time":1700000000,"self_id":"123456","mentioned":true
 	}`)
 
 	if rec.Code != http.StatusAccepted {
@@ -81,8 +81,8 @@ func TestServerAcceptsGroupMessage(t *testing.T) {
 	if got.GroupID != "123456" || got.UserID != "42" || got.MessageID != 99 || got.Time != 1700000000 {
 		t.Fatalf("unexpected event: %+v", got)
 	}
-	if got.Platform != "qq" || got.SelfID != "123456" {
-		t.Fatalf("platform/self_id not decoded: %+v", got)
+	if got.SelfID != "123456" {
+		t.Fatalf("self_id not decoded: %+v", got)
 	}
 	if !got.Mentioned {
 		t.Fatalf("mentioned not decoded: %+v", got)
@@ -147,6 +147,26 @@ func TestServerRejectsTrailingData(t *testing.T) {
 	rec := postEvent(t, server, "", `{"post_type":"message","message_type":"group","group_id":"1"} {}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestReadableEventJSONRestoresUnicodeAndNumbers(t *testing.T) {
+	raw := []byte(`{"raw_message":"@\u4e0d\u662f\u597d\u8bc4\u5927\u5e08 test","message_id":3484799710571075834}`)
+
+	got := string(readableEventJSON(raw))
+	if !strings.Contains(got, "不是好评大师") {
+		t.Fatalf("Unicode 转义应还原为中文：%s", got)
+	}
+	// 消息 ID 超过 2^53，走 float64 会被悄悄改写
+	if !strings.Contains(got, "3484799710571075834") {
+		t.Fatalf("大整数应逐字保留：%s", got)
+	}
+}
+
+func TestReadableEventJSONFallsBackToRaw(t *testing.T) {
+	raw := []byte(`{not json`)
+	if got := string(readableEventJSON(raw)); got != string(raw) {
+		t.Fatalf("解析失败应退回原文，got %q", got)
 	}
 }
 

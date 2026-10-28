@@ -124,7 +124,7 @@ func New(opts Options) (*App, error) {
 func buildLLMClient(opts Options, cfg *config.Config) (llm.Client, *testutil.FakeLLM, error) {
 	if opts.TestMode {
 		fakeLLM := testutil.NewFakeLLM()
-		logutil.Warn("测试模式已启用：使用 FakeLLM，NapCat 指向死地址")
+		logutil.Warn("测试模式已启用：使用 FakeLLM，AstrBot 桥接地址由配置决定")
 		return fakeLLM, fakeLLM, nil
 	}
 
@@ -158,14 +158,9 @@ func buildLLMClient(opts Options, cfg *config.Config) (llm.Client, *testutil.Fak
 func logStartup(application *App) {
 	cfg := application.Config()
 	logutil.Info("🚀 【不是好评大师】机器人启动成功")
-	logutil.Info("机器人QQ：" + cfg.BotQQ)
+	logutil.Info("AstrBot 桥接 API：" + cfg.AstrBotHTTPAPI)
 	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
-	logutil.Info("OneBot 桥接 API：" + cfg.NapCatHTTPAPI)
 	logutil.Info("IM 事件入口：" + cfg.IMListenAddr)
-	if cfg.NapCatHTTPAPI == "http://127.0.0.1:3000" {
-		logutil.Warn("napcat.http_api 仍指向 NapCat 默认端口 3000；sidecar 模式下应指向 " +
-			"AstrBot 桥接插件的动作代理（默认 http://127.0.0.1:6199）")
-	}
 }
 
 // reloadPrompts 提示词文件变化后的动作：重读并重建路由表。
@@ -248,7 +243,7 @@ func sameMCPServers(previous, next []config.MCPServerConf) bool {
 // deriveConfig 把"只有本进程知道"的运行期值贴到一份刚加载出来的配置上，
 // 得到可以发布的快照内容。
 //
-// 这些值不在任何文件里（昵称来自 NapCat，地址来自本次进程绑定的端口），
+// 这些值不在任何文件里（昵称来自 AstrBot 桥接，地址来自本次进程绑定的端口），
 // 但它们又必须出现在快照里，否则 bot 的 @检测 与 MCP 的工具注入就看不到。
 // 所以**每一次重新加载都要经过这里**，而不是只有启动时走一次。
 //

@@ -2,7 +2,6 @@ package cache
 
 import (
 	"encoding/json"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -15,7 +14,8 @@ type Message struct {
 	Nick    string   `json:"nick"`
 	Card    string   `json:"card"`
 	Content string   `json:"content"`
-	Images  []string `json:"images,omitempty"` // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
+	Images  []string `json:"images,omitempty"`   // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
+	QuoteID int64    `json:"quote_id,omitempty"` // 本条引用的消息 msg_id；0=没有引用
 	Time    int64    `json:"time"`
 }
 
@@ -144,19 +144,22 @@ func (gc *GroupMsgCache) Len() int {
 }
 
 // chatLine 单条群聊消息在 JSON 行中的字段（发给大模型的表示）。
-// UserID 取消息里的 user_id（数字 QQ 号），空或非数字时省略；MsgID 为 0 时省略。
+// UserID 是发言者的稳定标识（QQ 官方机器人是 openid，aiocqhttp 是数字 QQ），
+// 昵称会变，它不会；为空时省略。MsgID 为 0 时省略。
 type chatLine struct {
 	MsgID   int64  `json:"msg_id,omitempty"`
 	User    string `json:"user"`
-	UserID  int64  `json:"user_id,omitempty"`
+	UserID  string `json:"user_id,omitempty"`
 	Content string `json:"content"`
+	QuoteID int64  `json:"quote_id,omitempty"`
 }
 
 // BuildChatLog 将消息列表组装为发给大模型的群聊上下文：每条消息一行 JSON 对象，如
 //
-//	{"msg_id":1001,"user":"张三","user_id":123456,"content":"今天好累"}
-//	{"msg_id":1002,"user":"李四","user_id":888888,"content":"你也好"}
+//	{"msg_id":1001,"user":"张三","user_id":"3319D767...","content":"今天好累"}
+//	{"msg_id":1002,"user":"李四","user_id":"79EBED44...","content":"你也好"}
 //
+// user_id 用字符串保留 openid / 数字 QQ 原值：昵称会变，稳定 ID 不会。
 // 用 json.Marshal 保证昵称/内容里的引号、换行等被正确转义。空内容消息跳过。
 func BuildChatLog(msgs []Message) string {
 	var buf strings.Builder
@@ -164,12 +167,12 @@ func BuildChatLog(msgs []Message) string {
 		if msg.Content == "" {
 			continue
 		}
-		uid, _ := strconv.ParseInt(msg.UserID, 10, 64)
 		line, err := json.Marshal(chatLine{
 			MsgID:   msg.MsgID,
 			User:    msg.Nick,
-			UserID:  uid,
+			UserID:  msg.UserID,
 			Content: msg.Content,
+			QuoteID: msg.QuoteID,
 		})
 		if err != nil {
 			continue

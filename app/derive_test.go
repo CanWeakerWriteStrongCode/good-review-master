@@ -14,7 +14,6 @@ import (
 // @机器人 不响应了"/"view_image 工具不见了"。
 func TestDerive贴上昵称与内嵌看图服务(t *testing.T) {
 	loaded := &config.Config{
-		BotQQ:           "123456",
 		McpBuiltinToken: "tok",
 		MCPConfig: config.MCPConf{
 			Enabled: false,

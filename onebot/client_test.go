@@ -104,9 +104,56 @@ func TestFetchGroupMsgHistory(t *testing.T) {
 	}
 }
 
+func TestGetGroupInfoToleratesOpenID(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeAction(t, w, map[string]any{
+			"status": "ok", "retcode": 0,
+			"data": map[string]any{"group_id": "8A2B-openid", "group_name": "测试群"},
+		})
+	})
+
+	info, err := client.GetGroupInfo("8A2B-openid")
+	if err != nil {
+		t.Fatalf("GetGroupInfo: %v", err)
+	}
+	if info.GroupName != "测试群" {
+		t.Fatalf("info = %+v", info)
+	}
+}
+
 func TestSendGroupMessageLogsButDoesNotPanic(t *testing.T) {
 	client := newClientFor(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeAction(t, w, map[string]any{"status": "ok", "retcode": 0})
 	})
 	client.SendGroupMessage("10001", "hello")
+}
+
+func TestSendGroupReplySendsSegments(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/send_group_msg" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		var body struct {
+			GroupID string    `json:"group_id"`
+			Message []Segment `json:"message"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body.GroupID != "10001" || len(body.Message) != 3 {
+			t.Fatalf("body = %+v", body)
+		}
+		if body.Message[0].Type != "reply" || body.Message[0].Data["id"] != "42" {
+			t.Errorf("reply segment = %+v", body.Message[0])
+		}
+		if body.Message[1].Type != "at" || body.Message[1].Data["qq"] != "42" {
+			t.Errorf("at segment = %+v", body.Message[1])
+		}
+		if body.Message[2].Type != "text" || body.Message[2].Data["text"] != " hi" {
+			t.Errorf("text segment = %+v", body.Message[2])
+		}
+		writeAction(t, w, map[string]any{"status": "ok", "retcode": 0})
+	})
+
+	client.SendGroupReply("10001", "42", "42", "hi")
 }

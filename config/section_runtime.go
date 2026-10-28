@@ -89,8 +89,10 @@ func (s *runtimeSection) SetDefaults() {
 		s.IMListenAddr = defaultIMListenAddr
 	}
 	if s.BackfillOnStart == nil {
-		enabled := true
-		s.BackfillOnStart = &enabled
+		// 默认关闭：当前部署是 QQ 官方机器人，没有 get_group_msg_history，
+		// 开着只会在每次启动时打一轮失败日志。
+		disabled := false
+		s.BackfillOnStart = &disabled
 	}
 }
 

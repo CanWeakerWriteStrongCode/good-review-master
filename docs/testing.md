@@ -4,7 +4,7 @@
 
 ## 原理
 
-- 测试模式：`GOOD_REVIEW_TEST=1` 启动真实二进制时，用 `FakeLLM`（固定回复并记录调用）替代真实大模型；NapCat 指向死地址（`127.0.0.1:1`），调用失败仅 warn，不致命。
+- 测试模式：`GOOD_REVIEW_TEST=1` 启动真实二进制时，用 `FakeLLM`（固定回复并记录调用）替代真实大模型；AstrBot 桥接地址由 fixture 指向死地址（`127.0.0.1:1`），调用失败仅 warn，不致命。
 - 测试模式额外注册 `/api/debug/*` 自测接口（**生产模式不注册**——gin 的 SPA fallback 会把这些路径回成页面 HTML，而非调试 JSON）：
 
 | 接口 | 作用 |

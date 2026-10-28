@@ -91,7 +91,7 @@ func main() {
 	promptPath := flag.String("prompt", "prompt_system.yaml", "prompt_system.yaml 路径")
 	casesDir := flag.String("cases", filepath.Join("tests", "eval", "cases"), "用例目录（读其中的 *.yaml）")
 	baselinePath := flag.String("baseline", filepath.Join("tests", "eval", "baseline.json"), "基线文件路径")
-	botNickname := flag.String("nickname", "机器人", "评测时使用的机器人昵称（真实的昵称来自 NapCat，离线拿不到）")
+	botNickname := flag.String("nickname", "机器人", "评测时使用的机器人昵称（真实的昵称来自 AstrBot 桥接，离线拿不到）")
 	update := flag.Bool("update", false, "把本次输出写成新基线（人工确认后才用）")
 	dryRun := flag.Bool("dry", false, "只解析并打印将要发送的提示词，不调用大模型、不比对基线")
 	timeout := flag.Duration("timeout", 120*time.Second, "单条用例的超时")
@@ -285,7 +285,7 @@ func resolvePrompt(promptCfg *config.PromptConfig, cfg *config.Config, one check
 		if entry.Persona != nil {
 			personaBlock = router.RenderPersona(*entry.Persona, data.SharedRules[one.Prompt.Category])
 		}
-		return router.ComposeSystemPrompt(cfg, personaBlock), entry.Prompt, nil
+		return router.ComposeSystemPrompt(cfg, "", personaBlock), entry.Prompt, nil
 	}
 	keywords := make([]string, 0, len(entries))
 	for _, entry := range entries {

@@ -1,31 +1,26 @@
 # AstrBot OneBot 11 桥接（sidecar）
 
-AstrBot 只当 IM 网关：它负责连 QQ 官方机器人 / NapCat / 微信 / Telegram 等平台，把消息转成 OneBot 11 事件推给 Go 核心；Go 仍然是业务大脑，回复通过桥接插件交回 AstrBot 发送。
+AstrBot 只当 IM 网关：它负责连 QQ 官方机器人等平台，把消息转成 OneBot 11 事件推给 Go 核心；Go 仍然是业务大脑，回复通过桥接插件交回 AstrBot 发送。
 
 ```
 QQ 官方机器人 ──(WebSocket)──┐
-NapCat ──(OneBot 11)─────────┼── AstrBot ── 本插件 ── POST /im/event ──> Go 核心
-微信 / TG / ... ─────────────┘        ▲                                   │
-                                      └──── send_group_msg / send_msg ◄───┘
+其他 AstrBot 适配器 ─────────┼── AstrBot ── 本插件 ── POST /im/event ──> Go 核心
+                             ▲                                   │
+                             └──── send_group_msg / send_msg ◄───┘
 ```
 
-出站：`aiocqhttp` 和其他平台交给 AstrBot 的 `Platform.send_by_session`；
-`qq_official` 的群消息单独走官方 `post_group_message`（带最近一条入站消息的 `msg_id` 和
-递增的 `msg_seq`），确保是**被动回复**而不是受额度限制的主动推送。换平台仍然不用改 Go。
+出站统一走 OneBot 11 消息段数组（文本 / @ / 引用 / 图片 / 语音 / 视频 / 文件）：
+
+- `qq_official` 群消息由插件直接调官方 `post_group_message`，带最近一条入站消息的
+  `msg_id` 和递增的 `msg_seq`，确保是**被动回复**；可见引用用 `message_reference` + `REFIDX`。
+- AstrBot 的其他适配器（包括 `aiocqhttp`）优先把 `send_group_msg` 透传给协议端，
+  失败时回退到 `Platform.send_by_session`。换平台仍然不用改 Go。
 
 ## 1. 启动顺序
-
-**QQ 官方机器人（qq_official）**
 
 1. AstrBot 启动，在「消息平台」添加 `QQ 官方机器人(Websocket, 推荐)`，填 AppID / AppSecret。
 2. 安装本插件，配置 Go 地址与共享 token。
 3. **Go 最后启动**。
-
-**NapCat（aiocqhttp）**
-
-1. NapCat 登录 QQ，开启 OneBot 11 服务。
-2. AstrBot 的 `aiocqhttp` 适配器连上 NapCat。
-3. 安装本插件 → 启动 Go。
 
 ## 2. 安装插件
 
@@ -50,9 +45,8 @@ QQ 官方机器人的平台条目（WebUI 里填，或加到 `data/config/cmd_co
 ```
 
 - `enable_group_c2c: true` 才会订阅群消息 intent。
-- `use_markdown: false`：Go 的回复是纯文本，避免 markdown 发送失败再回退。
-- **不要再同时启用 `aiocqhttp`**（除非你确实有多平台）：插件在还没收到任何事件时，
-  出站会退回「第一个找到的适配器」，同时配置两个平台容易把消息发到错的地方。
+- `use_markdown: false`：Go 默认发纯文本；需要 markdown 时在消息段里显式用 `markdown`，失败会自动回退。
+- 没收到任何入站事件前，插件出站会退回「第一个找到的适配器」；多平台共存时建议只启用一个平台。
 - AstrBot 自己的 LLM/人格不需要配置；插件转发后会 `stop_event()`，AstrBot 不会回复。
 - AstrBot 的白名单、限流、内容安全、唤醒限制都不要开（或全放行）：这些过滤在 Go 侧做，
   AstrBot 拦掉的消息不会到达插件。
@@ -65,10 +59,10 @@ QQ 官方机器人的平台条目（WebUI 里填，或加到 `data/config/cmd_co
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
 | `go_event_url` | `http://127.0.0.1:18090/im/event` | 与 Go 的 `runtime.im_listen_addr` 对应 |
-| `token` | 空 | 与 Go 的 `napcat.access_token` 填同一个值 |
-| `platform_label` | 空 | 留空用 AstrBot 的平台名（`qq_official` / `aiocqhttp`） |
+| `token` | 空 | 与 Go 的 `astrbot.access_token` 填同一个值 |
+| `platform_label` | 空 | 作为 `X-Platform` 请求头的值；留空用 AstrBot 的平台名（`qq_official` / `aiocqhttp`），非 ASCII 值会被省略 |
 | `action_listen_host` | `127.0.0.1` | 动作代理监听地址 |
-| `action_listen_port` | `6199` | Go 的 `napcat.http_api` 指向这里 |
+| `action_listen_port` | `6199` | Go 的 `astrbot.http_api` 指向这里 |
 | `forward_self_messages` | `false` | 是否转发机器人自己发的消息 |
 | `action_timeout_sec` | `10` | 单个动作超时 |
 | `event_retry` | `3` | 事件推送失败重试次数 |
@@ -80,40 +74,107 @@ QQ 官方机器人的平台条目（WebUI 里填，或加到 `data/config/cmd_co
 ## 5. Go 配置
 
 ```yaml
-napcat:
-  # 指向插件的动作代理，不再直连 NapCat
+astrbot:
+  # 插件的动作代理地址
   http_api: "http://127.0.0.1:6199"
   # 与插件 token 相同
   access_token: "换成一个随机长串"
 
 bot:
-  # QQ 官方机器人填 group_openid，不是 QQ 群号
+  # QQ 官方机器人填 group_openid，不是 QQ 群号；填 "*" 表示所有群都响应
   allow_groups: "<group_openid>"
 
 runtime:
   im_listen_addr: "127.0.0.1:18090"
-  # QQ 官方机器人没有群历史接口，必须关
+  # QQ 官方机器人没有群历史接口，保持关闭
   backfill_on_start: false
 ```
+
+旧版配置里的 `napcat` 段和 `napcat_access_token` 仍会被读取并打迁移告警，建议尽快改成
+`astrbot` / `astrbot_access_token`。
 
 `group_openid` 从哪来：插件第一次收到某个群的消息时会打一条
 `首次收到群消息：group_id=...` 的日志，复制到 `bot.allow_groups` 即可（多个用逗号分隔）。
 也可以从 AstrBot 的会话列表 / 日志里取 Unified Message Origin。
 
-`bot.qq` 在官方机器人场景下只用于提示词展示和 CQ 兜底；真正的 @ 触发由插件写入事件的
-`mentioned` 字段决定，不再依赖 `[CQ:at,qq=...]` 的号码匹配。
+真正的 @ 触发由插件写入事件的 `mentioned` 字段决定，不依赖 `[CQ:at,qq=...]` 的号码匹配；
+QQ 官方机器人只有 `openid`，没有数字 QQ 号，因此配置里也不再需要 `bot.qq`。
 
-## 6. QQ 官方机器人的硬限制
+## 6. 事件字段
+
+事件本身是 OneBot 11 群消息事件，只保留两个扩展字段：
+
+| 字段 | 说明 |
+|---|---|
+| `raw_message` | 平台原样文本：文本、`[CQ:at]`、`[CQ:reply]`、`[CQ:image]`、`[CQ:record]`、`[CQ:video]`、`[CQ:file]`、`[CQ:face]`，保留给排障 |
+| `message` | 同一份内容的消息段数组；引用是标准 `reply` 段 |
+| `message_id` | 各平台消息 ID 稳定哈希成 int64 |
+| `self_id` | 机器人稳定 ID（QQ 官方是 openid）；适配器给占位值时由插件替换成学到的 openid |
+| `display_message` | **扩展**：给缓存和大模型看的统一文本，所有 @ 已翻译成 `@昵称(openid)` |
+| `mentioned` | **扩展**：是否 @ 了机器人（由 AstrBot 计算，并额外比对机器人的 openid / `<@openid>`） |
+
+标准字段之外的信息不再塞进事件：
+
+- **引用**：标准 `reply` 消息段，`data.id` 与入站 `message_id` 同一套哈希，
+  Go 直接把它当作 chat log 里的 `msg_id`；被引用消息不在记录里时就不提供内容。
+- **群名**：走 `get_group_info` 动作，不放进事件。
+- **平台名**：放在 `X-Platform` 请求头里，只用于 Go 的排障日志。
+- **REFIDX**：QQ 官方的引用 ID 只留在插件内部做映射，Go 出站引用时传 `message_id`，
+  插件再换回 REFIDX。
+
+`display_message` 里的昵称只是展示名，括号里的 ID 才是稳定身份：群友改昵称后 ID 不变，
+大模型可以据此判断前后是不是同一个人。插件按群维护 `openid → 昵称` 目录，来源是每条消息的
+发送者和 QQ 官方 `mentions`（含 `is_you`）；目录里没有的成员不会猜，直接显示 `@用户(openid)`。
+`raw_message` 保持平台原样，因此 CQ at / `<@openid>` 仍可用于排障和旧版兼容。
+
+平台本身拿不到的：数字 QQ 号、数字群号、群名片、官方群成员昵称。QQ 官方机器人只有
+`member_openid` / `group_openid`；昵称取 AstrBot 的 `author.username`，接口不给时回落为 openid。
+
+## 7. 出站消息段
+
+Go 发给插件的 `send_group_msg` 支持字符串或 OneBot 11 段数组：
+
+```json
+{
+  "group_id": "<group_openid>",
+  "message": [
+    {"type": "reply", "data": {"id": "3484799710571075834"}},
+    {"type": "at", "data": {"qq": "<member_openid>"}},
+    {"type": "text", "data": {"text": "锐评一下"}},
+    {"type": "image", "data": {"file": "https://example.com/a.png"}}
+  ]
+}
+```
+
+`reply` 的 `id` 是 Go 侧的 `message_id`（入站事件的同一个值）。QQ 官方机器人需要
+REFIDX 才能显示引用，插件内部维护 `message_id → REFIDX` 映射，Go 不需要知道。
+
+| 段类型 | QQ 官方机器人 | 其他 AstrBot 适配器 |
+|---|---|---|
+| `text` | ✅ | ✅ |
+| `markdown` | ✅（失败回退文本） | 按纯文本发送 |
+| `at` | ✅ 走 markdown `<qqbot-at-user id>`；markdown 被拒时降级成纯文本 `@昵称` | ✅ |
+| `reply` | ✅ `message_reference`（插件映射 REFIDX） | ✅ |
+| `image` | ✅ 每条最多 1 张，自动上传 | ✅ |
+| `record` | ✅ 自动转 silk 上传 | ✅ |
+| `video` | ✅ 上传；可能变成主动推送 | ✅ |
+| `file` | ✅ 上传；可能变成主动推送 | ✅ |
+| `face` | ⚠️ 仅能作为文本占位 | ✅ |
+
+多条富媒体会被拆成多条消息发送；`msg_id` 被动回复窗口对视频/文件支持不稳定，插件会按
+AstrBot 的既有策略移除 `msg_id`，这类消息可能受主动推送额度限制。QQ 官方带媒体的消息不能
+同时用 markdown，所以 `at` 会降级成纯文本 `@昵称`（不是真正的提及）。
+
+## 8. QQ 官方机器人的硬限制
 
 - **群消息默认只有 @ 机器人才会下发**。要让 Go 缓存普通群聊，需要在群里给机器人
   「接收全部消息」的权限；否则缓存里只有 @ 消息，锐评上下文会很稀薄。
 - **没有 `get_group_msg_history`**：启动回填必须关（`backfill_on_start: false`），
   重启后上下文缓存是空的，只能从新消息开始攒。
-- **被动回复有 `msg_id` 窗口**：AstrBot 会把最近一条入站消息的 `msg_id` 记在会话上，
-  Go 在窗口内回复走被动消息；超出窗口的主动推送受官方频率/额度限制，失败会返回 retcode。
-- **消息 ID 是 `ROBOT1.0_...` 字符串**：桥接插件会做稳定哈希再交给 Go，保证去重和锚点可用。
+- **被动回复有 `msg_id` 窗口**：超出窗口的主动推送受官方频率/额度限制，失败会返回 retcode。
+- **消息 ID 是 `ROBOT1.0_...` 字符串**：插件会做稳定哈希再交给 Go，保证去重和锚点可用。
 
-## 7. 验证
+## 9. 验证
 
 ```bash
 # 插件动作代理（返回值里能看到当前适配器名）
@@ -122,22 +183,23 @@ curl http://127.0.0.1:6199/health
 # Go 事件入口
 curl -i http://127.0.0.1:18090/im/health
 
-# 模拟一个事件（token 为空时可省略 Authorization）
+# 模拟一个事件（token 为空时可省略 Authorization；X-Platform 只影响 Go 日志）
 curl -X POST http://127.0.0.1:18090/im/event \
   -H "Authorization: Bearer <token>" \
+  -H "X-Platform: qq_official" \
   -H "Content-Type: application/json" \
-  -d '{"post_type":"message","message_type":"group","group_id":"<openid>","user_id":"1","nickname":"测试","raw_message":"[CQ:at,qq=qq_official] 锐评下","message_id":1,"time":1700000000,"platform":"qq_official","mentioned":true}'
+  -d '{"post_type":"message","message_type":"group","group_id":"<openid>","user_id":"1","nickname":"测试","raw_message":"[CQ:at,qq=qq_official] 锐评下","message_id":1,"time":1700000000,"self_id":"qq_official","display_message":"@机器人(qq_official) 锐评下","mentioned":true}'
 ```
 
 Go 日志应出现 `收到 IM 事件`；如果群在白名单且 `mentioned=true`，会触发锐评。
 
-## 8. 故障排查
+## 10. 故障排查
 
 | 现象 | 原因 |
 |---|---|
 | 插件日志 `首次收到群消息 group_id=...` 但 Go 不回复 | `bot.allow_groups` 里填的还是 QQ 群号，需要换成 `group_openid` |
 | `mentioned` 一直是 false | 平台没有下发 @ 信息，或 AstrBot 适配器没识别到；先确认消息确实 @ 了机器人 |
-| Go 启动日志 `获取机器人昵称失败` | AstrBot 还没连上平台，或 `napcat.http_api` 没指向 6199 |
+| Go 启动日志 `获取机器人昵称失败` | AstrBot 还没连上平台，或 `astrbot.http_api` 没指向 6199 |
 | 插件日志 `Go 侧拒收事件 401` | 两边 token 不一致 |
 | 插件日志 `Go 侧拒收事件 503` | Go 的事件队列满，检查是否卡在 LLM 调用 |
 | AstrBot 和 Go 都回复 | 插件没加载成功，或其它插件抢在 `stop_event()` 之前回复 |

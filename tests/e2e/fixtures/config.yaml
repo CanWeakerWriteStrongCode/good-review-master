@@ -1,10 +1,9 @@
 # 测试专用配置：GOOD_REVIEW_TEST=1 启动时使用
-# 注意：napcat.http_api 指向死地址，NapCat 调用失败仅 warn；数据由 /api/debug/inject 直接种入
-napcat:
+# 注意：astrbot.http_api 指向死地址，桥接调用失败仅 warn；数据由 /api/debug/inject 直接种入
+astrbot:
   http_api: "http://127.0.0.1:1"
   access_token: ""
 bot:
-  qq: "123456"
   allow_groups: "10001,10002"
 runtime:
   llm_send_count: 3   # 小重置窗口：便于缓存成本用例用少量消息触发重置/扩展
@@ -13,7 +12,7 @@ runtime:
   max_cache_msg: 6200
   poll_interval_sec: 3600   # 旧轮询模型残留字段，e2e 不依赖它
   im_listen_addr: "127.0.0.1:18090"   # 避开 Windows 保留端口段（8059-8158）
-  backfill_on_start: false   # 测试配置的 napcat 地址是死的，回填只会白等重试
+  backfill_on_start: false   # 测试配置的桥接地址是死的，回填只会白等重试
   web_port: 9090
   web_username: "admin"
   # web_password 已挪到 fixtures/secret.yaml，用来覆盖密钥文件那条新路径。

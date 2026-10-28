@@ -1,6 +1,6 @@
 {
   "go_event_url": "http://127.0.0.1:18090/im/event",
-  "token": "<与 Go 的 napcat.access_token 相同>",
+  "token": "<与 Go 的 astrbot.access_token 相同>",
   "platform_label": "",
   "action_listen_host": "127.0.0.1",
   "action_listen_port": 6199,

@@ -7,10 +7,10 @@ export interface GroupInfo {
 }
 
 export interface BotStatus {
-  bot_qq: string
   bot_nickname: string
   api_key: string
   group_count: number
+  allow_all_groups: boolean
 }
 
 export interface Message {

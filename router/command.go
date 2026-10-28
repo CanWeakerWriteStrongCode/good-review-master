@@ -219,7 +219,7 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 		trace.WithAttributes(attribute.String("messaging.group_id", groupID)))
 	defer span.End()
 
-	// 开头取一次快照、全程共用：拼 systemPrompt 要用到模型名/QQ/昵称/看图开关，
+	// 开头取一次快照、全程共用：拼 systemPrompt 要用到模型名/昵称/看图开关，
 	// 它们必须自洽。若每处都调 r.appCfg()，热更新正好插在中间就会拼出
 	// "新模型名 + 旧昵称"这种混合提示词。
 	cfg := r.appCfg()
@@ -232,7 +232,7 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	route := trieMatch(r.table.Load().trie, text)
 	if route == nil {
 		// 未命中：走普通问答（replyDefault 会视群人格再补一段）
-		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, ""))
+		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, event.BotID(), ""))
 		return
 	}
 
@@ -243,22 +243,45 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	if route.Persona != nil {
 		persona = RenderPersona(*route.Persona, route.SharedRules)
 	}
-	systemPrompt := ComposeSystemPrompt(cfg, persona)
+	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona)
 	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
 		attribute.String("router.category", route.Category))
 	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, event.Nickname, extra)
 }
 
+// reply 回复触发消息：引用原消息并 @ 发送者。
+// 桥接层会按平台翻译：QQ 官方机器人用 message_reference + <qqbot-at-user>，
+// 其他 OneBot 平台用 reply / at 段；拿不到引用 ID 时退化为纯文本。
+func (r *Router) reply(event onebot.Event, groupID, text string) {
+	r.obClient.SendGroupReply(groupID, event.ReplyID(), event.UserID, text)
+}
+
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
-// 机器人身份（模型名 / QQ / 昵称）+（启用看图时的图片说明）+ 可选的人格块。
+// 机器人身份（模型名 / 昵称 / 稳定 ID）+ 聊天记录约定 +（启用看图时的图片说明）+ 可选的人格块。
+// botID 为空时省略 ID 行（例如离线评测或拿不到 bot 身份时）。
 //
 // 导出是给 tests/eval 用的：离线评测必须拿到与线上**逐字相同**的提示词。
 // 评测集若自己再拼一份，防的就是"评测全绿但线上照样回归"这种最没用的结果——
 // 而 5 处字符串拼接正是最容易各改各的那种代码。
-func ComposeSystemPrompt(cfg *config.Config, personaBlock string) string {
+func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock string) string {
+	identity := ""
+	if cfg.BotNickname != "" {
+		identity = fmt.Sprintf("你的昵称是【%s】", cfg.BotNickname)
+	}
+	if botID != "" {
+		if identity != "" {
+			identity += "，"
+		}
+		identity += fmt.Sprintf("用户ID是【%s】", botID)
+	}
+	if identity != "" {
+		identity += "。"
+	}
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
-		"你的QQ号是【%s】，昵称是【%s】。【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。",
-		cfg.LLMConfig.ModelName, cfg.BotQQ, cfg.BotNickname)
+		"%s【聊天记录】每行一条群消息，user_id 是发言者的稳定ID；@昵称(ID) 表示 @ 了该用户，昵称可能变化，以括号里的 ID 为准。"+
+		"quote_id 表示该消息引用了哪条 msg_id。"+
+		"【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。",
+		cfg.LLMConfig.ModelName, identity)
 	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
 	if cfg.LLMConfig.ImageMax > 0 {
 		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用 view_image 工具（实际查看有数量上限，达到后请直接作答）。不要编造没实际看过的图片内容。"
@@ -320,7 +343,7 @@ func (r *Router) availablePersonaNames() []string {
 }
 
 // replyDefault @bot 但未匹配任何指令：直接发给大模型。
-// systemPrompt 只含机器人身份（QQ+昵称），不带指令共享规则；若本群已 #切换人格，
+// systemPrompt 只含机器人身份（模型名+昵称），不带指令共享规则；若本群已 #切换人格，
 // 则在末尾追加渲染好的人格块（仅纯 @ 聊天生效）；否则显式声明当前是普通问答、
 // 不代入任何人格，避免模型在曾被切换过人格的群里继续沿用旧人设。
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑。
@@ -333,20 +356,45 @@ func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Eve
 	r.chatReview(ctx, event, groupID, systemPrompt, "", event.Nickname, text)
 }
 
-// stripCQPrefix 去除消息开头的 CQ 码和 @昵称。
-// cfg 由调用方传入（就是它开头取的那一份），避免"清洗用旧昵称、拼提示词用新昵称"。
+// stripCQPrefix 去除消息开头的 @ 标记，让后面的文本能命中关键字。
+// 支持三种写法：CQ at 码、桥接层翻译的「@昵称(ID)」、以及手打的「@昵称」。
+// 只用于路由匹配；聊天记录里的完整内容不会被改动。
 func (r *Router) stripCQPrefix(rawMsg string, cfg *config.Config) string {
 	text := strings.TrimSpace(rawMsg)
-	// 去除 CQ at 码 [CQ:at,qq=xxx]
-	if strings.HasPrefix(text, "[CQ:at,qq=") {
-		if idx := strings.Index(text, "]"); idx != -1 {
-			text = strings.TrimSpace(text[idx+1:])
+	// 每轮只剥一个标记，剥完再看下一个；一条消息可能先后 @ 了多个人，机器人不一定排第一
+	for {
+		before := text
+		if strings.HasPrefix(text, "[CQ:at,qq=") {
+			if idx := strings.Index(text, "]"); idx != -1 {
+				text = text[idx+1:]
+			}
+		} else if trimmed := trimLeadingMentionToken(text); trimmed != text {
+			text = trimmed
+		} else if cfg.BotNickname != "" && strings.HasPrefix(text, "@"+cfg.BotNickname) {
+			text = strings.TrimPrefix(text, "@"+cfg.BotNickname)
+		} else if strings.HasPrefix(text, "@你") {
+			text = strings.TrimPrefix(text, "@你")
+		}
+		text = strings.TrimSpace(text)
+		if text == before {
+			break
 		}
 	}
-	// 去除 @机器人昵称
-	if cfg.BotNickname != "" {
-		text = strings.TrimPrefix(text, "@"+cfg.BotNickname)
-		text = strings.TrimSpace(text)
-	}
 	return text
+}
+
+// trimLeadingMentionToken 去掉开头的「@昵称(ID)」；没有 ID 括号时原样返回。
+func trimLeadingMentionToken(text string) string {
+	if !strings.HasPrefix(text, "@") {
+		return text
+	}
+	open := strings.IndexByte(text, '(')
+	if open < 0 {
+		return text
+	}
+	close := strings.IndexByte(text[open+1:], ')')
+	if close < 0 {
+		return text
+	}
+	return text[open+1+close+1:]
 }

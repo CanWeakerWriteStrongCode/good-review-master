@@ -17,6 +17,7 @@ import (
 
 var sugar *zap.SugaredLogger
 var lumberjackLogger *lumberjack.Logger
+var currentLevel = zapcore.DebugLevel
 
 // SetupLogger 初始化 zap 日志：控制台 + 文件（lumberjack 按大小切割，保留 30 天，压缩旧文件）
 func SetupLogger() {
@@ -54,18 +55,18 @@ func SetupLogger() {
 	}
 
 	// 双输出：控制台用 console 编码，文件用 console 编码（可读性好）。
-	// 级别默认 Info；设 GOOD_REVIEW_LOG_LEVEL=debug 可放开 Debug 明细
-	// （MCP 工具调用/选窗决策等大量 logutil.Debug 平时会被 InfoLevel 过滤掉）。
-	level := logLevelFromEnv()
+	// 级别默认 Debug（MCP 工具调用/选窗决策等 logutil.Debug 明细默认可见）；
+	// 设 GOOD_REVIEW_LOG_LEVEL=info|warn|error 可收紧。
+	currentLevel = logLevelFromEnv()
 	consoleCore := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(encoderConfig),
 		consoleWriter,
-		level,
+		currentLevel,
 	)
 	fileCore := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(encoderConfig),
 		fileWriter,
-		level,
+		currentLevel,
 	)
 
 	base := zap.New(zapcore.NewTee(consoleCore, fileCore), zap.AddCaller())
@@ -74,18 +75,25 @@ func SetupLogger() {
 	zap.ReplaceGlobals(base)
 }
 
-// logLevelFromEnv 从 GOOD_REVIEW_LOG_LEVEL 读日志级别：debug|info|warn|error，非法值回退 info
+// logLevelFromEnv 从 GOOD_REVIEW_LOG_LEVEL 读日志级别：debug|info|warn|error，未设置或非法值回退 debug
 func logLevelFromEnv() zapcore.Level {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOOD_REVIEW_LOG_LEVEL"))) {
 	case "debug", "d":
 		return zapcore.DebugLevel
+	case "info", "i":
+		return zapcore.InfoLevel
 	case "warn", "warning", "w":
 		return zapcore.WarnLevel
 	case "error", "e":
 		return zapcore.ErrorLevel
 	default:
-		return zapcore.InfoLevel
+		return zapcore.DebugLevel
 	}
+}
+
+// Level 返回当前生效的日志级别，便于启动日志里打印实际级别。
+func Level() string {
+	return currentLevel.String()
 }
 
 // Close 刷新并关闭日志文件（释放句柄；测试收尾或优雅停机时调用）

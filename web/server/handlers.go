@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/subtle"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,10 +32,21 @@ type GroupDetail struct {
 
 // BotStatus Bot 运行时状态
 type BotStatus struct {
-	BotQQ       string `json:"bot_qq"`
-	BotNickname string `json:"bot_nickname"`
-	APIKey      string `json:"api_key"`
-	GroupCount  int    `json:"group_count"`
+	BotNickname    string `json:"bot_nickname"`
+	APIKey         string `json:"api_key"`
+	GroupCount     int    `json:"group_count"`
+	AllowAllGroups bool   `json:"allow_all_groups"`
+}
+
+// panelGroupIDs 返回管理面板应展示的群列表。
+// 配置了通配符 "*" 时没有固定群号可列，只能展示已经产生缓存消息的群。
+func panelGroupIDs(cfg *config.Config) []string {
+	if !cfg.AllowsAllGroups() {
+		return cfg.AllowGroups
+	}
+	ids := cache.ListGroupIDs()
+	sort.Strings(ids)
+	return ids
 }
 
 func handleAPIGroups(snapshot config.Snapshot, obClient *onebot.Client, groupNames map[string]string, groupNamesMu *sync.RWMutex) gin.HandlerFunc {
@@ -48,13 +60,14 @@ func handleAPIGroups(snapshot config.Snapshot, obClient *onebot.Client, groupNam
 			cachedSet[id] = struct{}{}
 		}
 
-		groups := make([]GroupDetail, 0, len(cfg.AllowGroups))
-		for _, groupID := range cfg.AllowGroups {
+		groupIDs := panelGroupIDs(cfg)
+		groups := make([]GroupDetail, 0, len(groupIDs))
+		for _, groupID := range groupIDs {
 			info := GroupDetail{
 				GroupID: groupID,
 				Cached:  false,
 			}
-			// 获取群名称（优先用缓存，否则调 NapCat API）
+			// 获取群名称（优先用缓存，否则调 AstrBot 桥接 API）
 			groupNamesMu.RLock()
 			name, ok := groupNames[groupID]
 			groupNamesMu.RUnlock()
@@ -90,10 +103,10 @@ func handleAPIGroups(snapshot config.Snapshot, obClient *onebot.Client, groupNam
 			Data: gin.H{
 				"groups": groups,
 				"bot_info": BotStatus{
-					BotQQ:       cfg.BotQQ,
-					BotNickname: cfg.BotNickname,
-					APIKey:      cfg.MaskedAPIKey(),
-					GroupCount:  len(cfg.AllowGroups),
+					BotNickname:    cfg.BotNickname,
+					APIKey:         cfg.MaskedAPIKey(),
+					GroupCount:     len(groupIDs),
+					AllowAllGroups: cfg.AllowsAllGroups(),
 				},
 			},
 		})
@@ -142,10 +155,10 @@ func handleAPIStatus(snapshot config.Snapshot) gin.HandlerFunc {
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: BotStatus{
-				BotQQ:       cfg.BotQQ,
-				BotNickname: cfg.BotNickname,
-				APIKey:      cfg.MaskedAPIKey(),
-				GroupCount:  len(cfg.AllowGroups),
+				BotNickname:    cfg.BotNickname,
+				APIKey:         cfg.MaskedAPIKey(),
+				GroupCount:     len(panelGroupIDs(cfg)),
+				AllowAllGroups: cfg.AllowsAllGroups(),
 			},
 		})
 	}

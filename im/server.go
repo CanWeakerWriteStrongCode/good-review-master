@@ -8,6 +8,7 @@
 package im
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -31,6 +32,10 @@ const (
 
 	// tokenHeader 与 OneBot HTTP API 的约定一致，复用同一个 access token。
 	tokenHeader = "Authorization"
+
+	// platformHeader 是桥接插件附带的平台名（qq_official / aiocqhttp）。
+	// 平台只用于排障日志，放在 HTTP 头里，不污染 OneBot 事件字段。
+	platformHeader = "X-Platform"
 )
 
 // EventConsumer 消费一条已解码的入站事件。
@@ -104,7 +109,10 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event onebot.Event
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEventBytes))
+	// 同时留一份原始请求体：日志要看到桥接插件实际推来的 JSON（含 Go 结构体没解析的字段），
+	// 而不是重新序列化后的精简版本。
+	var rawBody bytes.Buffer
+	decoder := json.NewDecoder(io.TeeReader(http.MaxBytesReader(w, r.Body, maxEventBytes), &rawBody))
 	if err := decoder.Decode(&event); err != nil {
 		telemetry.IMEventsTotal.WithLabelValues(telemetry.IMEventBadRequest).Inc()
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid event json: " + err.Error()})
@@ -132,9 +140,32 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	telemetry.IMEventsTotal.WithLabelValues(telemetry.IMEventAccepted).Inc()
-	logutil.Info("收到 IM 事件", "platform", event.Platform, "group", event.GroupID,
-		"msgID", event.MessageID, "user", event.Nickname)
+	// event 是桥接插件实际推来的原始 JSON，未经过 Go 结构体二次序列化。
+	// 用 RawMessage 直接内联输出，避免整段 JSON 被当成字符串再转义一层；
+	// readableEventJSON 把 \uXXXX 还原成 UTF-8，日志里才能直接看到中文。
+	logutil.Info("收到 IM 事件", "platform", r.Header.Get(platformHeader), "group", event.GroupID,
+		"msgID", event.MessageID, "event", json.RawMessage(readableEventJSON(rawBody.Bytes())))
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// readableEventJSON 把事件原文里的 \uXXXX 转义还原为 UTF-8 后重新序列化。
+//
+// 桥接插件用 aiohttp 的 json= 推送时默认 ensure_ascii=True，中文会变成
+// \u859b\u5b9a...；原样落到日志里基本没法读。数字用 UseNumber 保留原始字面量，
+// 不经过 float64（QQ 消息 ID 已经超过 2^53，转一次就会丢精度）。
+// 解析失败时退回原文：日志宁可不那么好看，也不能因为"美化"吞掉排障信息。
+func readableEventJSON(raw []byte) []byte {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return raw
+	}
+	normalized, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return normalized
 }
 
 // ignoreReason 返回该事件为何不进入业务链路；空串表示应当消费。

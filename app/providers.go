@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"good-review-master/bot"
 	"good-review-master/config"
@@ -35,7 +36,7 @@ import (
 // 必须各自变成不同的类型——这不是为了好看，是装配本身的要求：
 //
 //   - loadedConfig：刚从文件读出来、还没贴派生值的配置（derive 需要昵称，
-//     而昵称又来自这份配置里的 NapCat 地址；两者若是同一个节点，依赖就成环了）
+//     而昵称又来自这份配置里的 AstrBot 桥接地址；两者若是同一个节点，依赖就成环了）
 //   - botNickname / builtinImageAddr：两个字面量都是 string，但一个是昵称、一个是地址
 //
 // 反过来说，这就是 Wire 在这类项目上的真实收益与真实成本：它把"谁在谁之前"
@@ -44,7 +45,7 @@ import (
 // loadedConfig 刚从文件加载出来、还没贴派生值的配置。
 type loadedConfig struct{ *config.Config }
 
-// botNickname 机器人昵称（启动时从 NapCat 取到，之后不变）。
+// botNickname 机器人昵称（启动时从 AstrBot 桥接取到，之后不变）。
 type botNickname string
 
 // builtinImageAddr 内嵌看图 MCP 的监听地址；空表示本会话没启用。
@@ -93,25 +94,26 @@ func providePromptConfig(paths promptPaths) (*config.PromptConfig, error) {
 // 收消息走 im 包，发消息/查历史仍然走这里。
 // onebot.NewClient 收两个 string，Wire 分不清哪个是地址哪个是 token，所以包一层。
 func provideOneBot(loaded loadedConfig) *onebot.Client {
-	return onebot.NewClient(loaded.NapCatHTTPAPI, loaded.NapCatAccessToken)
+	return onebot.NewClient(loaded.AstrBotHTTPAPI, loaded.AstrBotAccessToken)
 }
 
 // provideIMServer 建 AstrBot sidecar 的入站入口。
 // 监听地址与 token 在启动时固化（与 Web 端口一致），配置热更新不会换端口。
 func provideIMServer(cfg config.Snapshot, consumer im.EventConsumer) *im.Server {
 	current := cfg()
-	return im.NewServer(current.IMListenAddr, current.NapCatAccessToken, consumer)
+	return im.NewServer(current.IMListenAddr, current.AstrBotAccessToken, consumer)
 }
 
 // provideBotNickname 取机器人昵称。
 //
-// 失败不致命（只告警、返回空昵称），与改造前一致：昵称只影响 @文本提及 的识别，
-// QQ 号那条路径始终有效。**必须在快照构造之前**完成——昵称要作为不可变快照的一部分
+// 失败不致命（只告警、返回空昵称）：昵称只影响 @文本提及 的兜底识别，
+// QQ 官方机器人的 @ 触发由桥接层写入的 mentioned 决定。
+// **必须在快照构造之前**完成——昵称要作为不可变快照的一部分
 // 发布出去，而不是发布之后再往快照里写。
 func provideBotNickname(obClient *onebot.Client) botNickname {
 	info, err := obClient.GetLoginInfo()
 	if err != nil {
-		logutil.Warn("获取机器人昵称失败，@检测仅使用QQ号", "err", err)
+		logutil.Warn("获取机器人昵称失败，@检测仅依赖桥接层 mentioned", "err", err)
 		return ""
 	}
 	logutil.Info("机器人昵称", "nickname", info.Nickname)
@@ -128,7 +130,10 @@ func provideBuiltinImageMCP(loaded loadedConfig) *mcpserver.Server {
 		return nil
 	}
 
-	builtinServer := mcpserver.New(nil, loaded.McpBuiltinToken)
+	builtinServer := mcpserver.New(
+		mcpserver.DefaultFetcher(loaded.LLMConfig.ImageLocalDirs...),
+		loaded.McpBuiltinToken,
+	)
 	addr, err := builtinServer.Start()
 	if err != nil {
 		logutil.Error("内嵌 MCP 服务(看图)启动失败，本会话无 view_image 工具", "err", err)
@@ -137,7 +142,8 @@ func provideBuiltinImageMCP(loaded loadedConfig) *mcpserver.Server {
 	if !loaded.MCPConfig.Enabled {
 		logutil.Warn("启用看图(llm.image_max>0)自动开启 mcp.enabled，注入内嵌 view_image 服务")
 	}
-	logutil.Info("内嵌 MCP 服务(看图)已启动", "url", addr, "带Bearer鉴权", loaded.McpBuiltinToken != "")
+	logutil.Info("内嵌 MCP 服务(看图)已启动", "url", addr, "带Bearer鉴权", loaded.McpBuiltinToken != "",
+		"本地图片目录", strings.Join(loaded.LLMConfig.ImageLocalDirs, ","))
 	return builtinServer
 }
 

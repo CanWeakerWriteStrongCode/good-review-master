@@ -1,6 +1,7 @@
 package onebot
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,7 +10,7 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// Client NapCat HTTP API 客户端（基于 resty）
+// Client OneBot HTTP API 客户端（指向 AstrBot 桥接插件的动作代理，基于 resty）
 type Client struct {
 	httpAPI     string
 	accessToken string
@@ -75,27 +76,67 @@ func (ob *Client) GetGroupInfo(groupID string) (*GroupInfo, error) {
 	return &result.Data, nil
 }
 
-// SendGroupMessage 发送群消息
+// SendGroupMessage 发送纯文本群消息（兼容旧调用点）
 func (ob *Client) SendGroupMessage(groupID, content string) {
-	logutil.Debug("调用 OneBot API", "action", "send_group_msg", "group", groupID, "content", content)
+	ob.SendGroupMessageSegments(groupID, []Segment{TextSegment(content)})
+}
+
+// SendGroupReply 发送「引用 + @ + 文本」的群消息。
+// replyID 为空时退化为普通文本；atUser 为空时不 @ 人。
+func (ob *Client) SendGroupReply(groupID, replyID, atUser, content string) {
+	segments := make([]Segment, 0, 3)
+	if replyID != "" {
+		segments = append(segments, ReplySegment(replyID))
+	}
+	if atUser != "" {
+		segments = append(segments, AtSegment(atUser))
+		content = " " + content
+	}
+	segments = append(segments, TextSegment(content))
+	ob.SendGroupMessageSegments(groupID, segments)
+}
+
+// SendGroupMessageSegments 发送结构化群消息。
+//
+// 消息段由桥接插件按平台翻译：QQ 官方机器人支持文本、@、引用、图片、语音、
+// 视频、文件；AstrBot 的其他适配器按各自能力降级。发送失败只记日志，不阻塞业务。
+func (ob *Client) SendGroupMessageSegments(groupID string, segments []Segment) {
+	body := map[string]any{"group_id": groupID, "message": segments}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		logutil.Error("send_group_msg 请求序列化失败", "err", err, "group", groupID)
+		return
+	}
+	logutil.Debug("调用 OneBot API", "action", "send_group_msg", "group", groupID,
+		"segments", len(segments), "types", segmentTypes(segments))
 	var result actionResponse[struct{}]
 	resp, err := ob.restyClient.R().
-		SetBody(map[string]any{"group_id": groupID, "message": content}).
+		SetBody(body).
 		SetResult(&result).
 		Post("/send_group_msg")
 	if err != nil {
-		logutil.Error("send_group_msg 请求失败", "err", err, "group", groupID)
+		logutil.Error("send_group_msg 请求失败", "err", err, "group", groupID, "request", string(payload))
 		return
 	}
 	if resp.StatusCode() != 200 {
-		logutil.Error("send_group_msg 返回非200", "status", resp.StatusCode(), "body", string(resp.Body()), "group", groupID)
+		logutil.Error("send_group_msg 返回非200", "status", resp.StatusCode(), "body", string(resp.Body()),
+			"group", groupID, "request", string(payload))
 		return
 	}
 	if err := result.err("send_group_msg"); err != nil {
-		logutil.Error("send_group_msg 被平台拒绝", "err", err, "group", groupID)
+		logutil.Error("send_group_msg 被平台拒绝", "err", err, "group", groupID, "request", string(payload))
 		return
 	}
-	logutil.Info("send_group_msg 成功", "group", groupID)
+	logutil.Info("send_group_msg 成功", "group", groupID, "segments", len(segments), "request", string(payload))
+}
+
+// segmentTypes 返回消息段类型列表，仅用于日志排查。
+func segmentTypes(segments []Segment) []string {
+	types := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		types = append(types, seg.Type)
+	}
+	return types
 }
 
 // FetchGroupMsgHistory 拉取群消息历史

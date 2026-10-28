@@ -3,7 +3,7 @@
     <!-- Bot 状态栏 -->
     <view class="status-bar" v-if="store.botStatus">
       <text class="status-text">
-        {{ store.botStatus.bot_nickname }}（{{ store.botStatus.bot_qq }}） |
+        {{ store.botStatus.bot_nickname || 'Bot' }} |
         监控 {{ store.botStatus.group_count }} 个群 |
         API: {{ store.botStatus.api_key }}
       </text>

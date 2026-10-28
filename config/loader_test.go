@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -37,10 +38,9 @@ func TestMain(m *testing.M) {
 
 // baseConfig 一份能通过全部校验的最小配置。
 const baseConfig = `
-napcat:
-  http_api: "http://127.0.0.1:3000"
+astrbot:
+  http_api: "http://127.0.0.1:6199"
 bot:
-  qq: "123456"
   allow_groups: "10001,10002"
 runtime:
   llm_send_count: 3
@@ -82,8 +82,8 @@ func TestLoad基本配置(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载失败：%v", err)
 	}
-	if cfg.BotQQ != "123456" {
-		t.Errorf("BotQQ = %q", cfg.BotQQ)
+	if cfg.BotNickname != "" {
+		t.Errorf("BotNickname 应来自运行时，不应被配置文件填充：%q", cfg.BotNickname)
 	}
 	if len(cfg.AllowGroups) != 2 || cfg.AllowGroups[0] != "10001" {
 		t.Errorf("AllowGroups = %v", cfg.AllowGroups)
@@ -101,7 +101,6 @@ func TestLoad基本配置(t *testing.T) {
 func TestSetDefaults在Validate之前跑(t *testing.T) {
 	cfg, err := loadWith(t, `
 bot:
-  qq: "1"
   allow_groups: "1"
 runtime:
   llm_timeout_sec: 20
@@ -126,7 +125,7 @@ func TestSecret优先于config旧位置(t *testing.T) {
 	cfg, err := loadWith(t, baseConfig, `
 llm_api_key: "sk-from-secret-file"
 web_password: "pw-from-secret-file"
-napcat_access_token: "nap-from-secret-file"
+astrbot_access_token: "ast-from-secret-file"
 `)
 	if err != nil {
 		t.Fatalf("加载失败：%v", err)
@@ -137,8 +136,29 @@ napcat_access_token: "nap-from-secret-file"
 	if cfg.WebPassword != "pw-from-secret-file" {
 		t.Errorf("secret.yaml 应优先，实际 WebPassword = %q", cfg.WebPassword)
 	}
-	if cfg.NapCatAccessToken != "nap-from-secret-file" {
-		t.Errorf("secret.yaml 应优先，实际 NapCatAccessToken = %q", cfg.NapCatAccessToken)
+	if cfg.AstrBotAccessToken != "ast-from-secret-file" {
+		t.Errorf("secret.yaml 应优先，实际 AstrBotAccessToken = %q", cfg.AstrBotAccessToken)
+	}
+}
+
+func Test旧napcat键仍可迁移(t *testing.T) {
+	cfg, err := loadWith(t, baseConfig, "napcat_access_token: \"legacy-token\"\n")
+	if err != nil {
+		t.Fatalf("旧 secret 键应能加载：%v", err)
+	}
+	if cfg.AstrBotAccessToken != "legacy-token" {
+		t.Errorf("旧键应迁移为 AstrBotAccessToken，实际 %q", cfg.AstrBotAccessToken)
+	}
+}
+
+func Test旧napcat段仍可迁移(t *testing.T) {
+	legacyConfig := strings.Replace(baseConfig, "astrbot:", "napcat:", 1)
+	cfg, err := loadWith(t, legacyConfig, "")
+	if err != nil {
+		t.Fatalf("旧 config 段应能加载：%v", err)
+	}
+	if cfg.AstrBotHTTPAPI != "http://127.0.0.1:6199" {
+		t.Errorf("旧段应迁移为 AstrBotHTTPAPI，实际 %q", cfg.AstrBotHTTPAPI)
 	}
 }
 
@@ -301,9 +321,9 @@ func TestValidate报错要指明字段与原因(t *testing.T) {
 			wantContain: "provider",
 		},
 		{
-			name: "napcat 地址没有 scheme",
+			name: "astrbot 地址没有 scheme",
 			configYAML: strings.Replace(baseConfig,
-				`  http_api: "http://127.0.0.1:3000"`, `  http_api: "127.0.0.1:3000"`, 1),
+				`  http_api: "http://127.0.0.1:6199"`, `  http_api: "127.0.0.1:6199"`, 1),
 			wantContain: "http_api",
 		},
 		{
@@ -400,8 +420,8 @@ func dirEntries(t *testing.T, dir string) []string {
 
 // configsEqual 逐字段比较两份配置。用 == 会漏掉切片与 map 的内部差异。
 func configsEqual(a, b *Config) bool {
-	if a.NapCatHTTPAPI != b.NapCatHTTPAPI || a.NapCatAccessToken != b.NapCatAccessToken ||
-		a.BotQQ != b.BotQQ || a.MaxCacheMsg != b.MaxCacheMsg ||
+	if a.AstrBotHTTPAPI != b.AstrBotHTTPAPI || a.AstrBotAccessToken != b.AstrBotAccessToken ||
+		a.MaxCacheMsg != b.MaxCacheMsg ||
 		a.LLMSendCount != b.LLMSendCount || a.LLMTimeout != b.LLMTimeout ||
 		a.MaxMsgRune != b.MaxMsgRune || a.PollInterval != b.PollInterval ||
 		a.WebPort != b.WebPort || a.WebUsername != b.WebUsername ||
@@ -416,7 +436,7 @@ func configsEqual(a, b *Config) bool {
 	if strings.Join(a.CorsOrigins, ",") != strings.Join(b.CorsOrigins, ",") {
 		return false
 	}
-	if a.LLMConfig != b.LLMConfig {
+	if !reflect.DeepEqual(a.LLMConfig, b.LLMConfig) {
 		return false
 	}
 	if len(a.MCPConfig.Servers) != len(b.MCPConfig.Servers) {

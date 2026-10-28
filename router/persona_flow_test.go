@@ -48,13 +48,12 @@ rules:
 		t.Fatalf("写临时配置失败: %v", err)
 	}
 
-	// 2. 构造 Router + FakeLLM（不依赖真实大模型/NapCat）
+	// 2. 构造 Router + FakeLLM（不依赖真实大模型/AstrBot 桥接）
 	promptCfg, err := config.LoadPromptConfig(systemPath, config.CustomPromptPath(systemPath))
 	if err != nil {
 		t.Fatalf("加载提示词配置失败: %v", err)
 	}
 	cfg := &config.Config{
-		BotQQ:        "123456",
 		BotNickname:  "bot",
 		MaxCacheMsg:  100,
 		LLMSendCount: 20,
@@ -125,7 +124,7 @@ rules:
 		t.Fatalf("systemPrompt 未包含情绪缓和指令（过于强烈的喜怒哀乐时应缓解用户情绪）:\n%s", systemPrompt)
 	}
 	// 人格块在 systemPrompt 中位于身份头之后
-	if strings.Index(systemPrompt, "【人格】") <= strings.Index(systemPrompt, "你的QQ号是 123456") {
+	if strings.Index(systemPrompt, "【人格】") <= strings.Index(systemPrompt, "你的昵称是") {
 		t.Fatalf("人格应位于身份头之后的 systemPrompt:\n%s", systemPrompt)
 	}
 }

@@ -135,7 +135,7 @@ var (
 	// PollLagSeconds 消息从发出到被我们处理的延迟（秒）。
 	//
 	// 定义要说清楚，否则会误读："最新一条消息的时间戳到本轮处理的时刻"。
-	// 正常运行时它约等于一个轮询间隔；若 NapCat 卡住或我们在返回历史消息，
+	// 正常运行时它约等于一个轮询间隔；若 AstrBot 桥接卡住或我们在返回历史消息，
 	// 它会持续抬升——那正是"我们落后群聊多久"的信号。
 	PollLagSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "poll_lag_seconds",

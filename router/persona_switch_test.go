@@ -73,7 +73,6 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 		t.Fatalf("加载提示词配置失败: %v", err)
 	}
 	cfg := &config.Config{
-		BotQQ:        "123456",
 		BotNickname:  "bot",
 		MaxCacheMsg:  100,
 		LLMSendCount: 20,

@@ -46,7 +46,15 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event) {
 		return
 	}
 
-	content, images := onebot.NormalizeContent(event.RawMessage, cfg.MaxMsgRune)
+	rawContent, images := onebot.NormalizeContent(event.RawMessage, cfg.MaxMsgRune)
+	content := rawContent
+	// DisplayMessage 是桥接插件翻译好的「@昵称(openid)」文本；只有它为空时才退回 raw。
+	if event.DisplayMessage != "" {
+		if display, _ := onebot.NormalizeContent(event.DisplayMessage, cfg.MaxMsgRune); display != "" {
+			content = display
+		}
+	}
+	content = onebot.NormalizeMentions(content, event.BotID(), cfg.BotNickname)
 	if content == "" {
 		return
 	}
@@ -59,11 +67,12 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event) {
 		Card:    event.Card,
 		Content: content,
 		Images:  images,
+		QuoteID: event.QuoteMessageID(),
 		Time:    eventTime(event),
 	}
 	cache.GetGroupCache(groupID, cfg.MaxCacheMsg).Add(msg)
 
-	if event.Mentioned || isAtBot(content, cfg) {
+	if event.Mentioned || isAtBot(event, content, cfg) {
 		// 把消费循环的 ctx 传下去：一次"消息 → 路由 → 大模型 → 工具调用"
 		// 因此成为同一条链路（trace span 能串起来），关机也能取消在途调用。
 		b.messageRouter.RouteMessage(ctx, content, event, groupID)
@@ -80,16 +89,28 @@ func eventTime(event onebot.Event) int64 {
 	return time.Now().Unix()
 }
 
-// isAtBot 检查是否@机器人（QQ号 + 昵称双重校验）。
+// isAtBot 检查是否@机器人（稳定 ID + 昵称兜底）。
+// AstrBot 桥接层已经算好 mentioned，这里只服务于：
+//   - 桥接层漏判，但原始消息里确实带了机器人的 openid/QQ；
+//   - raw_message 里是手打的 "@昵称" 文本。
+//
+// 不再假设 QQ 官方机器人有数字 QQ 号：BotID 可能来自 self_openid，也可能是 aiocqhttp 的数字 ID。
 // cfg 由调用方传进来（就是 ProcessMessage 开头取的那一份），不在这里再取快照，
 // 免得"截断用的配置"和"@检测用的配置"来自两次不同的读取。
-func isAtBot(rawMsg string, cfg *config.Config) bool {
-	if strings.Contains(rawMsg, "[CQ:at,qq="+cfg.BotQQ) {
+func isAtBot(event onebot.Event, content string, cfg *config.Config) bool {
+	if botID := event.BotID(); botID != "" {
+		if strings.Contains(event.RawMessage, "[CQ:at,qq="+botID) ||
+			strings.Contains(event.RawMessage, "<@"+botID+">") ||
+			strings.Contains(event.RawMessage, "<@!"+botID+">") {
+			return true
+		}
+		// 桥接层已翻译成「@昵称(ID)」时，直接把 ID 对上即可
+		if strings.Contains(content, "("+botID+")") {
+			return true
+		}
+	}
+	if cfg.BotNickname != "" && strings.HasPrefix(content, "@"+cfg.BotNickname) {
 		return true
 	}
-	// 检查开始是昵称 @
-	if cfg.BotNickname != "" && strings.HasPrefix(rawMsg, "@"+cfg.BotNickname) {
-		return true
-	}
-	return false
+	return strings.HasPrefix(content, "@你")
 }

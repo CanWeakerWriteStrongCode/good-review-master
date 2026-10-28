@@ -34,7 +34,7 @@ const (
 func (b *Bot) Run(ctx context.Context) {
 	initial := b.cfg()
 	if initial.BackfillOnStart {
-		logutil.Info("正在通过 AstrBot 桥接拉取历史消息", "api", initial.NapCatHTTPAPI)
+		logutil.Info("正在通过 AstrBot 桥接拉取历史消息", "api", initial.AstrBotHTTPAPI)
 		backfillHistory(initial, b.ob, historyCount)
 	} else {
 		logutil.Info("已关闭启动历史回填（当前平台没有群历史消息接口）")
@@ -96,6 +96,11 @@ func (b *Bot) dispatch(ctx context.Context, event onebot.Event) {
 // backfillHistory 首次启动时拉取历史消息填充缓存。
 func backfillHistory(cfg *config.Config, ob *onebot.Client, count int) {
 	for _, groupID := range cfg.AllowGroups {
+		if groupID == "*" {
+			// 通配符无法枚举具体群：启动时缓存还是空的，没有可回填的对象。
+			logutil.Info("allow_groups 含通配符 *，跳过启动回填（无法枚举全部群）")
+			continue
+		}
 		msgs, err := ob.FetchGroupMsgHistory(groupID, count)
 		if err != nil {
 			telemetry.PollFetchErrorsTotal.WithLabelValues(groupID).Inc()

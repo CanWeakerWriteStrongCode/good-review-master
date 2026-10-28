@@ -104,7 +104,7 @@ generates no diff at all, so `git status` after generating remains the only dete
 ## Architecture
 
 ```
-QQ ←→ NapCatQQ ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go bot ←→ LLM API (OpenAI-compatible)
+QQ official bot ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go bot ←→ LLM API (OpenAI-compatible)
 Browser / MiniProgram ←→ Gin web server (:web_port) ←→ IM ingress + Cache (read-only)
 ```
 
@@ -197,8 +197,8 @@ see the section above); `app/build.go` only does the parts Wire cannot express. 
 3. `initializeApp(...)` — the generated graph. Wire picks the order from the types; what it
    produces is: `onebot.NewClient` → `GetLoginInfo()` (bot nickname; failure non-fatal, **before**
    the snapshot, so the nickname is baked into an immutable config instead of written into it
-   later) → built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1; failure
-   non-fatal) → `deriveConfig` + `store.NewStore(initial)` (`App.Config` is the store's `Get`
+   later) → built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1; reads
+   http(s) images or local files under `llm.image_local_dirs`; failure non-fatal) → `deriveConfig` + `store.NewStore(initial)` (`App.Config` is the store's `Get`
    method value; nothing mutates this config afterwards) → `LoadPromptConfig` →
    `mcpclient.New` → `router.NewRouter` → `bot.NewBot` → `webserver.New` →
    `telemetry.NewRegistry` + `NewMetricsServer` → config informer + prompt observer.
@@ -229,7 +229,7 @@ see the section above); `app/build.go` only does the parts Wire cannot express. 
 
 All four YAML files are auto-created from embedded templates on first run if missing (`config.InitDefaultFiles()`, the only place allowed to create files). `config.yaml`, `secret.yaml` and `prompt_system.yaml` use templates under `config/`; `prompt_custom.yaml` is created empty on first keyword addition.
 
-`config.yaml` has five sections: `napcat`, `bot`, `runtime`, `llm`, `mcp`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
+`config.yaml` has five sections: `astrbot`, `bot`, `runtime`, `llm`, `mcp`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
 
 `prompt_system.yaml` is parsed once at startup and cached (`Config.systemPrompt`) — subsequent checks read the cached pointer, not the file. `prompt_custom.yaml` is read on every write operation (add/delete command/rule) and on `Reload()`.
 
@@ -241,13 +241,13 @@ The config layer follows the *shape* of K8s' API machinery (external/internal sp
 | --- | --- |
 | `config/section.go` | the `Section` interface + shared helpers (`decodeSection`, `validateEndpoint`, …) |
 | `config/scheme.go` | **the registry**: `newSections()` + `registry()`. Adding a domain = one file + one line |
-| `config/section_{napcat,bot,runtime,llm,mcp}.go` | each holds its own yaml tags, defaults, and validation |
+| `config/section_{astrbot,bot,runtime,llm,mcp}.go` | each holds its own yaml tags, defaults, and validation |
 | `config/section_secret.go` | the secret domain — **sources differ**, see below |
 | `config/loader.go` | the four-step load: read → decode → SetDefaults → Validate |
 | `config/convert.go` | external → internal (`assemble`), plus secret precedence |
 | `config/config.go` | the internal `Config`/`LLMConf`/`MCPConf`/`MCPServerConf` types — **shape unchanged by the refactor** |
 
-Why the internal shape is frozen: `mcpclient`, `router` and `web/server` tests construct `config.Config{...}` / `config.MCPConf{...}` literals directly. Consumers still write `cfg.BotQQ`.
+Why the internal shape is frozen: `mcpclient`, `router` and `web/server` tests construct `config.Config{...}` / `config.MCPConf{...}` literals directly. Consumers still write `cfg.BotNickname`.
 
 **Ordering is load-bearing.** `SetDefaults` must run *before* `Validate`, because a field that is legitimately omitted must be defaulted and then validated — not rejected. Note that several numeric checks are only meaningful post-default, and they are not decoration: `poll_interval_sec` is a legacy field kept for config compatibility (the sidecar push model no longer uses it), `llm_timeout_sec` feeds `context.WithTimeout` (= 0 means every LLM call fails instantly), `max_cache_msg` feeds `make([]Message, n)` and is then indexed.
 
@@ -385,7 +385,7 @@ im HTTP ingress (im/server.go) → AcceptEvent → bot queue (bot/ingest.go)
                                     → whitelist check (Config.HasGroup)
                                     → truncate to MaxMsgRune
                                     → add to ring cache (zero-copy)
-                                    → @bot detection (QQ number + nickname)
+                                    → @bot detection (mentioned flag + nickname fallback)
                                     → router.RouteMessage → handler
 ```
 
@@ -415,7 +415,9 @@ Guard checks use `promptCfg.KeywordInSystemCmd(keyword)` and `CategoryInSystemRu
 
 ## @mention detection (`bot/handler.go`)
 
-`Bot.isAtBot(rawMsg)` checks two things: `strings.Contains(rawMsg, b.cfg.BotQQ)` (catches CQ codes like `[CQ:at,qq=xxx]`), and `strings.Contains(rawMsg, "@"+b.cfg.BotNickname)` (catches text @mentions). The nickname is fetched at startup via `onebot.Client.GetLoginInfo()`; failure is non-fatal.
+`Bot.ProcessMessage` treats `event.Mentioned` (computed by the bridge from the platform's @ semantics) as the primary trigger. `Bot.isAtBot(event, content, cfg)` is the fallback: it matches the bot's stable ID (`event.BotID()` from `self_id`) inside `[CQ:at,qq=...]`, `<@id>`, or the translated `@昵称(ID)`, then falls back to a leading `@nickname`. On QQ official bots the numeric QQ / group number do not exist, only `member_openid` / `group_openid`, so there is no `bot.qq` config.
+
+The bridge emits `display_message` alongside the raw text. Every @ is rendered as `@昵称(openid)` (the bot itself uses the same form; unknown members use `@用户(openid)`; @all becomes `@所有人`). The cache and the LLM read only `display_message`; `raw_message` stays untouched for debugging. `self_id` carries the bot's stable ID — the bridge replaces adapter placeholders (`qq_official` / `unknown_selfid`) with the openid it learned from @ events — and the system prompt includes it so the model can recognize `@botname(openid)` as itself. Chat-log lines carry `user_id` as a string (openid or numeric QQ), so a nickname change does not break identity. When the inbound message quotes another message, the bridge emits a standard `reply` message segment whose `id` is the hashed `message_id` (same hash as inbound `message_id`); the cached chat line carries `quote_id` and the model matches it against `msg_id` in the same log. If the quoted message is not in the sent window, no extra content is added. Platform name and group name are not event extensions: the platform goes in the `X-Platform` header, the group name comes from `get_group_info`. The nickname is fetched at startup via `onebot.Client.GetLoginInfo()`; failure is non-fatal.
 
 ## LLM client (`llm/`)
 
@@ -430,8 +432,10 @@ type Client interface {
 ## OneBot client (`onebot/`)
 
 In the sidecar topology this client points at the AstrBot bridge plugin
-(`sidecar/astrbot_plugin_onebot_bridge`), **not** directly at NapCat. The plugin proxies each
-action to the underlying platform, so the wire contract is still OneBot 11.
+(`sidecar/astrbot_plugin_onebot_bridge`), which proxies each action to the platform, so the
+wire contract is still OneBot 11. Outbound messages are OneBot 11 segment arrays
+(text / at / reply / image / record / video / file / markdown); the plugin translates them
+to the target platform (QQ official rich-media upload, `message_reference` quoting, etc.).
 
 ```go
 type Client struct { /* unexported: httpAPI, accessToken, restyClient */ }
@@ -439,6 +443,8 @@ func NewClient(httpAPI, accessToken string) *Client
 func (ob *Client) GetLoginInfo() (*LoginInfo, error)
 func (ob *Client) GetGroupInfo(groupID string) (*GroupInfo, error)
 func (ob *Client) SendGroupMessage(groupID, content string)
+func (ob *Client) SendGroupReply(groupID, replyID, atUser, content string)
+func (ob *Client) SendGroupMessageSegments(groupID string, segments []Segment)
 func (ob *Client) FetchGroupMsgHistory(groupID string, count int) ([]HistoryMsg, error)
 ```
 
@@ -466,7 +472,7 @@ Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | POST | `/api/login` | No | Returns JWT token (validates username/password; rate-limited) |
-| GET | `/api/status` | JWT | BotQQ, Nickname, MaskedAPIKey, GroupCount |
+| GET | `/api/status` | JWT | Nickname, MaskedAPIKey, GroupCount |
 | GET | `/api/groups` | JWT | Per-group info with activity stats |
 | GET | `/api/groups/:id` | JWT | Cached messages for one group |
 | POST | `/api/logout` | JWT | No-op (stateless token) |

@@ -54,7 +54,7 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 	content := event.RawMessage
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 4 {
-		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtAddCmd)
+		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtAddCmd)
 		return
 	}
 	keyword := matches[1]
@@ -62,7 +62,7 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 	requirements := matches[3]
 
 	if r.promptCfg.KeywordInSystemCmd(keyword) || r.isInternalKeyword(keyword) {
-		r.obClient.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
+		r.reply(event, groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
 		return
 	}
 
@@ -74,61 +74,61 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 	generated, err := r.llmClient.SingleChat(genCtx, requirements, addCommandGenPrompt)
 	if err != nil {
 		logutil.Error("LLM 生成提示词失败", "err", err)
-		r.obClient.SendGroupMessage(groupID, "❌ 生成提示词失败: "+err.Error())
+		r.reply(event, groupID, "❌ 生成提示词失败: "+err.Error())
 		return
 	}
 	finalPrompt, persona, err := parseAddCommandOutput(generated)
 	if err != nil {
 		logutil.Error("解析 LLM 输出失败（persona 缺失或不完整）", "err", err)
-		r.obClient.SendGroupMessage(groupID, "❌ 生成失败，请重试: "+err.Error())
+		r.reply(event, groupID, "❌ 生成失败，请重试: "+err.Error())
 		return
 	}
 
 	if err := r.promptCfg.AddCommand(category, keyword, finalPrompt, persona); err != nil {
 		logutil.Error("添加指令失败", "err", err)
-		r.obClient.SendGroupMessage(groupID, "❌ 添加指令失败: "+err.Error())
+		r.reply(event, groupID, "❌ 添加指令失败: "+err.Error())
 		return
 	}
 	r.promptCfg.Reload()
 	r.Rebuild()
-	r.obClient.SendGroupMessage(groupID, "✅ 指令已添加: "+keyword)
+	r.reply(event, groupID, "✅ 指令已添加: "+keyword)
 }
 
 func (r *Router) handleDeleteCommand(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := delCmdRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
-		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtDelCmd)
+		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtDelCmd)
 		return
 	}
 	keyword := matches[1]
 
 	if r.promptCfg.KeywordInSystemCmd(keyword) || r.isInternalKeyword(keyword) {
-		r.obClient.SendGroupMessage(groupID, "❌ 该关键字为系统/内部指令，禁止删除")
+		r.reply(event, groupID, "❌ 该关键字为系统/内部指令，禁止删除")
 		return
 	}
 
 	if err := r.promptCfg.DeleteCommand(keyword); err != nil {
-		r.obClient.SendGroupMessage(groupID, "❌ 删除失败: "+err.Error())
+		r.reply(event, groupID, "❌ 删除失败: "+err.Error())
 		return
 	}
 	r.promptCfg.Reload()
 	r.Rebuild()
-	r.obClient.SendGroupMessage(groupID, "✅ 关键字已删除: "+keyword)
+	r.reply(event, groupID, "✅ 关键字已删除: "+keyword)
 }
 
 func (r *Router) handleAddRule(ctx context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := addRuleRe.FindStringSubmatch(content)
 	if len(matches) != 3 {
-		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtAddRule)
+		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtAddRule)
 		return
 	}
 	category := matches[1]
 	requirements := matches[2]
 
 	if r.promptCfg.CategoryInSystemRule(category) {
-		r.obClient.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中已存在，禁止覆盖")
+		r.reply(event, groupID, "❌ 该类型的规则在 prompt_system.yaml 中已存在，禁止覆盖")
 		return
 	}
 
@@ -138,40 +138,40 @@ func (r *Router) handleAddRule(ctx context.Context, event onebot.Event, groupID 
 	generated, err := r.llmClient.SingleChat(genCtx, requirements, ruleGenSystem)
 	if err != nil {
 		logutil.Error("LLM 生成规则失败", "err", err)
-		r.obClient.SendGroupMessage(groupID, "❌ 生成规则失败: "+err.Error())
+		r.reply(event, groupID, "❌ 生成规则失败: "+err.Error())
 		return
 	}
 	ruleText := strings.TrimSpace(generated)
 
 	if err := r.promptCfg.AddRule(category, ruleText); err != nil {
 		logutil.Error("添加规则失败", "err", err)
-		r.obClient.SendGroupMessage(groupID, "❌ 添加规则失败: "+err.Error())
+		r.reply(event, groupID, "❌ 添加规则失败: "+err.Error())
 		return
 	}
 	r.promptCfg.Reload()
-	r.obClient.SendGroupMessage(groupID, "✅ 规则已添加: "+category)
+	r.reply(event, groupID, "✅ 规则已添加: "+category)
 }
 
 func (r *Router) handleDeleteRule(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	content := event.RawMessage
 	matches := delRuleRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
-		r.obClient.SendGroupMessage(groupID, "❌ 格式错误\n正确格式："+fmtDelRule)
+		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtDelRule)
 		return
 	}
 	category := matches[1]
 
 	if r.promptCfg.CategoryInSystemRule(category) {
-		r.obClient.SendGroupMessage(groupID, "❌ 该类型的规则在 prompt_system.yaml 中，禁止删除")
+		r.reply(event, groupID, "❌ 该类型的规则在 prompt_system.yaml 中，禁止删除")
 		return
 	}
 
 	if err := r.promptCfg.DeleteRule(category); err != nil {
-		r.obClient.SendGroupMessage(groupID, "❌ 删除失败: "+err.Error())
+		r.reply(event, groupID, "❌ 删除失败: "+err.Error())
 		return
 	}
 	r.promptCfg.Reload()
-	r.obClient.SendGroupMessage(groupID, "✅ 规则已删除: "+category)
+	r.reply(event, groupID, "✅ 规则已删除: "+category)
 }
 
 func (r *Router) handleListCommands(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
@@ -196,7 +196,7 @@ func (r *Router) handleListCommands(_ context.Context, event onebot.Event, group
 		}
 		buf.WriteString("  " + cmd.Keyword + " [" + cmd.Category + "]\n")
 	}
-	r.obClient.SendGroupMessage(groupID, buf.String())
+	r.reply(event, groupID, buf.String())
 }
 
 // handleSwitchPersona #切换人格 <人格名>：在路由表里找"自带人格"的关键字，
@@ -217,7 +217,7 @@ func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, grou
 		} else {
 			buf.WriteString("当前无可切换人格，可用 #添加关键字 创建自带人格的指令")
 		}
-		r.obClient.SendGroupMessage(groupID, strings.TrimSpace(buf.String()))
+		r.reply(event, groupID, strings.TrimSpace(buf.String()))
 		return
 	}
 
@@ -226,7 +226,7 @@ func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, grou
 			continue
 		}
 		if route.Persona == nil {
-			r.obClient.SendGroupMessage(groupID, "❌ 关键字「"+name+"」没有可绑定的人格")
+			r.reply(event, groupID, "❌ 关键字「"+name+"」没有可绑定的人格")
 			return
 		}
 		r.setGroupPersona(groupID, &groupPersonaBinding{
@@ -234,7 +234,7 @@ func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, grou
 			persona:     *route.Persona,
 			sharedRules: route.SharedRules,
 		})
-		r.obClient.SendGroupMessage(groupID, "✅ 已切换人格："+name+"\n仅对普通@聊天生效，功能指令不受影响。")
+		r.reply(event, groupID, "✅ 已切换人格："+name+"\n仅对普通@聊天生效，功能指令不受影响。")
 		return
 	}
 
@@ -244,15 +244,15 @@ func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, grou
 	} else {
 		msg += "\n当前无可切换人格。"
 	}
-	r.obClient.SendGroupMessage(groupID, msg)
+	r.reply(event, groupID, msg)
 }
 
 // handleCancelPersona #取消人格：清空本群当前人格，纯 @ 聊天恢复无人格。
 func (r *Router) handleCancelPersona(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	if _, ok := r.getGroupPersona(groupID); !ok {
-		r.obClient.SendGroupMessage(groupID, "ℹ️ 本群未设置人格")
+		r.reply(event, groupID, "ℹ️ 本群未设置人格")
 		return
 	}
 	r.clearGroupPersona(groupID)
-	r.obClient.SendGroupMessage(groupID, "✅ 已取消人格，恢复正常聊天")
+	r.reply(event, groupID, "✅ 已取消人格，恢复正常聊天")
 }

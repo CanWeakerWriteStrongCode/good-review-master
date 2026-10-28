@@ -5,12 +5,12 @@
     "default": "http://127.0.0.1:18090/im/event"
   },
   "token": {
-    "description": "与 Go 侧共享的 Bearer token（填 config.yaml/secret.yaml 里的 napcat.access_token）",
+    "description": "与 Go 侧共享的 Bearer token（填 config.yaml/secret.yaml 里的 astrbot.access_token）",
     "type": "string",
     "default": ""
   },
   "platform_label": {
-    "description": "写入事件 platform 字段的标签；留空则用 AstrBot 的平台名（qq_official / aiocqhttp）",
+    "description": "作为 X-Platform 请求头的值；留空则用 AstrBot 的平台名（qq_official / aiocqhttp），非 ASCII 值会被省略",
     "type": "string",
     "default": ""
   },
@@ -20,7 +20,7 @@
     "default": "127.0.0.1"
   },
   "action_listen_port": {
-    "description": "动作代理监听端口；Go 的 napcat.http_api 指向这里",
+    "description": "动作代理监听端口；Go 的 astrbot.http_api 指向这里",
     "type": "int",
     "default": 6199
   },

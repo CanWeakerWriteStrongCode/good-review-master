@@ -3,21 +3,19 @@
 # 下面标了【密钥】的字段是为兼容旧配置保留的：留着仍能工作，但会打一条迁移告警。
 # 优先级：环境变量 > secret.yaml > 本文件。
 
-# ===== OneBot 11 接入配置 =====
-# sidecar 模式下不直连 NapCat，而是指向 AstrBot 桥接插件的动作代理
-# （sidecar/astrbot_plugin_onebot_bridge，默认监听 127.0.0.1:6199）。
-napcat:
-  # OneBot 动作代理地址（AstrBot 插件默认 6199；不再是 NapCat 的 3000）
+# ===== AstrBot 桥接配置 =====
+# Go 只和 AstrBot 桥接插件通信：入站事件由插件推送到 runtime.im_listen_addr，
+# 出站动作（发消息/查群信息）走下面这个动作代理地址。
+astrbot:
+  # AstrBot 桥接插件的动作代理地址（插件默认监听 6199）
   http_api: "http://127.0.0.1:6199"
   # 与 AstrBot 插件里配置的 token 保持同一个值；未设置则留空
-  access_token: ""          # 【密钥】→ secret.yaml 的 napcat_access_token
+  access_token: ""          # 【密钥】→ secret.yaml 的 astrbot_access_token
 
 # ===== 机器人配置 =====
 bot:
-  # 机器人QQ号（QQ 官方机器人场景下仅用于提示词展示，@ 触发由桥接层的 mentioned 决定）
-  qq: "123456"
-  # 允许响应的群白名单（逗号分隔）。
-  # NapCat/aiocqhttp 填 QQ 群号；QQ 官方机器人填 group_openid（长字符串）。
+  # 允许响应的群白名单（逗号分隔）。QQ 官方机器人填 group_openid（长字符串）。
+  # 填 "*" 表示所有群都响应（注意：任意群都能触发大模型调用，成本不可控）。
   allow_groups: "123456,789012"
 
 # ===== 运行时参数 =====
@@ -34,9 +32,9 @@ runtime:
   poll_interval_sec: 3
   # AstrBot 桥接插件推送事件的监听地址（与插件 go_event_url 对应）
   im_listen_addr: "127.0.0.1:18090"
-  # 启动时是否经 OneBot 动作代理回填最近历史。
-  # NapCat/aiocqhttp 可以开着；QQ 官方机器人没有群历史接口，必须设为 false。
-  backfill_on_start: true
+  # 启动时是否经桥接动作代理回填最近历史。
+  # QQ 官方机器人没有群历史接口，保持 false；其他支持 get_group_msg_history 的平台可改 true。
+  backfill_on_start: false
   # Web 管理面板端口（<=0 禁用）
   web_port: 7090
   # Web 管理面板登录账号、密码（必填，无免密模式）
@@ -101,6 +99,12 @@ llm:
   # 注意：候选列表会列出窗口内全部图片 url（只是文字，便宜）；真正花 token 的是模型实际查看，由本值硬限。
   # 启用后机器人会在本机内嵌一个 MCP 服务，提供 view_image/看图 工具，模型按需调用、机器人下载后回传
   image_max: 3
+  # view_image 允许读取的本地图片目录。QQ 官方机器人收到的图片在 AstrBot 里是本地临时文件
+  # （如 ~/.astrbot/data/temp/media_image_*.png），不是 http URL。
+  # 不写默认 ["~/.astrbot/data/temp"]；自定义 AstrBot 数据目录时改这里。
+  # 只允许读这些目录下的图片，避免模型被诱导读取配置/密钥等任意本地文件。
+  image_local_dirs:
+    - "~/.astrbot/data/temp"
   # 锐评风格：1.0=发散 0.5=集中
   temperature: 1.2
   # 核采样参数：越小输出越集中

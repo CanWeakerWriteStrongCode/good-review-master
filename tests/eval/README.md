@@ -33,7 +33,7 @@ go run ./tests/eval -dry
 | `-prompt` | `prompt_system.yaml` | 提示词来源；用例通过 `category` + `keyword` 从里面取 |
 | `-cases` | `tests/eval/cases` | 用例目录，读其中的 `*.yaml` |
 | `-baseline` | `tests/eval/baseline.json` | 基线文件 |
-| `-nickname` | `机器人` | 评测用的机器人昵称（真实昵称来自 NapCat，离线拿不到） |
+| `-nickname` | `机器人` | 评测用的机器人昵称（真实昵称来自 AstrBot 桥接，离线拿不到） |
 | `-timeout` | `120s` | 单条用例超时 |
 
 退出码：**有规则检查失败 = 1**，全部通过 = 0。差异（与基线不同）不改变退出码。

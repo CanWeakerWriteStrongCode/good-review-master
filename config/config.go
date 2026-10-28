@@ -10,33 +10,32 @@ import (
 //
 // 它由各域（section_*.go，external 类型）经 convert.go 转换而来。
 // **形状刻意与改造前保持一致**——分域只是加载期的组织方式，
-// 消费者仍然写 cfg.BotQQ，一行都不用改。
+// 消费者仍然写 cfg.BotNickname，一行都不用改。
 // 这不只是图省事：mcpclient / router / web/server 的测试都直接构造这个结构体的字面量。
 type Config struct {
-	NapCatHTTPAPI     string
-	NapCatAccessToken string
-	BotQQ             string
-	BotNickname       string // 运行时设置（GetLoginInfo 结果），不来自配置文件
-	AllowGroups       []string
-	MaxCacheMsg       int // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
-	LLMSendCount      int // 每次发送 LLM 的消息条数（重置窗口）
-	LLMTimeout        time.Duration
-	MaxMsgRune        int
-	PollInterval      time.Duration // 旧轮询间隔（保留兼容，sidecar 推送模型不再使用）
-	IMListenAddr      string        // AstrBot sidecar 推送事件的监听地址
-	BackfillOnStart   bool          // 启动时是否回填最近历史（QQ 官方机器人无历史接口，应关）
-	WebPort           int           // Web 管理面板端口，<=0 禁用
-	WebUsername       string        // Web 管理面板登录账号
-	WebPassword       string        // Web 管理面板登录密码
-	JWTSecret         string        // JWT 签名密钥；未配置时回退为 WebPassword
-	McpBuiltinToken   string        // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
-	CorsOrigins       []string      // 允许跨域访问管理面板的来源白名单；空=仅同源
-	EnablePprof       bool          // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
-	ShutdownDelay     time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
-	MetricsAddr       string        // Prometheus /metrics 的独立监听地址；等于 config.MetricsAddrOff 表示关闭
-	OTLPEndpoint      string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
-	LLMConfig         LLMConf
-	MCPConfig         MCPConf
+	AstrBotHTTPAPI     string
+	AstrBotAccessToken string
+	BotNickname        string   // 运行时设置（GetLoginInfo 结果），不来自配置文件
+	AllowGroups        []string // 群白名单；含 "*" 表示全部群
+	MaxCacheMsg        int      // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
+	LLMSendCount       int      // 每次发送 LLM 的消息条数（重置窗口）
+	LLMTimeout         time.Duration
+	MaxMsgRune         int
+	PollInterval       time.Duration // 旧轮询间隔（保留兼容，sidecar 推送模型不再使用）
+	IMListenAddr       string        // AstrBot sidecar 推送事件的监听地址
+	BackfillOnStart    bool          // 启动时是否回填最近历史（QQ 官方机器人无历史接口，应关）
+	WebPort            int           // Web 管理面板端口，<=0 禁用
+	WebUsername        string        // Web 管理面板登录账号
+	WebPassword        string        // Web 管理面板登录密码
+	JWTSecret          string        // JWT 签名密钥；未配置时回退为 WebPassword
+	McpBuiltinToken    string        // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
+	CorsOrigins        []string      // 允许跨域访问管理面板的来源白名单；空=仅同源
+	EnablePprof        bool          // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
+	ShutdownDelay      time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
+	MetricsAddr        string        // Prometheus /metrics 的独立监听地址；等于 config.MetricsAddrOff 表示关闭
+	OTLPEndpoint       string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
+	LLMConfig          LLMConf
+	MCPConfig          MCPConf
 }
 
 // MCPServerConf 单个 MCP 工具服务配置
@@ -74,10 +73,11 @@ type LLMConf struct {
 	APIKey           string
 	APIBase          string
 	ModelName        string
-	CacheHitCost     float64 // 缓存命中单价（相对值）
-	CacheMissCost    float64 // 缓存未命中单价（相对值）
-	MaxContextTokens int     // 单次发送大模型的上下文 token 上限（护栏，超限强制重置）
-	ImageMax         int     // agent「看图」：单次回复最多实际查看(下载回传)的图片张数；>0 启用，0=关（纯文本）
+	CacheHitCost     float64  // 缓存命中单价（相对值）
+	CacheMissCost    float64  // 缓存未命中单价（相对值）
+	MaxContextTokens int      // 单次发送大模型的上下文 token 上限（护栏，超限强制重置）
+	ImageMax         int      // agent「看图」：单次回复最多实际查看(下载回传)的图片张数；>0 启用，0=关（纯文本）
+	ImageLocalDirs   []string // view_image 允许读取的本地图片目录（QQ 官方图片是 AstrBot 本地临时文件）
 	Temperature      float64
 	TopP             float64
 
@@ -101,10 +101,21 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
-// HasGroup 检查群号是否在白名单中
+// HasGroup 检查群号是否在白名单中。白名单含 "*" 时放行所有群。
 func (cfg *Config) HasGroup(groupID string) bool {
 	for _, group := range cfg.AllowGroups {
-		if group == groupID {
+		if group == "*" || group == groupID {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsAllGroups 返回白名单是否包含通配符 "*"。
+// 通配符无法枚举具体群，回填和 Web 群列表需要单独处理。
+func (cfg *Config) AllowsAllGroups() bool {
+	for _, group := range cfg.AllowGroups {
+		if group == "*" {
 			return true
 		}
 	}

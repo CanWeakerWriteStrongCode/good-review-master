@@ -24,7 +24,7 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 	r.GoCtx(parent, func(ctx context.Context) error {
 		msgs := cache.GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
 		if len(msgs) == 0 {
-			r.obClient.SendGroupMessage(groupID, "暂无群聊记录，无法锐评~")
+			r.reply(event, groupID, "暂无群聊记录，无法锐评~")
 			return nil
 		}
 
@@ -45,10 +45,10 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 		reply, err := r.runReviewLLM(ctx, systemPrompt, userMsg)
 		if err != nil {
 			logutil.Error("大模型调用失败", "err", err)
-			r.obClient.SendGroupMessage(groupID, "大师今天罢工了，稍后再试~")
+			r.reply(event, groupID, "大师今天罢工了，稍后再试~")
 			return nil
 		}
-		r.obClient.SendGroupMessage(groupID, reply)
+		r.reply(event, groupID, reply)
 
 		// 保存锚点（窗口首条 + 末条 MsgID）
 		cache.SetLLMAnchor(groupID, cache.LLMAnchor{
@@ -121,15 +121,12 @@ func (r *Router) mcpToolsTokens() int {
 // 所有图片 url 都列出来（url 只是文本，成本低），由模型自行决定调 view_image 实际查看哪张。
 // 真正的开销控制是「实际查看上限 cfg.ImageMax」（见 runChatWithTools 的硬限）。无候选返回空串。
 func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
-	if len(msgs) == 0 {
-		return ""
-	}
 	type row struct {
 		nick  string
 		msgID int64
 		url   string
 	}
-	var rows []row
+	rows := make([]row, 0)
 	for _, m := range msgs {
 		for _, u := range m.Images {
 			if u == "" {

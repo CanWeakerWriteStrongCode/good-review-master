@@ -6,7 +6,7 @@
 
 <h1 align="center">Not Good Review Master</h1>
 
-<p align="center">A QQ group chatbot powered by AstrBot (NapCat / official QQ bot) + LLM — @mention the bot to get AI-generated sharp reviews of group chat, ask questions, or dynamically add custom commands.</p>
+<p align="center">A QQ group chatbot powered by AstrBot (official QQ bot) + LLM — @mention the bot to get AI-generated sharp reviews of group chat, ask questions, or dynamically add custom commands.</p>
 
 ## Features
 
@@ -19,12 +19,13 @@
 - **Single binary deployment**: Compile to one executable, drop it on a server, and run
 - **Persona system**: each command can carry a 5-dimension persona (identity/personality/relationship/emotion/system prompt) — replies have character but stay bounded
 - **Direct Q&A on unknown commands**: when @mentioned but no keyword matches, the message is sent straight to the LLM for a plain reply (no persona)
+- **Rich replies**: quote, @mention, image, voice, video and file segments; the QQ official bridge uploads media and prefers passive replies
 - **Cost-optimized cache hits**: stateless requests + prefix caching, with an automatic extend/reset window decision based on token cost
 
 ## Architecture
 
 ```
-QQ ←→ NapCatQQ ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go Bot ←→ LLM API
+QQ official bot ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go Bot ←→ LLM API
 ```
 
 ```
@@ -50,7 +51,7 @@ IM ingress (im/server.go) → queue (bot/ingest.go)
      → Whitelist check
      → Truncate to max length
      → Store in ring buffer (zero-copy write)
-     → @bot detection (QQ number + nickname)
+     → @bot detection (bridge's mentioned flag + nickname fallback)
      → Prefix trie match → matched: dispatch to that command's handler (with its persona)
      → No match: fall back to a plain LLM reply (no persona)
 ```
@@ -59,8 +60,8 @@ IM ingress (im/server.go) → queue (bot/ingest.go)
 
 ### Prerequisites
 
-- Either NapCatQQ (OneBot 11) logged in, or an official QQ bot (AppID / AppSecret)
-- [AstrBot](https://github.com/AstrBotDevs/AstrBot) with this repo's bridge plugin, `aiocqhttp` or `qq_official` adapter connected
+- An official QQ bot (AppID / AppSecret)
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) with this repo's bridge plugin, `qq_official` adapter connected
 - An OpenAI-compatible LLM API key (DeepSeek, Doubao, Tongyi Qianwen, etc.)
 
 ### Run from source
@@ -115,10 +116,9 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `napcat.http_api` | OneBot action proxy URL (bridge plugin, default 6199) | `http://127.0.0.1:6199` |
-| `napcat.access_token` | Shared token with the bridge plugin | `""` |
-| `bot.qq` | Bot's QQ number | `123456` |
-| `bot.allow_groups` | Allowed groups (QQ group IDs for NapCat, `group_openid` for the official bot) | `123456,789012` |
+| `astrbot.http_api` | AstrBot bridge action proxy URL (default 6199) | `http://127.0.0.1:6199` |
+| `astrbot.access_token` | Shared token with the bridge plugin | `""` |
+| `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups) | `123456,789012` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |
 | `llm.api_key` | LLM API key (**move to `secret.yaml`**) | `sk-xxx` |
 | `llm.api_base` | LLM API base URL | `https://api.deepseek.com` |
@@ -128,13 +128,15 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `llm.cache_hit_cost` | Cache hit cost (relative) | `0.033` |
 | `llm.cache_miss_cost` | Cache miss cost (relative) | `1.0` |
 | `llm.max_context_tokens` | Max context tokens per LLM request (force reset if exceeded) | `50000` |
+| `llm.image_max` | Max images actually viewed per reply (0 = disabled) | `3` |
+| `llm.image_local_dirs` | Local directories `view_image` may read (QQ official images are local AstrBot temp files) | `["~/.astrbot/data/temp"]` |
 | `runtime.llm_send_count` | Recent messages sent per request (reset window) | `200` |
 | `runtime.max_cache_msg` | Max ring-buffer messages (≈31×llm_send_count) | `6200` |
 | `runtime.llm_timeout_sec` | LLM timeout (seconds) | `20` |
 | `runtime.max_msg_rune` | Max characters per message | `500` |
 | `runtime.poll_interval_sec` | Legacy poll interval (unused in sidecar mode) | `3` |
 | `runtime.im_listen_addr` | Ingress address for AstrBot-pushed events | `127.0.0.1:18090` |
-| `runtime.backfill_on_start` | Backfill recent history at startup; set `false` for the official QQ bot (no history API) | `true` |
+| `runtime.backfill_on_start` | Backfill recent history at startup; keep `false` for the official QQ bot (no history API) | `false` |
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
 | `runtime.web_password` | Web panel login password (required; **move to `secret.yaml`**) | `"123456"` |
@@ -146,7 +148,7 @@ Gin + JWT + embedded Vue SPA for group message monitoring.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/api/login` | No | Returns JWT token (validates username/password) |
-| GET | `/api/status` | JWT | BotQQ, Nickname, Masked API Key, group count |
+| GET | `/api/status` | JWT | Nickname, Masked API Key, group count |
 | GET | `/api/groups` | JWT | Per-group info with activity stats |
 | GET | `/api/groups/:id` | JWT | Cached messages for one group |
 | POST | `/api/logout` | JWT | No-op (stateless token) |
@@ -157,7 +159,7 @@ Gin + JWT + embedded Vue SPA for group message monitoring.
 > `mcp.servers[].token`, may live in a sibling `secret.yaml` (auto-created on first run, mode 0600, gitignored).
 > Precedence is **env > secret.yaml > config.yaml**; values left in `config.yaml` keep working and emit a
 > migration warning — the program never rewrites your files. Available env vars:
-> `GOOD_REVIEW_LLM_API_KEY`, `GOOD_REVIEW_WEB_PASSWORD`, `GOOD_REVIEW_NAPCAT_TOKEN`.
+> `GOOD_REVIEW_LLM_API_KEY`, `GOOD_REVIEW_WEB_PASSWORD`, `GOOD_REVIEW_ASTRBOT_TOKEN`.
 
 ### prompt_system.yaml
 
@@ -262,7 +264,7 @@ cmd:
 func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona string) {
     r.Go(func(ctx context.Context) error {
         // Safe async: ctx auto-inherits shutdown signal (Ctrl+C cancels in-flight LLM calls)
-        // systemPrompt  = bot identity (QQ + nickname) + shared rules for this command
+        // systemPrompt  = bot identity (model name + nickname) + shared rules for this command
         // keywordPrompt = this command's prompt; persona = rendered 5-dim persona (empty if unset)
         // Build the user message: chat log + mentioner info + keyword prompt + persona
         userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra, persona)
@@ -320,7 +322,7 @@ good-review-master/
 │   └── logger.go             # Logging (zap + lumberjack, 20MB rotation, 30-day retention)
 ├── onebot/
 │   ├── client.go             # OneBot action client (resty, points at the AstrBot bridge)
-│   ├── cqimage.go            # CQ-code parsing (image extraction, [图片] placeholder, truncation)
+│   ├── cqimage.go            # CQ-code parsing (image extraction, rich-segment placeholders, truncation)
 │   └── types.go              # API data types
 ├── im/
 │   └── server.go             # AstrBot event ingress (auth, decode, enqueue)
@@ -381,7 +383,7 @@ Logs are written to the `log/` directory under the working directory. Uses `zap`
 Three-layer testing:
 
 1. **Unit tests**: `router/chat_window_test.go` — table-driven coverage of every branch of the cache-window decision (extend vs reset); the decision function is a pure function with explicit inputs and no global state.
-2. **Test-mode infrastructure**: with `GOOD_REVIEW_TEST=1`, `FakeLLM` (fixed reply + records every call) replaces the real LLM, NapCat points at a dead address, and `/api/debug/*` self-test endpoints (inject/reset/state/trigger) are registered — reachable only in test mode; in production the SPA fallback serves page HTML for those paths.
+2. **Test-mode infrastructure**: with `GOOD_REVIEW_TEST=1`, `FakeLLM` (fixed reply + records every call) replaces the real LLM, the AstrBot bridge uses the configured address, and `/api/debug/*` self-test endpoints (inject/reset/state/trigger) are registered — reachable only in test mode; in production the SPA fallback serves page HTML for those paths.
 3. **E2E**: Playwright **API-level tests** (`request` fixture, no browser) driving the real test binary's HTTP API:
 
 ```bash
@@ -459,6 +461,6 @@ Every command can carry a 5-dimension persona (`Persona` in `config/prompt.go`),
 ### Engineering Robustness
 
 - **Explicit dependency injection, zero `init()` side effects**: all components are constructed top-down in `main()`.
-- **Defenses**: group whitelist, per-message rune truncation, dual @detection (QQ number + nickname), auto-generate missing config from embedded templates then exit.
+- **Defenses**: group whitelist, per-message rune truncation, @detection via the bridge's mentioned flag with nickname fallback, auto-generate missing config from embedded templates then exit.
 - **Observability**: zap + lumberjack dual output (console + 20MB-rotating file, 30-day retention, gzip).
 - **Web panel**: SPA embedded via `//go:embed`, JWT (HS256) auth, no password-less mode.

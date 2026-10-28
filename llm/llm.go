@@ -145,10 +145,12 @@ func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []M
 		Tools:       toOpenAITools(tools),
 		ToolChoice:  "auto",
 	}
-	// Debug 级把「发给大模型的完整原始请求 JSON」整段打出来（与 CreateChatCompletion 实际发出的字节一致）。
-	// 平时 InfoLevel 不输出；设 GOOD_REVIEW_LOG_LEVEL=debug 时用于核对模型到底收到了什么。
-	if raw, err := json.Marshal(req); err == nil {
-		logutil.Debug("发给大模型的完整请求JSON", "body", string(raw))
+	// Debug 级把「发给大模型的完整请求 JSON」整段打出来。
+	// 字段顺序按模型 chat template 的渲染顺序排列（tools 在 messages 之前），
+	// 与 go-openai 实际发送的请求语义一致、仅键顺序不同——避免日志看着像"工具定义塞在对话后面"。
+	// Debug 默认开启；收紧到 info 及以上时这条不再输出，用于核对模型到底收到了什么。
+	if raw, err := marshalRequestForLog(req); err == nil {
+		logutil.Debug("发给大模型的完整请求JSON", "body", json.RawMessage(raw))
 	} else {
 		logutil.Debug("发给大模型的完整请求JSON序列化失败", "err", err)
 	}
@@ -203,6 +205,19 @@ func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []M
 		})
 	}
 	return out, nil
+}
+
+// marshalRequestForLog 序列化调试日志用的请求体：tools 放在最前，messages 在后，
+// 与模型 chat template 的渲染顺序一致；JSON 语义与实际发送的请求完全相同。
+//
+// 用内嵌原始请求而不是复制字段：encoding/json 遇到不同层级的同名字段时浅层胜出，
+// 外层的 Tools 会覆盖内嵌请求里的 tools，不会出现重复键，其余字段仍跟随 go-openai 定义。
+func marshalRequestForLog(req openai.ChatCompletionRequest) ([]byte, error) {
+	ordered := struct {
+		Tools []openai.Tool `json:"tools,omitempty"`
+		openai.ChatCompletionRequest
+	}{Tools: req.Tools, ChatCompletionRequest: req}
+	return json.Marshal(ordered)
 }
 
 // toOpenAIMessages 把中立消息列表转成 go-openai 的消息结构

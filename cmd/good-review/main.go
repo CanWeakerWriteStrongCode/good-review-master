@@ -16,6 +16,7 @@ import (
 func main() {
 	logutil.SetupLogger()
 	logutil.Info("版本：" + version.String())
+	logutil.Debug("日志初始化完成", "level", logutil.Level())
 
 	// 首跑：补全模板配置文件，提示用户配置后再启动
 	if config.InitDefaultFiles() {

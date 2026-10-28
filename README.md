@@ -6,13 +6,13 @@
 
 <h1 id="中文" align="center">🔪 不是好评大师</h1>
 
-<p align="center">QQ 群聊锐评机器人 —— 基于 AstrBot 桥接（NapCat / QQ 官方机器人）+ 大模型，@一下即可锐评群友、问答互动</p>
+<p align="center">QQ 群聊锐评机器人 —— 基于 AstrBot（QQ 官方机器人）+ 大模型，@一下即可锐评群友、问答互动</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go" alt="Go version">
   <img src="https://img.shields.io/badge/Node.js-18+-339933?style=flat&logo=nodedotjs" alt="Node.js">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/QQ-NapCatQQ-12B7F5?style=flat" alt="NapCatQQ">
+  <img src="https://img.shields.io/badge/QQ-AstrBot-12B7F5?style=flat" alt="AstrBot">
 </p>
 
 ## 📑 目录
@@ -33,17 +33,18 @@
 - **群聊上下文感知**：基于最近的群聊记录生成上下文相关的锐评，不是无脑随机回复
 - **插件式指令扩展**：在 `prompt_system.yaml` 里加配置即可新增同类型指令变体，无需改代码
 - **群内动态添加指令**：在群里 @机器人即可动态增删自定义指令，无需重启
-- **白名单机制**：只响应指定群号，安全可控
+- **白名单机制**：只响应指定群（QQ 官方机器人为 `group_openid`），安全可控
 - **纯内网通信**：AstrBot 桥接插件通过本地 HTTP 推送事件，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
 - **人格系统**：每条指令可配 5 维人格（身份/性格/关系/情绪/系统指令），回复有性格但有边界
 - **@机器人直接问答**：@机器人但没匹配到指令时，直接把消息发给大模型回答（不带人格）
+- **富消息回复**：回复支持引用、@、图片、语音、视频、文件；QQ 官方机器人自动上传媒体并尽量走被动回复
 - **成本优化缓存命中**：无状态请求 + 前缀缓存，按 token 成本自动扩展/重置窗口，省钱省算力
 
 ## 🏗 架构
 
 ```
-QQ ←→ NapCatQQ ←→ AstrBot（sidecar，只做 IM 网关）←→ Go Bot ←→ LLM API
+QQ 官方机器人 ←→ AstrBot（sidecar，只做 IM 网关）←→ Go Bot ←→ LLM API
 ```
 
 ```
@@ -67,9 +68,9 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 11 �
 
 ### 前置条件
 
-- 二选一：NapCatQQ（OneBot 11）已登录；或 QQ 官方机器人（AppID / AppSecret）
+- QQ 官方机器人（AppID / AppSecret）
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) 已安装，并装有本仓库的
-  [桥接插件](sidecar/astrbot_plugin_onebot_bridge)（`aiocqhttp` 或 `qq_official` 适配器已连上平台）
+  [桥接插件](sidecar/astrbot_plugin_onebot_bridge)（`qq_official` 适配器已连上平台）
 - 一个 OpenAI 兼容的大模型 API Key（DeepSeek、豆包、通义千问等均可）
 
 ### 代码启动
@@ -117,10 +118,9 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 11 �
 
 | 配置项                         | 说明                              | 示例值                        |
 |-----------------------------|---------------------------------|----------------------------|
-| `napcat.http_api`           | OneBot 动作代理地址（AstrBot 插件默认 6199） | `http://127.0.0.1:6199`    |
-| `napcat.access_token`       | 与 AstrBot 插件共享的 token            | `""`                       |
-| `bot.qq`                    | 机器人 QQ 号                        | `123456`                   |
-| `bot.allow_groups`          | 允许响应的群（NapCat 填群号；官方机器人填 group_openid） | `123456,789012`            |
+| `astrbot.http_api`          | AstrBot 桥接动作代理地址（插件默认 6199） | `http://127.0.0.1:6199`    |
+| `astrbot.access_token`      | 与 AstrBot 插件共享的 token            | `""`                       |
+| `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群） | `123456,789012`            |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |
 | `llm.api_key`               | 大模型 API Key（**建议移到 `secret.yaml`**） | `sk-xxx`                   |
 | `llm.api_base`              | 大模型接口地址                         | `https://api.deepseek.com` |
@@ -130,13 +130,15 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 11 �
 | `llm.cache_hit_cost`        | 缓存命中单价（相对值）                     | `0.033`                    |
 | `llm.cache_miss_cost`       | 缓存未命中单价（相对值）                    | `1.0`                      |
 | `llm.max_context_tokens`    | 单次发送大模型的上下文 token 上限（超限强制重置）    | `50000`                    |
+| `llm.image_max`             | 单次回复最多实际查看的图片张数（0=关闭看图）        | `3`                        |
+| `llm.image_local_dirs`      | `view_image` 允许读取的本地图片目录（QQ 官方图片是 AstrBot 本地临时文件） | `["~/.astrbot/data/temp"]` |
 | `runtime.llm_send_count`    | 每次发送的最近消息条数（重置窗口）               | `200`                      |
 | `runtime.max_cache_msg`     | 环形缓冲条数上限（建议 ≈31×llm_send_count） | `6200`                     |
 | `runtime.llm_timeout_sec`   | 大模型超时（秒）                        | `20`                       |
 | `runtime.max_msg_rune`      | 单条消息最大字符数                       | `500`                      |
 | `runtime.poll_interval_sec` | 旧轮询间隔（sidecar 模式已不使用，保留兼容）      | `3`                        |
 | `runtime.im_listen_addr`    | AstrBot 推送事件的监听地址               | `127.0.0.1:18090`           |
-| `runtime.backfill_on_start` | 启动时回填历史；QQ 官方机器人无历史接口时设 `false` | `true`                     |
+| `runtime.backfill_on_start` | 启动时回填历史；QQ 官方机器人无历史接口，保持 `false` | `false`                    |
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）              | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                     | `admin`                    |
 | `runtime.web_password`      | Web 面板登录密码（必填；**建议移到 `secret.yaml`**） | `"123456"`                 |
@@ -148,7 +150,7 @@ Gin + JWT + 内嵌 Vue SPA，提供群消息监控页面。
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | POST | `/api/login` | 否 | 返回 JWT token（账号密码校验） |
-| GET | `/api/status` | JWT | BotQQ、昵称、脱敏 API Key、群数量 |
+| GET | `/api/status` | JWT | 昵称、脱敏 API Key、群数量 |
 | GET | `/api/groups` | JWT | 各群信息 + 活跃状态 |
 | GET | `/api/groups/:id` | JWT | 单群缓存消息 |
 | POST | `/api/logout` | JWT | 登出（无状态 token，占位） |
@@ -158,7 +160,7 @@ Gin + JWT + 内嵌 Vue SPA，提供群消息监控页面。
 > **密钥文件**：上表中带「建议移到 secret.yaml」的字段，以及 `runtime.mcp_builtin_token`、`mcp.servers[].token`，
 > 都可以改写进同目录的 `secret.yaml`（首次运行自动创建，权限 0600、已在 `.gitignore` 中）。
 > 优先级为 **环境变量 > secret.yaml > config.yaml**；仍写在 `config.yaml` 里的会正常工作并打一条迁移告警，
-> 程序不会自动改写你的文件。可用环境变量：`GOOD_REVIEW_LLM_API_KEY`、`GOOD_REVIEW_WEB_PASSWORD`、`GOOD_REVIEW_NAPCAT_TOKEN`。
+> 程序不会自动改写你的文件。可用环境变量：`GOOD_REVIEW_LLM_API_KEY`、`GOOD_REVIEW_WEB_PASSWORD`、`GOOD_REVIEW_ASTRBOT_TOKEN`。
 
 ### 指令提示词配置
 
@@ -244,7 +246,7 @@ good-review-master/
 │   └── logger.go             # 日志（zap + lumberjack，20MB 切割，30 天保留）
 ├── onebot/
 │   ├── client.go             # OneBot 动作客户端（resty，指向 AstrBot 桥接代理）
-│   ├── cqimage.go            # CQ 码解析（图片提取、[图片]占位、入库截断）
+│   ├── cqimage.go            # CQ 码解析（图片提取、引用/文件等占位、入库截断）
 │   └── types.go              # API 数据类型定义
 ├── im/
 │   └── server.go             # AstrBot 事件入口（鉴权、解码、入队）
@@ -299,7 +301,7 @@ IM ingress (im/server.go) → 队列 (bot/ingest.go)
      → 白名单检查
      → 截断到最大长度
      → 存入环形缓冲区（零拷贝写入）
-     → @机器人检测（QQ号 + 昵称）
+     → @机器人检测（桥接层 mentioned + 昵称兜底）
      → 前缀树匹配 → 命中指令：调用该指令 handler（带该指令人格）
      → 未命中：兜底直接发大模型回答（不带人格）
 ```
@@ -337,7 +339,7 @@ cmd:
 func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona string) {
     r.Go(func(ctx context.Context) error {
         // 异步安全启动：ctx 自动继承 shutdown 信号（Ctrl+C 可取消进行中的 LLM 调用）
-        // systemPrompt  = 机器人身份（QQ+昵称）+ 该指令共享规则
+        // systemPrompt  = 机器人身份（模型名+昵称）+ 该指令共享规则
         // keywordPrompt = 该指令的 prompt；persona = 5 维人格渲染（未配则空串）
         // 组装 user 消息：聊天记录 + @者信息 + 关键词 prompt + 人格
         userMsg := buildUserMsg(chatLog, mentionerNick, keywordPrompt, extra, persona)
@@ -369,7 +371,7 @@ r.handlerMap = map[string]HandlerFunc{
 三层测试体系：
 
 1. **单元测试**：`router/chat_window_test.go` 表格驱动穷举缓存窗口决策（扩展 vs 重置）各分支；决策函数为纯函数、显式传参、无全局依赖。
-2. **测试模式基建**：`GOOD_REVIEW_TEST=1` 启动时用 FakeLLM（固定回复并记录每次调用）替代真实大模型、NapCat 指向死地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）——仅测试模式可达，生产模式会被 SPA fallback 回成页面 HTML。
+2. **测试模式基建**：`GOOD_REVIEW_TEST=1` 启动时用 FakeLLM（固定回复并记录每次调用）替代真实大模型、AstrBot 桥接指向配置地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）——仅测试模式可达，生产模式会被 SPA fallback 回成页面 HTML。
 3. **E2E**：Playwright **API 层自测**（`request` fixture，不启动浏览器），直打真实测试二进制的 HTTP 接口：
 
 ```bash
@@ -448,7 +450,7 @@ cd tests/e2e && pnpm test
 ### 工程健壮性
 
 - **显式依赖注入，零 `init()` 副作用**：所有组件在 `main()` 自上而下构造。
-- **防御性**：白名单群、消息按 rune 截断、@检测 QQ号+昵称双校验、配置缺失自动从模板生成并退出。
+- **防御性**：白名单群、消息按 rune 截断、@检测以桥接层 mentioned 为主并用昵称兜底、配置缺失自动从模板生成并退出。
 - **可观测性**：zap + lumberjack 双输出（控制台 + 文件 20MB 轮转、30 天保留、gzip）。
 - **Web 面板**：`//go:embed` 内嵌 SPA、JWT(HS256) 鉴权、无免密模式。
 

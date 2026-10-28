@@ -29,6 +29,7 @@ test('status：无 token 401，有 token 返回机器人信息', async ({ reques
   const res = await request.get('/api/status', { headers: { Authorization: `Bearer ${token}` } })
   const body = await res.json()
   expect(body.code).toBe(200)
-  expect(body.data.bot_qq).toBe('123456')
+  expect(typeof body.data.bot_nickname).toBe('string')
+  expect(body.data.allow_all_groups).toBe(false)
   expect(body.data.group_count).toBe(2)
 })

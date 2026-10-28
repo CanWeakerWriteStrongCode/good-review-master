@@ -20,34 +20,33 @@ func assemble(sections *sections) *Config {
 
 	apiKey := resolveSecret("llm.api_key", secret.LLMAPIKey, sections.LLM.APIKey)
 	webPassword := resolveSecret("runtime.web_password", secret.WebPassword, sections.Runtime.WebPassword)
-	napCatToken := resolveSecret("napcat.access_token", secret.NapCatAccessToken, sections.NapCat.AccessToken)
+	astrBotToken := resolveSecret("astrbot.access_token", secret.AstrBotAccessToken, sections.AstrBot.AccessToken)
 	builtinToken := resolveSecret("runtime.mcp_builtin_token", secret.McpBuiltinToken, sections.Runtime.McpBuiltinToken)
 	jwtSecret := resolveJWTSecret(secret.JWTSecret, sections.Runtime.JWTSecret, webPassword)
 
 	servers := resolveMCPServers(sections.MCP.AcceptedServers(), secret)
 
 	return &Config{
-		NapCatHTTPAPI:     sections.NapCat.HTTPAPI,
-		NapCatAccessToken: napCatToken,
-		BotQQ:             sections.Bot.QQ,
-		AllowGroups:       parseCommaList(sections.Bot.AllowGroups),
-		MaxCacheMsg:       sections.Runtime.MaxCacheMsg,
-		LLMSendCount:      sections.Runtime.LLMSendCount,
-		LLMTimeout:        time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
-		MaxMsgRune:        sections.Runtime.MaxMsgRune,
-		PollInterval:      time.Duration(sections.Runtime.PollIntervalSec) * time.Second,
-		IMListenAddr:      sections.Runtime.IMListenAddr,
-		BackfillOnStart:   sections.Runtime.BackfillOnStart == nil || *sections.Runtime.BackfillOnStart,
-		WebPort:           sections.Runtime.WebPort,
-		WebUsername:       sections.Runtime.WebUsername,
-		WebPassword:       webPassword,
-		JWTSecret:         jwtSecret,
-		McpBuiltinToken:   builtinToken,
-		CorsOrigins:       sections.Runtime.CorsOriginList(),
-		EnablePprof:       sections.Runtime.EnablePprof,
-		ShutdownDelay:     time.Duration(sections.Runtime.ShutdownDelaySec) * time.Second,
-		MetricsAddr:       sections.Runtime.MetricsAddr,
-		OTLPEndpoint:      sections.Runtime.OTLPEndpoint,
+		AstrBotHTTPAPI:     sections.AstrBot.HTTPAPI,
+		AstrBotAccessToken: astrBotToken,
+		AllowGroups:        parseCommaList(sections.Bot.AllowGroups),
+		MaxCacheMsg:        sections.Runtime.MaxCacheMsg,
+		LLMSendCount:       sections.Runtime.LLMSendCount,
+		LLMTimeout:         time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
+		MaxMsgRune:         sections.Runtime.MaxMsgRune,
+		PollInterval:       time.Duration(sections.Runtime.PollIntervalSec) * time.Second,
+		IMListenAddr:       sections.Runtime.IMListenAddr,
+		BackfillOnStart:    sections.Runtime.BackfillOnStart == nil || *sections.Runtime.BackfillOnStart,
+		WebPort:            sections.Runtime.WebPort,
+		WebUsername:        sections.Runtime.WebUsername,
+		WebPassword:        webPassword,
+		JWTSecret:          jwtSecret,
+		McpBuiltinToken:    builtinToken,
+		CorsOrigins:        sections.Runtime.CorsOriginList(),
+		EnablePprof:        sections.Runtime.EnablePprof,
+		ShutdownDelay:      time.Duration(sections.Runtime.ShutdownDelaySec) * time.Second,
+		MetricsAddr:        sections.Runtime.MetricsAddr,
+		OTLPEndpoint:       sections.Runtime.OTLPEndpoint,
 		LLMConfig: LLMConf{
 			Provider:         sections.LLM.Provider,
 			APIKey:           apiKey,
@@ -57,6 +56,7 @@ func assemble(sections *sections) *Config {
 			CacheMissCost:    sections.LLM.CacheMissCost,
 			MaxContextTokens: sections.LLM.MaxContextTokens,
 			ImageMax:         sections.LLM.ImageMax,
+			ImageLocalDirs:   sections.LLM.ImageLocalDirs,
 			Temperature:      sections.LLM.Temperature,
 			TopP:             sections.LLM.TopP,
 
