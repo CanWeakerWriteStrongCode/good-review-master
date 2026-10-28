@@ -2,27 +2,21 @@
 # 注意：im.api_base 指向死地址，出站调用失败仅 warn；数据由 /api/debug/inject 直接种入。
 # global-setup 会先推一条 OB12 事件，让 qq_1906xxxx 工作空间开通，debug 接口才有对象可操作。
 im:
-  token: ""
   api_base: "http://127.0.0.1:1"
 bot:
   allow_groups: "10001,10002"
-  workspace_accounts: ["qq_1906xxxx"]
+  allow_workspace_accounts: ["qq_1906xxxx"]
 runtime:
   llm_send_count: 3   # 小重置窗口：便于缓存成本用例用少量消息触发重置/扩展
   llm_timeout_sec: 20
   max_msg_rune: 500
   max_cache_msg: 6200
-  poll_interval_sec: 3600   # 旧轮询模型残留字段，e2e 不依赖它
   im_listen_addr: "127.0.0.1:18090"   # 避开 Windows 保留端口段（8059-8158）
-  backfill_on_start: false   # OB12 没有历史动作，此项已不生效
   web_port: 9090
   web_username: "admin"
-  # web_password 已挪到 fixtures/secret.yaml，用来覆盖密钥文件那条新路径。
-  # 下面的 llm.api_key 刻意继续留在旧位置，覆盖"兼容 + 迁移告警"那条路径。
   enable_pprof: true   # 诊断用例要打 /api/debug/pprof/*，必须开
 llm:
   provider: "openai"        # 测试模式走 FakeLLM 分支，此值不被读取
-  api_key: "sk-test"
   api_base: "http://fake"
   model_name: "fake"
   cache_hit_cost: 0.033

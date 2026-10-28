@@ -4,8 +4,6 @@ import (
 	"os"
 	"strings"
 
-	"good-review-master/logutil"
-
 	"gopkg.in/yaml.v3"
 )
 
@@ -17,28 +15,23 @@ import (
 //  2. **secret.yaml 整份文件就是本域**，没有顶层键可找。所以它的 Unmarshal
 //     直接解整份文档，不像别的域那样按 Name() 取自己那一段。
 //
-// 关于优先级：环境变量在 applyEnv 里**写进本结构体**，于是 convert 只需处理
-// "secret > config.yaml 旧位置" 两层，环境变量天然排在最前——
-// 三层优先级压成两层，少一处可能写错的地方。
+// 关于优先级：环境变量在 applyEnv 里**写进本结构体**，于是 convert 只需读本结构体，
+// 环境变量天然排在最前。
 type secretSection struct {
-	LLMAPIKey          string            `yaml:"llm_api_key"`
-	WebPassword        string            `yaml:"web_password"`
-	JWTSecret          string            `yaml:"jwt_secret"`
-	IMToken            string            `yaml:"im_token"`
-	AstrBotAccessToken string            `yaml:"astrbot_access_token"` // 旧键：一次性迁移
-	McpBuiltinToken    string            `yaml:"mcp_builtin_token"`
-	McpServerTokens    map[string]string `yaml:"mcp_server_tokens"`
+	LLMAPIKey       string            `yaml:"llm_api_key"`
+	WebPassword     string            `yaml:"web_password"`
+	JWTSecret       string            `yaml:"jwt_secret"`
+	IMToken         string            `yaml:"im_token"`
+	McpBuiltinToken string            `yaml:"mcp_builtin_token"`
+	McpServerTokens map[string]string `yaml:"mcp_server_tokens"`
 }
 
 // 环境变量名。只覆盖这三个全局值；MCP 每个服务的 token 只走文件
 // （按服务名做环境变量太容易撞名，收益也不大）。
 const (
-	envLLMAPIKey         = "GOOD_REVIEW_LLM_API_KEY"
-	envWebPassword       = "GOOD_REVIEW_WEB_PASSWORD"
-	envIMToken           = "GOOD_REVIEW_IM_TOKEN"
-	envAstrBotToken      = "GOOD_REVIEW_ASTRBOT_TOKEN" // 旧名：一次性迁移
-	envLegacyBridgeToken = "GOOD_REVIEW_NAPCAT_TOKEN"  // 一次性迁移：旧环境变量名
-	legacyBridgeTokenKey = "napcat_access_token"       // 一次性迁移：旧 secret.yaml 键
+	envLLMAPIKey   = "GOOD_REVIEW_LLM_API_KEY"
+	envWebPassword = "GOOD_REVIEW_WEB_PASSWORD"
+	envIMToken     = "GOOD_REVIEW_IM_TOKEN"
 )
 
 func (s *secretSection) Name() string { return "secret" }
@@ -48,24 +41,7 @@ func (s *secretSection) Unmarshal(document *yaml.Node) error {
 	if document == nil {
 		return nil
 	}
-	if err := document.Decode(s); err != nil {
-		return err
-	}
-	// 一次性迁移：旧键名仍可用，但提示用户改名。
-	if s.IMToken == "" && s.AstrBotAccessToken != "" {
-		s.IMToken = s.AstrBotAccessToken
-		logutil.Warn("secret.yaml 的 astrbot_access_token 已更名为 im_token，请尽快修改")
-	}
-	if s.AstrBotAccessToken == "" {
-		if node := topLevelValue(document, legacyBridgeTokenKey); node != nil {
-			s.AstrBotAccessToken = strings.TrimSpace(node.Value)
-			if s.IMToken == "" {
-				s.IMToken = s.AstrBotAccessToken
-			}
-			logutil.Warn("secret.yaml 的 napcat_access_token 已更名为 im_token，请尽快修改")
-		}
-	}
-	return nil
+	return document.Decode(s)
 }
 
 // applyEnv 应用环境变量覆盖。必须在 Unmarshal 之后、convert 之前调用。
@@ -78,12 +54,6 @@ func (s *secretSection) applyEnv() {
 	}
 	if value := strings.TrimSpace(os.Getenv(envIMToken)); value != "" {
 		s.IMToken = value
-	} else if value := strings.TrimSpace(os.Getenv(envAstrBotToken)); value != "" {
-		s.IMToken = value
-		logutil.Warn("环境变量 GOOD_REVIEW_ASTRBOT_TOKEN 已更名为 GOOD_REVIEW_IM_TOKEN，请尽快修改")
-	} else if value := strings.TrimSpace(os.Getenv(envLegacyBridgeToken)); value != "" {
-		s.IMToken = value
-		logutil.Warn("环境变量 GOOD_REVIEW_NAPCAT_TOKEN 已更名为 GOOD_REVIEW_IM_TOKEN，请尽快修改")
 	}
 }
 
@@ -92,7 +62,6 @@ func (s *secretSection) SetDefaults() {
 	s.WebPassword = strings.TrimSpace(s.WebPassword)
 	s.JWTSecret = strings.TrimSpace(s.JWTSecret)
 	s.IMToken = strings.TrimSpace(s.IMToken)
-	s.AstrBotAccessToken = strings.TrimSpace(s.AstrBotAccessToken)
 	s.McpBuiltinToken = strings.TrimSpace(s.McpBuiltinToken)
 	for name, token := range s.McpServerTokens {
 		s.McpServerTokens[name] = strings.TrimSpace(token)
@@ -101,7 +70,7 @@ func (s *secretSection) SetDefaults() {
 
 // Validate 不做硬判定。
 //
-// 原因：密钥缺失是**允许**的状态，缺了由 convert 回退到 config.yaml 旧位置或留空。
+// 原因：密钥缺失是**允许**的状态，缺了就是空值。
 // 具体哪些缺失会致命（比如开了 web_port 却没有密码）跨了 runtime 与 secret 两个域，
 // 那类规则统一放在 assemble 之后的 Config.Validate 里——它能看到拼装完成的整体。
 func (s *secretSection) Validate() error { return nil }

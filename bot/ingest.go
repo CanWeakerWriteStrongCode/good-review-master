@@ -38,7 +38,7 @@ func (b *Bot) Run(ctx context.Context) {
 // AcceptEvent 把一条事件放进队列后立即返回。
 //
 // 不在 HTTP 处理器里直接处理：一次 @ 会触发大模型调用，让实现端等上几十秒没有任何好处。
-// 工作空间的归属在这里判定：既没有目录、又不在 bot.workspace_accounts 名单里时
+// 工作空间的归属在这里判定：既没有目录、又不在 bot.allow_workspace_accounts 名单里时
 // 返回 accepted=false，入站层回 404，实现端把消息交回自己的 Agent。
 func (b *Bot) AcceptEvent(ctx context.Context, account string, event onebot.Event) (bool, error) {
 	ws, err := b.workspaces.ResolveOrCreate(event.Platform(), account)

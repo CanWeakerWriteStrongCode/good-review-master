@@ -16,12 +16,12 @@ type botSection struct {
 	// 填 "*" 表示允许所有群；空串表示不响应任何群。
 	AllowGroups string `yaml:"allow_groups"`
 
-	// WorkspaceAccounts 允许**自动开通**的工作空间 ID（platform_account），
+	// AllowWorkspaceAccounts 允许**自动开通**的工作空间 ID（platform_account），
 	// 填 "*" 表示全部；空列表表示一个都不自动开通（安全默认）。
 	//
 	// 只控制新建：已经有目录的工作空间不受名单限制，删名字不会让它停止工作。
 	// 必须匹配完整 ID 而不是单独的 account：不同平台可能出现相同的 account。
-	WorkspaceAccounts []string `yaml:"workspace_accounts"`
+	AllowWorkspaceAccounts []string `yaml:"allow_workspace_accounts"`
 
 	// ---- 主动插话（非 @ 时由大模型裁决要不要接话） ----
 	// 全局一份，所有工作空间共用；关闭时行为与改造前完全一致。
@@ -96,21 +96,21 @@ func (s *botSection) Validate() error {
 		}
 	}
 
-	if len(s.WorkspaceAccounts) == 0 {
-		logutil.Warn("bot.workspace_accounts 为空：不会自动开通新工作空间（档案里已有的仍会恢复）")
+	if len(s.AllowWorkspaceAccounts) == 0 {
+		logutil.Warn("bot.allow_workspace_accounts 为空：不会自动开通新工作空间（档案里已有的仍会恢复）")
 	}
-	seen := make(map[string]struct{}, len(s.WorkspaceAccounts))
-	for i, account := range s.WorkspaceAccounts {
+	seen := make(map[string]struct{}, len(s.AllowWorkspaceAccounts))
+	for i, account := range s.AllowWorkspaceAccounts {
 		account = strings.TrimSpace(account)
-		s.WorkspaceAccounts[i] = account
+		s.AllowWorkspaceAccounts[i] = account
 		if account == "" {
-			return fmt.Errorf("bot.workspace_accounts[%d] 不能为空", i)
+			return fmt.Errorf("bot.allow_workspace_accounts[%d] 不能为空", i)
 		}
 		if account != "*" && !workspaceIDPattern.MatchString(account) {
-			return fmt.Errorf("bot.workspace_accounts[%d]=%q 不是合法的工作空间 ID（字母/数字/_/-，最多 64 字符，例如 qq_1906xxxx）", i, account)
+			return fmt.Errorf("bot.allow_workspace_accounts[%d]=%q 不是合法的工作空间 ID（字母/数字/_/-，最多 64 字符，例如 qq_1906xxxx）", i, account)
 		}
 		if _, ok := seen[account]; ok {
-			return fmt.Errorf("bot.workspace_accounts 中重复：%s", account)
+			return fmt.Errorf("bot.allow_workspace_accounts 中重复：%s", account)
 		}
 		seen[account] = struct{}{}
 	}

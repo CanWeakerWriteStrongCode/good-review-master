@@ -12,7 +12,6 @@ import (
 // llmSection 大模型配置（config.yaml 的 llm 段）
 type llmSection struct {
 	Provider  string `yaml:"provider"`
-	APIKey    string `yaml:"api_key"` // 兼容旧位置；新配置放 secret.yaml
 	APIBase   string `yaml:"api_base"`
 	ModelName string `yaml:"model_name"`
 

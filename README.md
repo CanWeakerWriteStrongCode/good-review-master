@@ -38,6 +38,7 @@
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
 - **人格系统**：每条指令可配 5 维人格（身份/性格/关系/情绪/系统指令），回复有性格但有边界
 - **@机器人直接问答**：@机器人但没匹配到指令时，直接把消息发给大模型回答（不带人格）
+- **主动插话**：没被 @ 时先由大模型判定要不要接话（默认关闭；有冷却/连续发言上限，按「机器人+群」串行）
 - **富消息回复**：回复支持引用、@、图片、语音、视频、文件；QQ 官方机器人自动上传媒体并尽量走被动回复
 - **成本优化缓存命中**：无状态请求 + 前缀缓存，按 token 成本自动扩展/重置窗口，省钱省算力
 
@@ -118,13 +119,19 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 
 | 配置项                         | 说明                              | 示例值                        |
 |-----------------------------|---------------------------------|----------------------------|
-| `im.token`                  | 入站/出站共用的 OneBot token（建议放 `secret.yaml` 的 `im_token`） | `""` |
 | `im.api_base`               | 所有账号默认的出站地址（实现端动作服务） | `http://127.0.0.1:6199` |
 | `im.accounts`               | 可选：多实现端时按账号覆盖出站地址 `[{id, api_base}]`；`id` = `平台名_接收账号` | 一般不用配 |
 | `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群） | `123456,789012`            |
-| `bot.workspace_accounts`    | 允许自动开通的工作空间 ID（如 `qq_1906xxxx`；`*` 表示全部） | `["qq_1906xxxx"]` |
+| `bot.allow_workspace_accounts`    | 允许自动开通的工作空间 ID（如 `qq_1906xxxx`；`*` 表示全部） | `["qq_1906xxxx"]` |
+| `bot.proactive_enabled`     | 主动插话：没被 @ 时也先由大模型判定要不要接话 | `false`                    |
+| `bot.proactive_window_msgs` | 判定/生成时看最近多少条消息              | `15`                       |
+| `bot.proactive_cooldown_sec`| 主动发言后该群冷却秒数（期间不再判定）        | `90`                       |
+| `bot.proactive_max_streak`  | 同一话题最多连续主动发言次数              | `5`                        |
+| `bot.proactive_judge_interval_sec` | 两次判定的最小间隔（秒）            | `20`                       |
+| `bot.proactive_judge_timeout_sec`  | 单次判定超时（秒，超时=不回复）          | `20`                       |
+| `bot.proactive_judge_images` | 每次判定最多附几张图（0=图片消息不判定）       | `1`                        |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |
-| `llm.api_key`               | 大模型 API Key（**建议移到 `secret.yaml`**） | `sk-xxx`                   |
+| `llm.api_key`               | 大模型 API Key（写在 `secret.yaml`）    | `sk-xxx`                   |
 | `llm.api_base`              | 大模型接口地址                         | `https://api.deepseek.com` |
 | `llm.model_name`            | 模型名称                            | `deepseek-v4-flash`        |
 | `llm.temperature`           | 锐评风格：1.0=发散 0.5=集中              | `1.2`                      |
@@ -138,12 +145,10 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | `runtime.max_cache_msg`     | 环形缓冲条数上限（建议 ≈31×llm_send_count） | `6200`                     |
 | `runtime.llm_timeout_sec`   | 大模型超时（秒）                        | `20`                       |
 | `runtime.max_msg_rune`      | 单条消息最大字符数                       | `500`                      |
-| `runtime.poll_interval_sec` | 旧轮询间隔（sidecar 模式已不使用，保留兼容）      | `3`                        |
 | `runtime.im_listen_addr`    | AstrBot 推送事件的监听地址               | `127.0.0.1:18090`           |
-| `runtime.backfill_on_start` | 启动时回填历史；QQ 官方机器人无历史接口，保持 `false` | `false`                    |
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）              | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                     | `admin`                    |
-| `runtime.web_password`      | Web 面板登录密码（必填；**建议移到 `secret.yaml`**） | `"123456"`                 |
+| `runtime.web_password`      | Web 面板登录密码（必填；写在 `secret.yaml`） | `"123456"`                 |
 
 ### Web 管理面板
 
@@ -159,10 +164,9 @@ Gin + JWT + 内嵌 Vue SPA，提供群消息监控页面。
 
 `web_password` 必填，登录页面始终需要账号密码。`web_port` 设为 0 或负数可以完全禁用 Web 面板。
 
-> **密钥文件**：上表中带「建议移到 secret.yaml」的字段，以及 `runtime.mcp_builtin_token`、`mcp.servers[].token`，
-> 都可以改写进同目录的 `secret.yaml`（首次运行自动创建，权限 0600、已在 `.gitignore` 中）。
-> 优先级为 **环境变量 > secret.yaml > config.yaml**；仍写在 `config.yaml` 里的会正常工作并打一条迁移告警，
-> 程序不会自动改写你的文件。可用环境变量：`GOOD_REVIEW_LLM_API_KEY`、`GOOD_REVIEW_WEB_PASSWORD`、`GOOD_REVIEW_ASTRBOT_TOKEN`。
+> **密钥文件**：`llm_api_key`、`web_password`、`jwt_secret`、`im_token`、`mcp_builtin_token`、`mcp_server_tokens`
+> 全部写在同目录的 `secret.yaml`（首次运行自动创建，权限 0600、已在 `.gitignore` 中）。
+> 优先级为 **环境变量 > secret.yaml**。可用环境变量：`GOOD_REVIEW_LLM_API_KEY`、`GOOD_REVIEW_WEB_PASSWORD`、`GOOD_REVIEW_IM_TOKEN`。
 
 ### 指令提示词配置
 

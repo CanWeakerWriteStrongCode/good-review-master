@@ -82,7 +82,7 @@ QQ 官方机器人的平台条目（WebUI 里填，或加到 `data/config/cmd_co
 
 ```yaml
 im:
-  token: "换成一个随机长串"          # 也可以写进 secret.yaml 的 im_token
+  # token 不写在这里：放到同目录 secret.yaml 的 im_token（换成一个随机长串）
   # 插件动作服务地址；所有账号共用，账号 ID 由入站路径自动得到
   api_base: "http://127.0.0.1:6199"
 
@@ -90,7 +90,7 @@ bot:
   # QQ 官方机器人填 group_openid，不是 QQ 群号；填 "*" 表示所有群都响应
   allow_groups: "<group_openid>"
   # 允许自动开通的工作空间 ID；档案里已有的不受名单影响
-  workspace_accounts: ["qq_<AppID>"]
+  allow_workspace_accounts: ["qq_<AppID>"]
 
 runtime:
   im_listen_addr: "127.0.0.1:18090"
@@ -227,8 +227,8 @@ Go 返回 204 表示已接管；日志里会出现 `已自动开通工作空间`
 
 | 现象 | 原因 |
 |---|---|
-| Go 返回 404 | 账号没在 `bot.workspace_accounts` 里，且目录不存在（Go 不接管，交给 AstrBot） |
-| Go 返回 401 | 两边 token 不一致（`im.token` / `im_token`） |
+| Go 返回 404 | 账号没在 `bot.allow_workspace_accounts` 里，且目录不存在（Go 不接管，交给 AstrBot） |
+| Go 返回 401 | 两边 token 不一致（插件 `token` / `secret.yaml` 的 `im_token`） |
 | Go 返回 503 | 事件队列满，检查是否卡在大模型调用 |
 | Go 返回 400 | 路径 account 非法，或 `self.platform` 缺失 / 不是合法平台名 |
 | 插件日志 `Go 未接管事件` | 按上一条确认；4xx 是预期的 AstrBot 兜底路径 |

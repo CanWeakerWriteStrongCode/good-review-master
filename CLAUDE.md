@@ -252,11 +252,11 @@ The config layer follows the *shape* of K8s' API machinery (external/internal sp
 
 Why the internal shape is frozen: `mcpclient`, `router` and `web/server` tests construct `config.Config{...}` / `config.MCPConf{...}` literals directly. Consumers still write `cfg.BotNickname`.
 
-**Ordering is load-bearing.** `SetDefaults` must run *before* `Validate`, because a field that is legitimately omitted must be defaulted and then validated — not rejected. Note that several numeric checks are only meaningful post-default, and they are not decoration: `poll_interval_sec` is a legacy field kept for config compatibility (the sidecar push model no longer uses it), `llm_timeout_sec` feeds `context.WithTimeout` (= 0 means every LLM call fails instantly), `max_cache_msg` feeds `make([]Message, n)` and is then indexed.
+**Ordering is load-bearing.** `SetDefaults` must run *before* `Validate`, because a field that is legitimately omitted must be defaulted and then validated — not rejected. Note that several numeric checks are only meaningful post-default, and they are not decoration: `llm_timeout_sec` feeds `context.WithTimeout` (= 0 means every LLM call fails instantly), `max_cache_msg` feeds `make([]Message, n)` and is then indexed.
 
 **`Load` must stay side-effect free and idempotent.** Scheduled work will call it repeatedly (config reload + resync), so `InitDefaultFiles` (which creates files) must never be called from it. `config/loader_test.go` asserts both properties.
 
-**Secret domain** is deliberately outside `registry()`: its sources are `secret.yaml` + environment variables, not `config.yaml`, and `secret.yaml`'s whole content *is* the domain (no top-level key to look up). Precedence is **env > secret.yaml > config.yaml legacy location**; env is folded into the domain during decode, so `convert.go` only has to resolve two layers. Legacy values still work and emit a migration WARN — the program never rewrites the user's files.
+**Secret domain** is deliberately outside `registry()`: its sources are `secret.yaml` + environment variables, not `config.yaml`, and `secret.yaml`'s whole content *is* the domain (no top-level key to look up). Precedence is **env > secret.yaml**; env is folded into the domain during decode, so `convert.go` reads a single resolved value per secret. There is no fallback to `config.yaml`.
 
 Per-domain `Validate` handles single-domain rules; cross-domain rules (e.g. `web_port > 0` requires credentials, which may live in `secret.yaml`) live in `Config.Validate`, which runs at the end of `Load`. Validation errors are written for whoever edits the YAML: name the field, show the current value, say what to write instead. Never let a struct-tag validator produce messages like `Field validation for 'X' failed on the 'gt' tag`.
 
@@ -289,7 +289,7 @@ cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X througho
 | Changed | Takes effect |
 | --- | --- |
 | `prompt_system.yaml` / `prompt_custom.yaml` | within ~2s (`PromptConfig.Reload()` **and** `Router.Rebuild()`) |
-| `allow_groups`, `workspace_accounts` (new provisioning), thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
+| `allow_groups`, `allow_workspace_accounts` (new provisioning), thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
 | `im.api_base`, `im.accounts`, `web_port`, `im_listen_addr`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
 
 The limiter and breaker are **stateful** (a token bucket, a consecutive-failure counter), so
@@ -391,7 +391,8 @@ im HTTP ingress (im/server.go) → AcceptEvent(account, event)
                                     → render segments to text + truncate to MaxMsgRune
                                     → add to ring cache (zero-copy) + async write to state.db
                                     → @bot detection (mention.user_id == self.user_id, nickname fallback)
-                                    → router.RouteMessage → handler
+                                    → @bot ? router.RouteMessage → handler
+                                            : router.TryProactive (judge → optional generation)
 ```
 
 There is no history backfill: OneBot 12 has no standard group-history action. At startup each
@@ -449,13 +450,44 @@ sequence of the quoted message when it is in the window, otherwise omitted. The 
 id stays in cache/SQLite/anchors for passive replies and persistence.
 Platform name comes from `self.platform`; group name comes from `get_group_info`.
 
+## Proactive replies (`router/proactive.go`)
+
+When `bot.proactive_enabled` is true, messages that do not @ the bot go through a two-phase
+pipeline instead of being ignored:
+
+1. **Gates** (cheap, no LLM): cooldown since this bot's last proactive reply, max consecutive
+   streak, minimum interval between judge runs, and judge timeout. @-triggered replies never
+   touch these counters; a direct reply resets the streak.
+2. **Judge**: a lightweight `ChatJSON` call with a *fixed* system prompt (prefix-cache friendly;
+   all dynamic data goes in the user message) asks whether the bot should join. Output is a strict
+   `{reply: boolean, reason: string}` schema, downgrading `json_schema → json_object → none` per
+   adapter capability. Any error or unparsable answer means **no reply** (fail closed).
+3. **Generation**: only on `reply=true` — persona prompt + recent window via `chatReplyNow`, and
+   the reply is sent as a quote of the triggering message with no @mention.
+
+Images are fetched once (via `mcpserver.DefaultFetcher`, `image_local_dirs` whitelist) and passed
+as multimodal content to *both* the judge and the generation call, so the answer can reference
+what the judge saw. News screenshots may be answered; pure stickers are expected to be declined by
+the judge prompt.
+
+**Serialization is per `(workspace, group)`** — one worker with a single pending slot (latest wins),
+so two bots in the same group (e.g. customer service vs. chat companion) never block each other,
+while one bot never has two judge/generation runs in flight for the same group. Only the non-@ path
+is serialized.
+
 ## LLM client (`llm/`)
 
 ```go
 type Client interface {
     Review(ctx context.Context, chatLog, systemPrompt string) (string, error)
+    ChatJSON(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error)
 }
 ```
+
+`ChatJSON` is used by the proactive judge. It tries `response_format=json_schema` (strict), then
+`json_object`, then no structured-output hint, caching the accepted mode per adapter so the fallback
+is only paid once. Only 400/404/422/501 are treated as "format unsupported"; other statuses surface
+as errors.
 
 `OpenAIAdapter` implements `Client` using the `go-openai` SDK. Benefits over previous custom HTTP: shared `http.Client` (connection pooling), typed request/response structs (no `map[string]any`), proper error propagation (no discarded marshal errors), HTTP status code checking, retry support built into the SDK. The `Client` interface is preserved — callers unchanged.
 

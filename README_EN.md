@@ -19,6 +19,7 @@
 - **Single binary deployment**: Compile to one executable, drop it on a server, and run
 - **Persona system**: each command can carry a 5-dimension persona (identity/personality/relationship/emotion/system prompt) — replies have character but stay bounded
 - **Direct Q&A on unknown commands**: when @mentioned but no keyword matches, the message is sent straight to the LLM for a plain reply (no persona)
+- **Proactive replies**: when not mentioned, a lightweight LLM judge decides whether to join (off by default; cooldown/streak limits, serialized per bot+group)
 - **Rich replies**: quote, @mention, image, voice, video and file segments; the QQ official bridge uploads media and prefers passive replies
 - **Cost-optimized cache hits**: stateless requests + prefix caching, with an automatic extend/reset window decision based on token cost
 
@@ -117,13 +118,19 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `im.token` | Shared OneBot token (prefer `secret.yaml` `im_token`) | `""` |
 | `im.api_base` | Default outbound endpoint shared by all accounts | `http://127.0.0.1:6199` |
 | `im.accounts` | Optional per-account overrides `[{id, api_base}]`; `id` = `platform_account` | usually unset |
 | `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups) | `123456,789012` |
-| `bot.workspace_accounts` | Workspace IDs allowed to auto-provision (`qq_1906xxxx`; `*` for all) | `["qq_1906xxxx"]` |
+| `bot.allow_workspace_accounts` | Workspace IDs allowed to auto-provision (`qq_1906xxxx`; `*` for all) | `["qq_1906xxxx"]` |
+| `bot.proactive_enabled` | Proactive replies: let the LLM decide whether to join when not mentioned | `false` |
+| `bot.proactive_window_msgs` | Recent messages the judge/generation sees | `15` |
+| `bot.proactive_cooldown_sec` | Per-group cooldown after a proactive reply | `90` |
+| `bot.proactive_max_streak` | Max consecutive proactive replies on one topic | `5` |
+| `bot.proactive_judge_interval_sec` | Minimum interval between judge runs (seconds) | `20` |
+| `bot.proactive_judge_timeout_sec` | Judge timeout (seconds; timeout = no reply) | `20` |
+| `bot.proactive_judge_images` | Max images attached per judge (0 = image messages skipped) | `1` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |
-| `llm.api_key` | LLM API key (**move to `secret.yaml`**) | `sk-xxx` |
+| `llm.api_key` | LLM API key (lives in `secret.yaml`) | `sk-xxx` |
 | `llm.api_base` | LLM API base URL | `https://api.deepseek.com` |
 | `llm.model_name` | Model name | `deepseek-v4-flash` |
 | `llm.temperature` | Sampling temperature (1.0=creative, 0.5=focused) | `1.2` |
@@ -137,12 +144,10 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `runtime.max_cache_msg` | Max ring-buffer messages (≈31×llm_send_count) | `6200` |
 | `runtime.llm_timeout_sec` | LLM timeout (seconds) | `20` |
 | `runtime.max_msg_rune` | Max characters per message | `500` |
-| `runtime.poll_interval_sec` | Legacy poll interval (unused in sidecar mode) | `3` |
 | `runtime.im_listen_addr` | Ingress address for AstrBot-pushed events | `127.0.0.1:18090` |
-| `runtime.backfill_on_start` | Backfill recent history at startup; keep `false` for the official QQ bot (no history API) | `false` |
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
-| `runtime.web_password` | Web panel login password (required; **move to `secret.yaml`**) | `"123456"` |
+| `runtime.web_password` | Web panel login password (required; lives in `secret.yaml`) | `"123456"` |
 
 ### Web Management Panel
 
@@ -158,11 +163,10 @@ Gin + JWT + embedded Vue SPA for group message monitoring.
 
 `web_username` / `web_password` are required whenever the web panel is enabled — there is no password-less mode (the bot exits at startup if they're missing). Set `web_port` to 0 or negative to disable the web panel entirely.
 
-> **Secrets file**: the fields marked "move to `secret.yaml`" above, plus `runtime.mcp_builtin_token` and
-> `mcp.servers[].token`, may live in a sibling `secret.yaml` (auto-created on first run, mode 0600, gitignored).
-> Precedence is **env > secret.yaml > config.yaml**; values left in `config.yaml` keep working and emit a
-> migration warning — the program never rewrites your files. Available env vars:
-> `GOOD_REVIEW_LLM_API_KEY`, `GOOD_REVIEW_WEB_PASSWORD`, `GOOD_REVIEW_ASTRBOT_TOKEN`.
+> **Secrets file**: `llm_api_key`, `web_password`, `jwt_secret`, `im_token`, `mcp_builtin_token` and
+> `mcp_server_tokens` all live in a sibling `secret.yaml` (auto-created on first run, mode 0600, gitignored).
+> Precedence is **env > secret.yaml**. Available env vars:
+> `GOOD_REVIEW_LLM_API_KEY`, `GOOD_REVIEW_WEB_PASSWORD`, `GOOD_REVIEW_IM_TOKEN`.
 
 ### prompt_system.yaml
 

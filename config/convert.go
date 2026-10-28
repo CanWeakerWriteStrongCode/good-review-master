@@ -14,16 +14,16 @@ import (
 // 转换只在这一个文件里发生。改造前这件事散在 LoadConfig 结尾那个 40 字段的返回字面量里，
 // 加上一个逐字段镜像的 configFile，改一个字段要在三个地方同时改对。
 //
-// 密钥的优先级也在这里结算：环境变量 > secret.yaml > config.yaml 旧位置。
-// （环境变量在 step 2 的 applyEnv 里就已经并进 secret 域，所以这里只需比两层。）
+// 密钥只来自 secret.yaml 与环境变量；环境变量在 step 2 的 applyEnv 里
+// 已经并进 secret 域，所以这里直接读即可。
 func assemble(sections *sections) *Config {
 	secret := sections.Secret
 
-	apiKey := resolveSecret("llm.api_key", secret.LLMAPIKey, sections.LLM.APIKey)
-	webPassword := resolveSecret("runtime.web_password", secret.WebPassword, sections.Runtime.WebPassword)
-	imToken := resolveSecret("im.token", secret.IMToken, sections.IM.Token)
-	builtinToken := resolveSecret("runtime.mcp_builtin_token", secret.McpBuiltinToken, sections.Runtime.McpBuiltinToken)
-	jwtSecret := resolveJWTSecret(secret.JWTSecret, sections.Runtime.JWTSecret, webPassword)
+	apiKey := strings.TrimSpace(secret.LLMAPIKey)
+	webPassword := strings.TrimSpace(secret.WebPassword)
+	imToken := strings.TrimSpace(secret.IMToken)
+	builtinToken := strings.TrimSpace(secret.McpBuiltinToken)
+	jwtSecret := resolveJWTSecret(strings.TrimSpace(secret.JWTSecret), webPassword)
 
 	servers := resolveMCPServers(sections.MCP.AcceptedServers(), secret)
 
@@ -33,7 +33,7 @@ func assemble(sections *sections) *Config {
 		IMAccounts:        convertIMAccounts(sections.IM.Accounts),
 		BotNickname:       "",
 		AllowGroups:       parseCommaList(sections.Bot.AllowGroups),
-		WorkspaceAccounts: convertWorkspaceAccounts(sections.Bot.WorkspaceAccounts),
+		WorkspaceAccounts: convertWorkspaceAccounts(sections.Bot.AllowWorkspaceAccounts),
 
 		ProactiveEnabled:      sections.Bot.ProactiveEnabled,
 		ProactiveWindow:       sections.Bot.ProactiveWindowMsgs,
@@ -46,9 +46,7 @@ func assemble(sections *sections) *Config {
 		LLMSendCount:          sections.Runtime.LLMSendCount,
 		LLMTimeout:            time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
 		MaxMsgRune:            sections.Runtime.MaxMsgRune,
-		PollInterval:          time.Duration(sections.Runtime.PollIntervalSec) * time.Second,
 		IMListenAddr:          sections.Runtime.IMListenAddr,
-		BackfillOnStart:       sections.Runtime.BackfillOnStart == nil || *sections.Runtime.BackfillOnStart,
 		WebPort:               sections.Runtime.WebPort,
 		WebUsername:           sections.Runtime.WebUsername,
 		WebPassword:           webPassword,
@@ -113,28 +111,13 @@ func convertWorkspaceAccounts(entries []string) []string {
 	return out
 }
 
-// resolveSecret 结算一个密钥的值：secret.yaml 优先，缺失则回退 config.yaml 的旧位置。
-//
-// 回退时打一条迁移提示，但**不自动改写用户文件**——配置归用户所有，
-// 程序替他们搬动密钥是一件不该悄悄发生的事（何况还可能把密钥写进版本库）。
-func resolveSecret(field, fromSecretFile, legacyValue string) string {
-	if fromSecretFile != "" {
-		return fromSecretFile
-	}
-	if legacyValue != "" {
-		logutil.Warn("密钥仍写在 config.yaml 里，建议迁移到 secret.yaml（该文件应 0600 且不进版本库）",
-			"字段", field, "位置", "config.yaml")
-	}
-	return legacyValue
-}
-
 // resolveJWTSecret 结算 JWT 签名密钥，比其他密钥多一层"回退到 web 密码"的兜底。
 //
 // 回退不是等价替换：密码一改，所有已签发的 token 立刻失效，而且两者共用同一份秘密。
 // 所以回退时必须告警——这是改造前就有的语义，保留。
-func resolveJWTSecret(fromSecretFile, legacyValue, webPassword string) string {
-	if value := resolveSecret("runtime.jwt_secret", fromSecretFile, legacyValue); value != "" {
-		return value
+func resolveJWTSecret(fromSecretFile, webPassword string) string {
+	if fromSecretFile != "" {
+		return fromSecretFile
 	}
 	if webPassword != "" {
 		logutil.Warn("未配置 jwt_secret，暂以 web_password 作为 JWT 签名密钥。" +
@@ -143,17 +126,11 @@ func resolveJWTSecret(fromSecretFile, legacyValue, webPassword string) string {
 	return webPassword
 }
 
-// resolveMCPServers 给每个 MCP 服务补上 token：secret.yaml 的 mcp_server_tokens 优先，
-// 回退到服务条目自己写的 token（旧位置）。
+// resolveMCPServers 给每个 MCP 服务补上 token：只来自 secret.yaml 的 mcp_server_tokens。
 func resolveMCPServers(servers []MCPServerConf, secret *secretSection) []MCPServerConf {
 	resolved := make([]MCPServerConf, 0, len(servers))
 	for _, server := range servers {
-		if token := secret.mcpToken(server.Name); token != "" {
-			server.Token = token
-		} else if server.Token != "" {
-			logutil.Warn("MCP 服务的 token 仍写在 config.yaml 里，建议迁移到 secret.yaml",
-				"服务", server.Name, "字段", "mcp.servers[].token")
-		}
+		server.Token = secret.mcpToken(server.Name)
 		resolved = append(resolved, server)
 	}
 	return resolved

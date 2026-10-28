@@ -81,8 +81,7 @@ Router 并挂上自己的 `Scope`。原因：
 
 ```yaml
 im:
-  token: ""
-  api_base: "http://127.0.0.1:6199"    # 所有账号默认的出站地址
+  api_base: "http://127.0.0.1:6199"    # 所有账号默认的出站地址；token 在 secret.yaml 的 im_token
   # 可选：多套实现端时按账号覆盖；不写 api_base 表示沿用全局
   # accounts:
   #   - id: "qq_1904xxxx"
@@ -91,7 +90,7 @@ im:
 bot:
   # 允许自动开通的工作空间 ID；"*" 表示全部。
   # 空列表 = 不允许自动开通（安全默认，启动时打一条提示）。
-  workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
 ```
 
 - 精确匹配工作空间 ID，不做前缀/昵称/账号部分匹配。
@@ -238,7 +237,7 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 |---|---|---|---|
 | D1 | 工作空间键 | `{self.platform}_{路径 account}`；不合法拒绝 | 只用 account |
 | D2 | 创建时机 | 第一条事件到达时同步创建（仅本地 IO），昵称异步 | 启动预创建 |
-| D3 | 允许名单 | `bot.workspace_accounts` 存完整 ID，空 = 不创建，`*` = 全部 | 只存 account |
+| D3 | 允许名单 | `bot.allow_workspace_accounts` 存完整 ID，空 = 不创建，`*` = 全部 | 只存 account |
 | D4 | 已有工作空间 | 启动从 `state.db` 的 `meta` 全部恢复，名单只管新建 | 纯懒加载 |
 | D5 | 展示名 | 先用 ID；异步用 `get_self_info.user_name` 补，写入 `state.db` 的 `meta` | 只放内存 |
 | D6 | 群白名单 | v1 全部继承全局；需要每工作空间覆盖再加状态文件 | 现在做覆盖 |
@@ -250,8 +249,8 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 
 - `config`：删除 `Workspaces []WorkspaceConf`、`EffectiveWorkspaces`、`WorkspaceByID`、
   `allow_self_ids`、`astrbot.http_api`、`astrbot.access_token`；新增
-  `im.token`、`im.api_base`、可选的 `im.accounts[{id, api_base}]`、
-  `WorkspaceAccounts []string`（完整 ID）。
+  `im.api_base`、可选的 `im.accounts[{id, api_base}]`、
+  `AllowWorkspaceAccounts []string`（完整 ID）；token 移到 `secret.yaml` 的 `im_token`。
 - `workspace.Manager`：新增 `byID` 索引、`ResolveOrCreate(platform, account)`、互斥锁、
   启动扫描；删除 `byPlatform` / `bySelfID` / `byNickname` / `single`。
 - `onebot.Event`：换成 OB12 结构（`Self{Platform,UserID}`、字符串 `MessageID`、
@@ -274,16 +273,16 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 
 ## 10. 迁移
 
-1. 从 `config.yaml` 删除 `bot.workspaces`；在 `bot.workspace_accounts` 里填
+1. 从 `config.yaml` 删除 `bot.workspaces`；在 `bot.allow_workspace_accounts` 里填
    `qq_<A 的 AppID>`、`qq_<B 的 AppID>`。
 2. 删除旧目录 `workspaces/haoping`、`workspaces/bushi`：工作空间不再使用目录或
    `prompt_system.yaml` / `prompt_custom.yaml` 私有副本；提示词统一用根目录那份。
    删除前先备份目录里的自定义指令，需要保留的内容手工合并进根 `prompt_custom.yaml`。
-3. `astrbot.http_api` 迁到 `im.api_base`（旧值可自动接住）；
-   `astrbot.access_token` 迁到 `im.token`。
+3. `astrbot.http_api` 迁到 `im.api_base`；
+   `astrbot.access_token` 迁到 `secret.yaml` 的 `im_token`（不再兼容旧键/旧位置）。
 4. 插件 `go_event_url` 保持 `http://127.0.0.1:18090/im/event`（账号自动拼到路径），
    同时升级到 1.7.3 的 OB12 事件格式；`account` 通常留空。
-5. `bot.allow_self_ids` 删除；接管范围改由 `workspace_accounts` 判断。
+5. `bot.allow_self_ids` 删除；接管范围改由 `allow_workspace_accounts` 判断。
 6. `platform_id` / `mentioned` / `display_message` 在 Go 与插件两侧同步删除；
    两侧必须一起升级，否则旧插件发的事件无法被新 Go 解析。
 7. `state.db` 不需要迁移脚本：首次启动在工作目录自动建库建表；旧的内存数据本来就不落盘，

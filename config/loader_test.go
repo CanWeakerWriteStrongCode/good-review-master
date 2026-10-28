@@ -13,7 +13,7 @@ import (
 
 // TestMain 把 cwd 切到临时目录：logutil.SetupLogger 会在 apppath.ExeDir()（优先 cwd）
 // 下建 log/，而 go test 的 cwd 就是包目录——不隔离就会在源码树里留下 config/log/。
-// 同时必须真的初始化 logger：本包的若干路径（密钥迁移提示等）会打 WARN，
+// 同时必须真的初始化 logger：本包的若干路径（JWT 回退提示等）会打 WARN，
 // 而 logutil 未初始化时是 nil 指针，一调就 panic。
 func TestMain(m *testing.M) {
 	original, err := os.Getwd()
@@ -37,29 +37,32 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// baseConfig 一份能通过全部校验的最小配置。
+// baseConfig 一份能通过全部校验的最小配置（不含任何密钥）。
 const baseConfig = `
 im:
-  token: "im-token"
   api_base: "http://127.0.0.1:6199"
 bot:
   allow_groups: "10001,10002"
-  workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
 runtime:
   llm_send_count: 3
   llm_timeout_sec: 20
   max_msg_rune: 500
-  poll_interval_sec: 3
   web_port: 9090
   web_username: "admin"
-  web_password: "123456"
 llm:
   provider: "openai"
-  api_key: "sk-legacy"
   api_base: "https://api.example.com"
   model_name: "test-model"
   temperature: 1.0
   top_p: 0.95
+`
+
+// baseSecret 测试共用的密钥文件：web 面板必须有密码，其余用例大多不关心具体值。
+const baseSecret = `
+llm_api_key: "sk-test"
+web_password: "123456"
+im_token: "im-token"
 `
 
 func writeFile(t *testing.T, name, content string) string {
@@ -73,9 +76,12 @@ func writeFile(t *testing.T, name, content string) string {
 
 func loadWith(t *testing.T, configYAML, secretYAML string) (*Config, error) {
 	t.Helper()
-	sources := Sources{Config: writeFile(t, "config.yaml", configYAML)}
-	if secretYAML != "" {
-		sources.Secret = writeFile(t, "secret.yaml", secretYAML)
+	if secretYAML == "" {
+		secretYAML = baseSecret
+	}
+	sources := Sources{
+		Config: writeFile(t, "config.yaml", configYAML),
+		Secret: writeFile(t, "secret.yaml", secretYAML),
 	}
 	return Load(sources)
 }
@@ -100,9 +106,6 @@ func TestLoad基本配置(t *testing.T) {
 	if cfg.IMAPIBase != "http://127.0.0.1:6199" {
 		t.Errorf("IMAPIBase = %q", cfg.IMAPIBase)
 	}
-	if cfg.PollInterval.Seconds() != 3 {
-		t.Errorf("PollInterval = %v", cfg.PollInterval)
-	}
 	if cfg.LLMConfig.ModelName != "test-model" {
 		t.Errorf("ModelName = %q", cfg.LLMConfig.ModelName)
 	}
@@ -117,7 +120,6 @@ bot:
 runtime:
   llm_timeout_sec: 20
   max_msg_rune: 500
-  poll_interval_sec: 3
 llm:
   model_name: "m"
 `, "")
@@ -133,57 +135,23 @@ llm:
 	}
 }
 
-func TestSecret优先于config旧位置(t *testing.T) {
+func Test密钥来自secret文件(t *testing.T) {
 	cfg, err := loadWith(t, baseConfig, `
 llm_api_key: "sk-from-secret-file"
 web_password: "pw-from-secret-file"
-astrbot_access_token: "ast-from-secret-file"
+im_token: "im-from-secret-file"
 `)
 	if err != nil {
 		t.Fatalf("加载失败：%v", err)
 	}
 	if cfg.LLMConfig.APIKey != "sk-from-secret-file" {
-		t.Errorf("secret.yaml 应优先，实际 APIKey = %q", cfg.LLMConfig.APIKey)
+		t.Errorf("APIKey = %q", cfg.LLMConfig.APIKey)
 	}
 	if cfg.WebPassword != "pw-from-secret-file" {
-		t.Errorf("secret.yaml 应优先，实际 WebPassword = %q", cfg.WebPassword)
+		t.Errorf("WebPassword = %q", cfg.WebPassword)
 	}
-	if cfg.IMToken != "ast-from-secret-file" {
-		t.Errorf("旧键应迁移为 IMToken，实际 %q", cfg.IMToken)
-	}
-}
-
-func Test旧napcat键仍可迁移(t *testing.T) {
-	cfg, err := loadWith(t, baseConfig, "napcat_access_token: \"legacy-token\"\n")
-	if err != nil {
-		t.Fatalf("旧 secret 键应能加载：%v", err)
-	}
-	if cfg.IMToken != "legacy-token" {
-		t.Errorf("旧键应迁移为 IMToken，实际 %q", cfg.IMToken)
-	}
-}
-
-func Test旧astrbot段仍能接住token和地址(t *testing.T) {
-	legacyConfig := `
-astrbot:
-  http_api: "http://127.0.0.1:6199"
-  access_token: "legacy-ast-token"
-` + strings.Replace(baseConfig, `im:
-  token: "im-token"
-  api_base: "http://127.0.0.1:6199"
-`, "", 1)
-	cfg, err := loadWith(t, legacyConfig, "")
-	if err != nil {
-		t.Fatalf("旧 config 段应能加载：%v", err)
-	}
-	if cfg.IMToken != "legacy-ast-token" {
-		t.Errorf("旧段的 access_token 应迁移为 IMToken，实际 %q", cfg.IMToken)
-	}
-	if cfg.IMAPIBase != "http://127.0.0.1:6199" {
-		t.Errorf("旧段的 http_api 应迁移为 IMAPIBase，实际 %q", cfg.IMAPIBase)
-	}
-	if len(cfg.IMAccounts) != 0 {
-		t.Errorf("旧段没有账号维度，不应凭空生成连接：%+v", cfg.IMAccounts)
+	if cfg.IMToken != "im-from-secret-file" {
+		t.Errorf("IMToken = %q", cfg.IMToken)
 	}
 }
 
@@ -209,21 +177,7 @@ func TestIM账号可覆盖全局地址(t *testing.T) {
 	}
 }
 
-// TestSecret缺失时回退旧位置 保证存量配置（密钥还写在 config.yaml 里）继续能跑。
-func TestSecret缺失时回退旧位置(t *testing.T) {
-	cfg, err := loadWith(t, baseConfig, "")
-	if err != nil {
-		t.Fatalf("没有 secret.yaml 也应能加载：%v", err)
-	}
-	if cfg.LLMConfig.APIKey != "sk-legacy" {
-		t.Errorf("应回退到 config.yaml 的旧位置，实际 APIKey = %q", cfg.LLMConfig.APIKey)
-	}
-	if cfg.WebPassword != "123456" {
-		t.Errorf("应回退到 config.yaml 的旧位置，实际 WebPassword = %q", cfg.WebPassword)
-	}
-}
-
-func Test环境变量优先于两者(t *testing.T) {
+func Test环境变量优先于secret(t *testing.T) {
 	t.Setenv(envLLMAPIKey, "sk-from-env")
 	t.Setenv(envWebPassword, "pw-from-env")
 
@@ -251,7 +205,7 @@ func TestJWT回退到web密码(t *testing.T) {
 		t.Errorf("未配 jwt_secret 时应回退 web 密码，实际 JWTSecret = %q", cfg.JWTSecret)
 	}
 
-	cfg, err = loadWith(t, baseConfig, "jwt_secret: \"dedicated\"\n")
+	cfg, err = loadWith(t, baseConfig, "web_password: \"123456\"\njwt_secret: \"dedicated\"\n")
 	if err != nil {
 		t.Fatalf("加载失败：%v", err)
 	}
@@ -260,7 +214,7 @@ func TestJWT回退到web密码(t *testing.T) {
 	}
 }
 
-func TestMCPToken优先级(t *testing.T) {
+func TestMCPToken来自secret(t *testing.T) {
 	configYAML := baseConfig + `
 mcp:
   enabled: true
@@ -268,9 +222,8 @@ mcp:
     - name: "svc"
       transport: "http"
       url: "https://example.com/mcp"
-      token: "token-in-config"
 `
-	cfg, err := loadWith(t, configYAML, "mcp_server_tokens:\n  svc: \"token-in-secret\"\n")
+	cfg, err := loadWith(t, configYAML, "web_password: \"123456\"\nmcp_server_tokens:\n  svc: \"token-in-secret\"\n")
 	if err != nil {
 		t.Fatalf("加载失败：%v", err)
 	}
@@ -278,7 +231,7 @@ mcp:
 		t.Fatalf("应有 1 个服务，实际 %d", len(cfg.MCPConfig.Servers))
 	}
 	if got := cfg.MCPConfig.Servers[0].Token; got != "token-in-secret" {
-		t.Errorf("secret.yaml 的 mcp_server_tokens 应优先，实际 %q", got)
+		t.Errorf("mcp_server_tokens 应生效，实际 %q", got)
 	}
 }
 
@@ -341,14 +294,9 @@ func TestValidate报错要指明字段与原因(t *testing.T) {
 	cases := []struct {
 		name        string
 		configYAML  string
+		secretYAML  string
 		wantContain string
 	}{
-		{
-			name: "poll_interval_sec 为 0 会 panic NewTicker",
-			configYAML: strings.Replace(baseConfig,
-				"  poll_interval_sec: 3", "  poll_interval_sec: 0", 1),
-			wantContain: "poll_interval_sec",
-		},
 		{
 			name: "llm_timeout_sec 为 0 会让调用立刻超时",
 			configYAML: strings.Replace(baseConfig,
@@ -374,16 +322,16 @@ func TestValidate报错要指明字段与原因(t *testing.T) {
 			wantContain: "api_base",
 		},
 		{
-			name: "开了 web_port 却没有密码",
-			configYAML: strings.Replace(baseConfig,
-				`  web_password: "123456"`, "", 1),
+			name:        "开了 web_port 却没有密码",
+			configYAML:  baseConfig,
+			secretYAML:  `im_token: "x"`,
 			wantContain: "web",
 		},
 	}
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := loadWith(t, testCase.configYAML, "")
+			_, err := loadWith(t, testCase.configYAML, testCase.secretYAML)
 			if err == nil {
 				t.Fatal("应报错但通过了")
 			}
@@ -417,12 +365,14 @@ func TestValidate缺少config文件(t *testing.T) {
 // 两次加载必须得到完全相同的配置，否则每次重载都会漂移一点。
 func TestLoad幂等(t *testing.T) {
 	path := writeFile(t, "config.yaml", baseConfig)
-	first, err := Load(Sources{Config: path})
+	secretPath := writeFile(t, "secret.yaml", baseSecret)
+	sources := Sources{Config: path, Secret: secretPath}
+	first, err := Load(sources)
 	if err != nil {
 		t.Fatalf("首次加载失败：%v", err)
 	}
 	for i := 0; i < 5; i++ {
-		again, err := Load(Sources{Config: path})
+		again, err := Load(sources)
 		if err != nil {
 			t.Fatalf("第 %d 次加载失败：%v", i+2, err)
 		}
@@ -440,9 +390,13 @@ func TestLoad不创建文件(t *testing.T) {
 	if err := os.WriteFile(path, []byte(baseConfig), 0o600); err != nil {
 		t.Fatalf("写入失败：%v", err)
 	}
+	secretPath := filepath.Join(dir, "secret.yaml")
+	if err := os.WriteFile(secretPath, []byte(baseSecret), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
 	before := dirEntries(t, dir)
 
-	if _, err := Load(Sources{Config: path, Secret: filepath.Join(dir, "secret.yaml")}); err != nil {
+	if _, err := Load(Sources{Config: path, Secret: secretPath}); err != nil {
 		t.Fatalf("加载失败：%v", err)
 	}
 
@@ -470,7 +424,7 @@ func configsEqual(a, b *Config) bool {
 	if a.IMToken != b.IMToken || a.IMAPIBase != b.IMAPIBase ||
 		a.MaxCacheMsg != b.MaxCacheMsg ||
 		a.LLMSendCount != b.LLMSendCount || a.LLMTimeout != b.LLMTimeout ||
-		a.MaxMsgRune != b.MaxMsgRune || a.PollInterval != b.PollInterval ||
+		a.MaxMsgRune != b.MaxMsgRune ||
 		a.WebPort != b.WebPort || a.WebUsername != b.WebUsername ||
 		a.WebPassword != b.WebPassword || a.JWTSecret != b.JWTSecret ||
 		a.McpBuiltinToken != b.McpBuiltinToken || a.EnablePprof != b.EnablePprof ||
@@ -536,8 +490,8 @@ func TestProactive默认值(t *testing.T) {
 // TestProactive显式配置 显式写的值要原样进 Config，images=0 表示不判图（不能被默认值覆盖）。
 func TestProactive显式配置(t *testing.T) {
 	yaml := strings.Replace(baseConfig,
-		`workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
-		`workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
+		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
   proactive_enabled: true
   proactive_window_msgs: 8
   proactive_cooldown_sec: 30

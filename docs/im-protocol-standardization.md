@@ -327,7 +327,6 @@ QQ 官方的 `user_id` 是群作用域 openid，拿它选账号会在换群或�
 
 ```yaml
 im:
-  token: ""                      # 入站/出站共用，可空
   api_base: "http://127.0.0.1:6199"  # 所有账号默认的出站地址
   # 可选：多套实现端时按账号覆盖；不写 api_base 表示沿用全局
   # accounts:
@@ -336,11 +335,11 @@ im:
 
 bot:
   # 允许自动开通工作空间的工作空间 ID（platform_account）
-  workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
 ```
 
 - `bot.workspaces`、`bot.allow_self_ids` 删除；旧 `astrbot.http_api` / `astrbot.access_token`
-  迁移为 `im.api_base` / `im.token`。
+  迁移为 `im.api_base` / `secret.yaml` 的 `im_token`（密钥不再写在 config.yaml）。
 - 名单匹配完整工作空间 ID，避免两个平台用同一个 account 时被一起放行。
 - **自动开通只建状态，不建连接**：没有 `im.api_base` 且该账号没有覆盖地址时，
   能收事件、发不出消息（发送时记一条 warn 并按失败处理）。

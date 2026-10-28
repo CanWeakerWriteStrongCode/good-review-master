@@ -26,13 +26,13 @@ type mcpSection struct {
 	accepted []MCPServerConf
 }
 
-// mcpServerNode config.yaml 里 mcp.servers 的单项
+// mcpServerNode config.yaml 里 mcp.servers 的单项。
+// token 不在这里：密钥统一放 secret.yaml 的 mcp_server_tokens。
 type mcpServerNode struct {
 	Name      string            `yaml:"name"`
 	Inject    *bool             `yaml:"inject"`
 	Transport string            `yaml:"transport"`
 	URL       string            `yaml:"url"`
-	Token     string            `yaml:"token"` // 兼容旧位置；新配置放 secret.yaml
 	Command   string            `yaml:"command"`
 	Args      []string          `yaml:"args"`
 	Env       map[string]string `yaml:"env"`
@@ -94,7 +94,6 @@ func (s *mcpSection) SetDefaults() {
 			Inject:    node.Inject,
 			Transport: strings.ToLower(strings.TrimSpace(node.Transport)),
 			URL:       strings.TrimSpace(node.URL),
-			Token:     strings.TrimSpace(node.Token),
 			Command:   strings.TrimSpace(node.Command),
 			Args:      node.Args,
 			Env:       node.Env,
@@ -152,15 +151,4 @@ func (s *mcpSection) Validate() error {
 // AcceptedServers 过滤后的可用服务列表（供 convert 用）。
 func (s *mcpSection) AcceptedServers() []MCPServerConf {
 	return s.accepted
-}
-
-// ServerTokens 返回 服务名 → token 的映射，供 Secret 域做迁移提示用。
-func (s *mcpSection) ServerTokens() map[string]string {
-	tokens := make(map[string]string, len(s.accepted))
-	for _, server := range s.accepted {
-		if server.Token != "" {
-			tokens[server.Name] = server.Token
-		}
-	}
-	return tokens
 }

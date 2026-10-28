@@ -10,20 +10,13 @@ import (
 
 // runtimeSection 运行时参数与 Web 面板配置（config.yaml 的 runtime 段）
 type runtimeSection struct {
-	LLMSendCount    int    `yaml:"llm_send_count"`
-	LLMTimeoutSec   int    `yaml:"llm_timeout_sec"`
-	MaxMsgRune      int    `yaml:"max_msg_rune"`
-	PollIntervalSec int    `yaml:"poll_interval_sec"` // 仅保留兼容：sidecar 推送模型不再轮询
-	IMListenAddr    string `yaml:"im_listen_addr"`
-	// BackfillOnStart 旧配置兼容字段：OneBot 12 没有标准历史动作，不再回填。
-	// QQ 官方机器人没有群历史接口，这种情况应设为 false，否则每次启动都会打一轮失败日志。
-	BackfillOnStart  *bool  `yaml:"backfill_on_start"`
+	LLMSendCount     int    `yaml:"llm_send_count"`
+	LLMTimeoutSec    int    `yaml:"llm_timeout_sec"`
+	MaxMsgRune       int    `yaml:"max_msg_rune"`
+	IMListenAddr     string `yaml:"im_listen_addr"`
 	WebPort          int    `yaml:"web_port"`
 	WebUsername      string `yaml:"web_username"`
-	WebPassword      string `yaml:"web_password"` // 兼容旧位置；新配置放 secret.yaml
 	MaxCacheMsg      int    `yaml:"max_cache_msg"`
-	McpBuiltinToken  string `yaml:"mcp_builtin_token"` // 兼容旧位置；新配置放 secret.yaml
-	JWTSecret        string `yaml:"jwt_secret"`        // 兼容旧位置；新配置放 secret.yaml
 	CorsOrigins      string `yaml:"cors_origins"`
 	EnablePprof      bool   `yaml:"enable_pprof"`
 	ShutdownDelaySec int    `yaml:"shutdown_delay_sec"`
@@ -68,9 +61,6 @@ func (s *runtimeSection) SetDefaults() {
 		s.MaxCacheMsg = defaultCacheMsgMultiplier * s.LLMSendCount
 	}
 	s.WebUsername = strings.TrimSpace(s.WebUsername)
-	s.WebPassword = strings.TrimSpace(s.WebPassword)
-	s.JWTSecret = strings.TrimSpace(s.JWTSecret)
-	s.McpBuiltinToken = strings.TrimSpace(s.McpBuiltinToken)
 
 	// metrics_addr 留空 = 用缺省地址（不是"关闭"）。要关闭得显式写 off ——
 	// 这样"没配过"的用户也能拿到指标，而想关的人有一句话可写。
@@ -88,12 +78,6 @@ func (s *runtimeSection) SetDefaults() {
 	if s.IMListenAddr == "" {
 		s.IMListenAddr = defaultIMListenAddr
 	}
-	if s.BackfillOnStart == nil {
-		// 默认关闭：当前部署是 QQ 官方机器人，没有 get_group_msg_history，
-		// 开着只会在每次启动时打一轮失败日志。
-		disabled := false
-		s.BackfillOnStart = &disabled
-	}
 }
 
 // Validate 判定本域是否"能工作"。
@@ -101,18 +85,12 @@ func (s *runtimeSection) SetDefaults() {
 // 这些数字检查全部跑在 SetDefaults **之后**，所以像 llm_send_count 这种已经补过缺省值的
 // 一定通过——它们不是重复劳动，而是把下游代码赖以成立的前提写成可执行的断言：
 //
-//   - PollInterval 是旧轮询模型的间隔。sidecar 推送模型下已不再使用，
-//     但保留字段与校验：存量配置里写着它，删掉会让老配置文件失去意义。
 //   - LLMTimeout 进 context.WithTimeout，=0 得到一个立刻过期的 ctx，
 //     表现为每一次大模型调用都失败在 "context deadline exceeded"
 //   - MaxCacheMsg 进 make([]Message, n) 并随后被 buf[writeAt] 索引，=0 会 index out of range
 //
 // 阶段 3 引入热重载后这些断言才真正吃紧：那时配置不再只有启动时读一次这一个入口。
 func (s *runtimeSection) Validate() error {
-	if s.PollIntervalSec <= 0 {
-		return positiveInt("runtime.poll_interval_sec", s.PollIntervalSec,
-			"该字段已不驱动轮询（sidecar 推送模型），但为兼容存量配置仍要求为正数；不确定就写 3")
-	}
 	if s.LLMTimeoutSec <= 0 {
 		return positiveInt("runtime.llm_timeout_sec", s.LLMTimeoutSec,
 			"它直接进 context.WithTimeout，为 0 会让每次大模型调用立刻超时失败")

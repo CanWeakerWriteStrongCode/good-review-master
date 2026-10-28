@@ -33,12 +33,12 @@ func InitDefaultFiles() bool {
 	}
 
 	// 检测并创建 secret.yaml。它**不会**导致程序退出：
-	// 密钥留空是合法状态（会回退到 config.yaml 的旧位置），不像 config.yaml 那样必须先去改。
+	// 密钥留空是合法状态，不像 config.yaml 那样必须先去改。
 	secretPath := apppath.GetWorkPath("secret.yaml")
 	if !fileExists(secretPath) {
 		logutil.Info("未找到 secret.yaml，正在从内置模板创建（密钥文件，请勿提交到版本库）...")
 		if err := os.WriteFile(secretPath, secretExampleTemplate, secretFileMode); err != nil {
-			logutil.Warn("无法创建 secret.yaml，密钥将继续从 config.yaml 读取",
+			logutil.Warn("无法创建 secret.yaml，密钥将保持为空",
 				"path", secretPath, "err", err)
 		} else {
 			logutil.Info("已创建 secret.yaml", "path", secretPath)

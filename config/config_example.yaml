@@ -1,7 +1,7 @@
-# 本文件只放**非敏感**配置。密钥（API Key / 登录密码 / 各种 token）请写到同目录的
+# 本文件只放**非敏感**配置。密钥（API Key / 登录密码 / 各种 token）只写在同目录的
 # secret.yaml（首次运行会自动从模板创建，权限 0600、不进版本库）。
-# 下面标了【密钥】的字段是为兼容旧配置保留的：留着仍能工作，但会打一条迁移告警。
-# 优先级：环境变量 > secret.yaml > 本文件。
+# 环境变量 GOOD_REVIEW_LLM_API_KEY / GOOD_REVIEW_WEB_PASSWORD / GOOD_REVIEW_IM_TOKEN
+# 优先于 secret.yaml。
 
 # ===== 机器人配置 =====
 bot:
@@ -11,7 +11,7 @@ bot:
   # 允许自动开通的工作空间 ID（完整 ID = 平台名_接收账号），填 "*" 表示全部。
   # 空列表 = 不自动开通（安全默认）；已记录在 state.db 里的工作空间不受名单影响，
   # 重启会直接恢复。QQ 官方机器人的账号填 AppID，平台名固定 qq，所以是 qq_<AppID>。
-  workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
   # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
   # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
   proactive_enabled: true
@@ -26,8 +26,6 @@ bot:
 # 入站事件由实现端（AstrBot 插件 / Satori sidecar）推送到 runtime.im_listen_addr，
 # 路径是 /im/event/{account}。出站动作按账号走下面的 api_base。
 im:
-  # 入站校验与出站请求共用的 token；留空表示不校验（仅建议监听回环地址时这么用）
-  token: ""                 # 【密钥】→ secret.yaml 的 im_token
   # 所有账号默认的出站地址（实现端 OneBot 12 动作服务）。
   # 常见部署一个 AstrBot 插件服务所有账号，只配这一行即可；账号 ID 从入站事件自动得到。
   api_base: "http://127.0.0.1:6199"
@@ -46,24 +44,17 @@ runtime:
   max_msg_rune: 500
   # 环形缓冲条数上限（手动配，建议 ≈31×llm_send_count；几百 KB/群不会爆内存）
   max_cache_msg: 3100
-  # 旧轮询模型的间隔（秒）。sidecar 推送模型下不再使用，保留以兼容存量配置。
-  poll_interval_sec: 3
   # AstrBot 桥接插件推送事件的监听地址（与插件的 event_url 主机端口对应，
   # 路径是 /im/event/{account}）
   im_listen_addr: "127.0.0.1:18090"
-  # 启动时是否回填最近历史。OneBot 12 没有标准的群历史动作，
-  # 历史直接读共享 state.db（按 workspace_id 区分账号）；本项仅为兼容存量配置，实际不生效。
-  backfill_on_start: false
   # Web 管理面板端口（<=0 禁用）
   web_port: 7090
-  # Web 管理面板登录账号、密码（必填，无免密模式）
+  # Web 管理面板登录账号（密码在 secret.yaml 的 web_password，必填，无免密模式）
   web_username: "admin"
-  web_password: "123456"    # 【密钥】→ secret.yaml 的 web_password
-  # JWT 签名密钥（可选）。留空则回退用上面的 web_password 签名并打告警。
+  # JWT 签名密钥在 secret.yaml 的 jwt_secret。留空会回退用 web_password 签名并打告警。
   # 建议单独设一个随机长字符串：一是改密码不会让所有已登录会话掉线，
   # 二是签名密钥与登录凭据分开，泄露面更小。
   # 生成方式：openssl rand -hex 32
-  jwt_secret: ""
   # 允许跨域访问管理面板的来源（逗号分隔）。默认空 = 仅同源，不下发任何 CORS 头。
   # 前端是内嵌同源 H5、开发时 Vite 走 proxy，正常都不需要配。
   # 只有把面板嵌到别的站点时才填，例如：http://localhost:5173,https://panel.example.com
@@ -79,11 +70,10 @@ runtime:
   # 否则它们要等连接被拒才反应过来，那期间的新请求会直接失败。
   # 代价是每次退出都要多等这么久，所以要小于上层给的关闭预算（app 里是 10 秒）。
   shutdown_delay_sec: 0
-  # 内嵌 MCP 服务端鉴权 Bearer token（agent「看图」等内置工具用）。
+  # 内嵌 MCP 服务端鉴权 Bearer token 在 secret.yaml 的 mcp_builtin_token（agent「看图」等内置工具用）。
   # 留空 = 服务只绑定 127.0.0.1 且不校验；填了值则要求请求带同一 token（机器人自己会带）。
   # 【未来外开放口】目前内嵌服务仅 127.0.0.1 回环自用。若将来要对外开放：需把监听改成可配
   # 地址/固定端口、加 view_image 下载域名白名单（防 SSRF/被当跳板）、建议反代做 TLS。token 机制已就绪。
-  mcp_builtin_token: "123456"   # 【密钥】→ secret.yaml 的 mcp_builtin_token
   # Prometheus 指标端点 /metrics 的监听地址。默认只绑本机，独立于上面的 web_port：
   # 面板要过 JWT 而 Prometheus 抓取带不了，而且面板关掉（web_port<=0）时依然值得被观测。
   # 改地址需要重启才生效。填 off（或 none/disabled）可完全关闭。
@@ -97,8 +87,6 @@ runtime:
 llm:
   # 固定填 openai（兼容所有OpenAI格式模型）
   provider: "openai"
-  # 你的大模型API Key
-  api_key: "sk-xxx"           # 【密钥】→ secret.yaml 的 llm_api_key
   # 大模型接口地址
   api_base: "https://api.deepseek.com"
   # 模型名
@@ -176,8 +164,7 @@ mcp:
       # transport: "http"
       # url: 服务端点地址
       # url: "https://mcp.amap.com/mcp?key=你的key"
-      # token：可选 Bearer Token（也可以直接把 key 写在上面的 url 里）
-      # token: ""               # 【密钥】→ secret.yaml 的 mcp_server_tokens
+      # token 不写在这里：放 secret.yaml 的 mcp_server_tokens，键是本服务的 name
 
     # stdio 示例：本地拉起一个 MCP 子进程（生命周期随主程序，退出时自动杀掉）。
     # 这对应别人贴的 mcpServers JSON 写法 → 拆成本配置的 name / transport / command / args 四项：

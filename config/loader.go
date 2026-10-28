@@ -63,7 +63,7 @@ func Load(sources Sources) (*Config, error) {
 		return nil, err
 	}
 
-	// external → internal，并在这一步做密钥来源的优先级与兼容处理
+	// external → internal，密钥已在 secret 段按「环境变量 > secret.yaml」结算完毕
 	cfg := assemble(sections)
 
 	// 跨域的最终校验（能看到拼装完成的整体，比如 web_port 与密码的联动）

@@ -20,7 +20,7 @@ func TestWorkspaceAccounts校验(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			section := &botSection{WorkspaceAccounts: tc.accounts}
+			section := &botSection{AllowWorkspaceAccounts: tc.accounts}
 			err := section.Validate()
 			if tc.wantErr && err == nil {
 				t.Fatalf("期望校验失败，实际通过：%+v", tc.accounts)
@@ -33,8 +33,8 @@ func TestWorkspaceAccounts校验(t *testing.T) {
 }
 
 func TestWorkspaceAccounts错误信息可读(t *testing.T) {
-	err := (&botSection{WorkspaceAccounts: []string{"bad id"}}).Validate()
-	if err == nil || !strings.Contains(err.Error(), "workspace_accounts") {
+	err := (&botSection{AllowWorkspaceAccounts: []string{"bad id"}}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "allow_workspace_accounts") {
 		t.Fatalf("错误信息应点名配置项，实际：%v", err)
 	}
 }

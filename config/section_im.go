@@ -10,9 +10,6 @@ import (
 	"good-review-master/logutil"
 )
 
-// napcatSectionName 是旧版配置里的顶层键，仅用于一次性迁移告警。
-const napcatSectionName = "napcat"
-
 // workspaceIDPattern 同时约束工作空间 ID 与 im.accounts[].id：它会拼进数据库列与面板 URL，
 // 放开就等于把路径穿越和 URL 编码问题交给每个调用方自己处理。
 var workspaceIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -27,51 +24,24 @@ type imAccountSection struct {
 
 // imSection OneBot 12 接入配置（config.yaml 的 im 段）。
 //
-// 入站监听地址在 runtime.im_listen_addr；这里放共享 token 与出站地址。
+// 入站监听地址在 runtime.im_listen_addr；这里只放出站地址。
 // 常见部署是「一个 AstrBot 插件服务所有账号」：只配 api_base 即够，
 // accounts 只在多套 AstrBot/多端口、需要按账号分地址时才用。
 type imSection struct {
-	Token string `yaml:"token"`
 	// APIBase 所有账号默认的出站地址（实现端 OneBot 12 HTTP API 根地址）。
 	APIBase string `yaml:"api_base"`
 	// Accounts 可选的按账号覆盖；api_base 留空表示沿用上面的默认地址。
 	Accounts []imAccountSection `yaml:"accounts"`
-
-	// 旧 astrbot 段的一次性兼容字段，只在 im 段整体缺失时被解码。
-	LegacyHTTPAPI     string `yaml:"http_api"`
-	LegacyAccessToken string `yaml:"access_token"`
 }
 
 func (s *imSection) Name() string { return "im" }
 
 func (s *imSection) Unmarshal(document *yaml.Node) error {
-	if topLevelValue(document, s.Name()) != nil {
-		return decodeSection(document, s.Name(), s)
-	}
-	legacy := "astrbot"
-	if topLevelValue(document, legacy) == nil {
-		if topLevelValue(document, napcatSectionName) == nil {
-			return nil
-		}
-		legacy = napcatSectionName
-	}
-	// 旧段只有一份地址和一个 token，正好对应新的 im.api_base / im.token，可直接接住。
-	logutil.Warn("config.yaml 的 " + legacy + " 段已改为 im 段，请迁移为 im.token 与 im.api_base")
-	return decodeSection(document, legacy, s)
+	return decodeSection(document, s.Name(), s)
 }
 
 func (s *imSection) SetDefaults() {
-	s.Token = strings.TrimSpace(s.Token)
-	if s.Token == "" && s.LegacyAccessToken != "" {
-		s.Token = strings.TrimSpace(s.LegacyAccessToken)
-		logutil.Warn("im.token 为空，暂用旧的 astrbot.access_token；建议迁移到 secret.yaml 的 im_token")
-	}
 	s.APIBase = strings.TrimRight(strings.TrimSpace(s.APIBase), "/")
-	if s.APIBase == "" && s.LegacyHTTPAPI != "" {
-		// 旧配置只有一份地址，正好等于现在的全局 api_base，不需要账号维度也能迁移。
-		s.APIBase = strings.TrimRight(strings.TrimSpace(s.LegacyHTTPAPI), "/")
-		logutil.Warn("im.api_base 为空，暂用旧的 astrbot.http_api；建议改名为 im.api_base")
-	}
 	for i := range s.Accounts {
 		s.Accounts[i].ID = strings.TrimSpace(s.Accounts[i].ID)
 		s.Accounts[i].APIBase = strings.TrimRight(strings.TrimSpace(s.Accounts[i].APIBase), "/")

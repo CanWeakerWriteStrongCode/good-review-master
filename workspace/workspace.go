@@ -192,7 +192,7 @@ func (m *Manager) restoreExisting() error {
 
 // ResolveOrCreate 按 (platform, account) 找到或开通工作空间。
 //
-// 返回 nil 且无错误 = Go 不接管：不在 bot.workspace_accounts 名单里。
+// 返回 nil 且无错误 = Go 不接管：不在 bot.allow_workspace_accounts 名单里。
 // 已有工作空间由 state.db 在启动时恢复，不受名单影响；入站层据 nil 回 404，
 // 让实现端把消息交回自己的 Agent。
 //
