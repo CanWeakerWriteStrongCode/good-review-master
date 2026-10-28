@@ -146,10 +146,13 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 	if !accepted {
 		// 200 instead of 202: the bridge treats this as "Go did not take over"
 		// and leaves the event to AstrBot's own agent.
+		// accepted=false 有两种来源：账号不在 allow_self_ids，或工作空间归属解析失败。
+		// 这里不能写死前一种，否则会把"插件没带 platform_id"误报成白名单问题。
 		telemetry.IMEventsTotal.WithLabelValues(telemetry.IMEventIgnored).Inc()
-		logutil.Debug("忽略 IM 事件", "reason", "self_id 不在 bot.allow_self_ids", "self", event.SelfID,
+		logutil.Debug("忽略 IM 事件", "reason", "Go 未接管（账号不在白名单或无法归属工作空间）",
+			"platform_id", event.PlatformID, "self", event.SelfID,
 			"group", event.GroupID, "msgID", event.MessageID)
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "self_id not allowed"})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "not accepted by Go"})
 		return
 	}
 

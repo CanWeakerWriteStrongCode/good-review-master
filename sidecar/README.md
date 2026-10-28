@@ -106,8 +106,10 @@ runtime:
 出站动作会带 `self_id`，插件按它选择账号，不会把回复从另一个账号发出去。
 
 同一物理群里的两个账号会各自收到一条事件，所以 `mentioned` 必须按账号分别判定：只有
-`mentions` 里标了 `is_you`，或消息里命中该账号已学到的真实 openid 才算被 @。AstrBot 在拿不到
-mention 元数据时伪造的 `At(qq=qq_official)` 不作为证据，否则没被 @ 的账号也会执行指令。
+`mentions` 里标了 `is_you`，或消息里命中该账号已学到的真实 openid 才算被 @。
+QQ 官方群消息有一个例外：`group_at_message_create`（真正被 @）在拿不到 openid 时，
+AstrBot 会补 `At(qq=qq_official)`；普通 `group_message_create` 不会补。因此群消息里出现
+`At(qq=占位值)` 可以判定为本账号被 @；频道消息的占位 At 是无条件补的，不能套用此规则。
 机器人自己发出的 `message_sent` 消息默认不回灌到 Go 的上下文。
 
 真正的 @ 触发由插件写入事件的 `mentioned` 字段决定，不依赖 `[CQ:at,qq=...]` 的号码匹配；

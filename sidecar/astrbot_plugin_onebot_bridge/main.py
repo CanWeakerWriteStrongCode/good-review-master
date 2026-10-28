@@ -72,7 +72,7 @@ CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
     PLUGIN_NAME,
     "good-review",
     "把 AstrBot 事件转发给外部 Go 服务，并把 OneBot 动作用作平台无关的发送/查询协议",
-    "1.6.3",
+    "1.6.6",
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -438,6 +438,20 @@ class OneBotBridge(Star):
             return []
         return [item for item in items if isinstance(item, dict)]
 
+    @staticmethod
+    def _is_group_message(msg) -> bool:
+        """区分 QQ 群消息与频道/私聊消息。
+
+        群消息的占位 At 只会在真正被 @ 时由 force_group_mention 补上；
+        频道消息则会无条件补 At(qq=qq_official)，不能套用同一个判断。
+
+        注意：插件的 msg 是 AstrBotMessage 包装，真正的 botpy 消息在
+        msg.raw_message 上；只看外层类名会把所有消息都判成非群消息。
+        """
+        raw = getattr(msg, "raw_message", None)
+        names = type(msg).__name__.lower() + "|" + type(raw).__name__.lower()
+        return "groupmessage" in names
+
     def _self_mention_ids(self, msg) -> list[str]:
         """返回明确标了 is_you 的 mention id（插件对象 + 原始数据两路）。"""
         ids: list[str] = []
@@ -466,7 +480,9 @@ class OneBotBridge(Star):
         if mention_id.lower() == "all":
             return "@所有人"
         if is_self:
-            name = self._self_name_for(platform_id) or "你"
+            # 平台实例 ID 通常就是账号昵称，学不到 mention 昵称时用它兜底，
+            # Go 侧的「@昵称」兜底才有可匹配的文本。
+            name = self._self_name_for(platform_id) or platform_id or "你"
         else:
             name = self._members.get(group_id, {}).get(mention_id, "用户")
         return f"@{name}({mention_id})"
@@ -490,9 +506,12 @@ class OneBotBridge(Star):
 
         def replace(match: re.Match) -> str:
             mention_id = str(match.group(1) or "")
-            # 占位值 qq_official 是 group_at 事件拿不到 mentions 元数据时伪造的 At，
-            # 不代表本账号真被 @，不能渲染成「@你」。
-            is_self = is_self_by_id.get(mention_id, False) or (
+            # 占位 At 在群消息里只由 force_group_mention（真实 @）补上，
+            # 可以放心渲染成本账号；频道消息的占位 At 不是 @ 证据，仍按普通用户处理。
+            placeholder_self = (
+                mention_id in SELF_ID_PLACEHOLDERS and self._is_group_message(msg)
+            )
+            is_self = is_self_by_id.get(mention_id, False) or placeholder_self or (
                 bool(self_id) and mention_id == self_id
             )
             return self._format_mention(group_id, mention_id, is_self, platform_id)
@@ -551,8 +570,16 @@ class OneBotBridge(Star):
             # AstrBot 已从 mention 元数据拿到真实身份，@ / 唤醒前缀 / 回复都可信
             if bool(getattr(event, "is_at_or_wake_command", False)):
                 return True
-        else:
-            # 占位值不可信：只能用本平台实例已学到的真实 openid 证明
+        elif self._is_group_message(msg):
+            # QQ 官方 group_at_message_create 走 force_group_mention：拿不到 openid 时
+            # AstrBot 会补一个 At(qq="qq_official")；普通 group_message_create 不补。
+            # 所以「群消息里存在 At(qq=占位值)」等价于「本平台实例真的被 @」。
+            for comp in getattr(msg, "message", []) or []:
+                if type(comp).__name__.lower() == "at" and str(getattr(comp, "qq", "")) == self_id:
+                    return True
+
+        if self_id in SELF_ID_PLACEHOLDERS:
+            # 没有占位 At 时，只能用本平台实例已学到的真实 openid 证明
             self_id = self._self_id_for(platform_id)
             if not self_id:
                 return False

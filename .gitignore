@@ -9,6 +9,7 @@
 /dist/
 good-review-master-windows*
 __debug_bin*
+__pycache__/
 
 # 配置文件（含真实配置，不提交；*_example.yaml 作为模板会提交）
 /config.yaml
