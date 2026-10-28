@@ -472,9 +472,12 @@ pipeline instead of being ignored:
    streak, minimum interval between judge runs, and judge timeout. @-triggered replies never
    touch these counters; a direct reply resets the streak.
 2. **Judge**: a lightweight `ChatJSON` call with a *fixed* system prompt (prefix-cache friendly;
-   all dynamic data goes in the user message) asks whether the bot should join. Output is a strict
-   `{reply: boolean, reason: string}` schema, downgrading `json_schema → json_object → none` per
-   adapter capability. Any error or unparsable answer means **no reply** (fail closed).
+   all dynamic data goes in the user message) asks whether the bot should join. The prompt is
+   deliberately "restrained, not maximally useful": a reply does not have to add information —
+   occasionally joining in banter is allowed — but consecutive low-value replies are not, and the
+   code gates below enforce frequency independently. Output is a strict `{reply, reason}` schema,
+   downgrading `json_schema → json_object → none` per adapter capability. Any error or unparsable
+   answer means **no reply** (fail closed).
 3. **Generation**: only on `reply=true` — persona prompt + recent window via `chatReplyNow`, and
    the reply is sent as a quote of the triggering message with no @mention.
 
