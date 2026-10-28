@@ -27,11 +27,13 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+const testAccount = "qq_1906xxxx"
+
 func newClientFor(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	return NewClient(server.URL, "shared-token")
+	return NewClient([]Account{{ID: testAccount, APIBase: server.URL}}, "shared-token").For(testAccount)
 }
 
 func writeAction(t *testing.T, w http.ResponseWriter, body any) {
@@ -42,168 +44,114 @@ func writeAction(t *testing.T, w http.ResponseWriter, body any) {
 	}
 }
 
-func TestGetLoginInfo(t *testing.T) {
+// decodeAction 读 OneBot 12 动作请求外壳，返回 action 与 params。
+func decodeAction(t *testing.T, r *http.Request) (string, map[string]any) {
+	t.Helper()
+	var body struct {
+		Action string         `json:"action"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	return body.Action, body.Params
+}
+
+func TestSendMessage动作外壳(t *testing.T) {
 	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/get_login_info" {
-			t.Errorf("path = %s", r.URL.Path)
+		if r.URL.Path != "/" {
+			t.Errorf("path = %s（OB12 的 HTTP API 统一入口是 /）", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer shared-token" {
 			t.Errorf("Authorization = %q", got)
 		}
-		writeAction(t, w, map[string]any{
-			"status": "ok", "retcode": 0,
-			"data": map[string]any{"user_id": 123456, "nickname": "bot"},
-		})
-	})
-
-	info, err := client.GetLoginInfo()
-	if err != nil {
-		t.Fatalf("GetLoginInfo: %v", err)
-	}
-	if info.UserID != 123456 || info.Nickname != "bot" {
-		t.Fatalf("info = %+v", info)
-	}
-}
-
-func TestGetLoginInfoRetcodeError(t *testing.T) {
-	client := newClientFor(t, func(w http.ResponseWriter, _ *http.Request) {
-		// 桥接层未连上 aiocqhttp 时的真实形态：HTTP 200 + retcode 1404。
-		writeAction(t, w, map[string]any{
-			"status": "failed", "retcode": 1404, "message": "aiocqhttp 适配器未连接",
-		})
-	})
-
-	if _, err := client.GetLoginInfo(); err == nil {
-		t.Fatal("GetLoginInfo must fail on retcode=1404")
-	}
-}
-
-func TestGetLoginInfoFor发送selfID并解析openid(t *testing.T) {
-	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
+		action, params := decodeAction(t, r)
+		if action != "send_message" {
+			t.Errorf("action = %q", action)
 		}
-		if body["self_id"] != "OPENID_A" {
-			t.Errorf("self_id = %v", body["self_id"])
+		if params["detail_type"] != "group" || params["group_id"] != "g1" {
+			t.Errorf("params = %+v", params)
 		}
-		writeAction(t, w, map[string]any{
-			"status": "ok", "retcode": 0,
-			"data": map[string]any{
-				"user_id": 0, "nickname": "bot-a",
-				"openid": "OPENID_A", "platform_id": "instance-a",
-			},
-		})
-	})
-
-	info, err := client.GetLoginInfoFor("OPENID_A")
-	if err != nil {
-		t.Fatalf("GetLoginInfoFor: %v", err)
-	}
-	if info.Nickname != "bot-a" || info.OpenID != "OPENID_A" || info.PlatformID != "instance-a" {
-		t.Fatalf("info = %+v", info)
-	}
-	if !info.Matches("OPENID_A") {
-		t.Fatal("openid 应与请求账号匹配")
-	}
-	if info.Matches("OPENID_B") {
-		t.Fatal("openid 不应匹配另一个账号")
-	}
-}
-
-func TestLoginInfoMatches回落数字ID(t *testing.T) {
-	aiocqhttp := LoginInfo{UserID: 10001}
-	if !aiocqhttp.Matches("10001") {
-		t.Fatal("没有 openid 时应按数字 user_id 匹配")
-	}
-	if aiocqhttp.Matches("10002") {
-		t.Fatal("数字 user_id 不匹配时不应通过")
-	}
-	if !(LoginInfo{}).Matches("") {
-		t.Fatal("空 selfID 表示不校验身份")
-	}
-}
-
-func TestFetchGroupMsgHistory(t *testing.T) {
-	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
+		segments, ok := params["message"].([]any)
+		if !ok || len(segments) != 3 {
+			t.Fatalf("message segments = %#v", params["message"])
 		}
-		if body["group_id"] != "10001" || body["count"] != float64(30) {
-			t.Errorf("request body = %+v", body)
+		first := segments[0].(map[string]any)
+		if first["type"] != "reply" || first["data"].(map[string]any)["message_id"] != "42" {
+			t.Errorf("first segment = %+v", first)
 		}
-		writeAction(t, w, map[string]any{
-			"status": "ok", "retcode": 0,
-			"data": map[string]any{"messages": []map[string]any{
-				{"message_id": 1, "group_id": 10001, "user_id": 2, "raw_message": "hi", "time": 1700000000},
-			}},
-		})
-	})
-
-	msgs, err := client.FetchGroupMsgHistory("10001", 30)
-	if err != nil {
-		t.Fatalf("FetchGroupMsgHistory: %v", err)
-	}
-	if len(msgs) != 1 || msgs[0].MessageID != 1 || msgs[0].RawMessage != "hi" {
-		t.Fatalf("msgs = %+v", msgs)
-	}
-}
-
-func TestGetGroupInfoToleratesOpenID(t *testing.T) {
-	client := newClientFor(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeAction(t, w, map[string]any{
-			"status": "ok", "retcode": 0,
-			"data": map[string]any{"group_id": "8A2B-openid", "group_name": "测试群"},
-		})
-	})
-
-	info, err := client.GetGroupInfo("8A2B-openid")
-	if err != nil {
-		t.Fatalf("GetGroupInfo: %v", err)
-	}
-	if info.GroupName != "测试群" {
-		t.Fatalf("info = %+v", info)
-	}
-}
-
-func TestSendGroupMessageLogsButDoesNotPanic(t *testing.T) {
-	client := newClientFor(t, func(w http.ResponseWriter, _ *http.Request) {
-		writeAction(t, w, map[string]any{"status": "ok", "retcode": 0})
-	})
-	client.SendGroupMessage("10001", "hello")
-}
-
-func TestSendGroupReplySendsSegments(t *testing.T) {
-	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/send_group_msg" {
-			t.Errorf("path = %s", r.URL.Path)
-		}
-		var body struct {
-			GroupID string    `json:"group_id"`
-			SelfID  string    `json:"self_id"`
-			Message []Segment `json:"message"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		if body.GroupID != "10001" || len(body.Message) != 3 {
-			t.Fatalf("body = %+v", body)
-		}
-		if body.SelfID != "999" {
-			t.Errorf("self_id = %q，期望 999", body.SelfID)
-		}
-		if body.Message[0].Type != "reply" || body.Message[0].Data["id"] != "42" {
-			t.Errorf("reply segment = %+v", body.Message[0])
-		}
-		if body.Message[1].Type != "at" || body.Message[1].Data["qq"] != "42" {
-			t.Errorf("at segment = %+v", body.Message[1])
-		}
-		if body.Message[2].Type != "text" || body.Message[2].Data["text"] != " hi" {
-			t.Errorf("text segment = %+v", body.Message[2])
+		second := segments[1].(map[string]any)
+		if second["type"] != "mention" || second["data"].(map[string]any)["user_id"] != "u1" {
+			t.Errorf("second segment = %+v", second)
 		}
 		writeAction(t, w, map[string]any{"status": "ok", "retcode": 0})
 	})
 
-	client.SendGroupReply("10001", "999", "42", "42", "hi")
+	client.SendGroupReply("g1", "42", "u1", "hi")
+}
+
+func TestAction失败按retcode判定(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, _ *http.Request) {
+		// HTTP 200 + status=failed 是标准的失败表达，不能只看状态码。
+		writeAction(t, w, map[string]any{"status": "failed", "retcode": 1404, "message": "not connected"})
+	})
+
+	if _, err := client.GetSelfInfo(); err == nil {
+		t.Fatal("status=failed 必须返回错误")
+	}
+}
+
+func TestGetSelfInfo解析(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		action, _ := decodeAction(t, r)
+		if action != "get_self_info" {
+			t.Errorf("action = %q", action)
+		}
+		writeAction(t, w, map[string]any{
+			"status": "ok", "retcode": 0,
+			"data": map[string]any{"user_id": "openid-1", "user_name": "bot-a"},
+		})
+	})
+
+	info, err := client.GetSelfInfo()
+	if err != nil {
+		t.Fatalf("GetSelfInfo: %v", err)
+	}
+	if info.UserID != "openid-1" || info.UserName != "bot-a" {
+		t.Fatalf("info = %+v", info)
+	}
+}
+
+func TestGetGroupMemberInfo参数(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		action, params := decodeAction(t, r)
+		if action != "get_group_member_info" || params["group_id"] != "g1" || params["user_id"] != "u1" {
+			t.Errorf("action=%s params=%+v", action, params)
+		}
+		writeAction(t, w, map[string]any{
+			"status": "ok", "retcode": 0,
+			"data": map[string]any{"user_id": "u1", "user_name": "张三", "user_displayname": "老张"},
+		})
+	})
+
+	info, err := client.GetGroupMemberInfo("g1", "u1")
+	if err != nil {
+		t.Fatalf("GetGroupMemberInfo: %v", err)
+	}
+	if info.DisplayName() != "老张" {
+		t.Fatalf("DisplayName = %q", info.DisplayName())
+	}
+}
+
+// TestFor未知账号不带地址 锁住多账号选路：没配 api_base 的账号必须失败，
+// 不能悄悄发到别的账号（QQ 官方的 self.user_id 无法用来选账号）。
+func TestFor未知账号不带地址(t *testing.T) {
+	root := NewClient([]Account{{ID: testAccount, APIBase: "http://127.0.0.1:1"}}, "")
+	other := root.For("qq_other")
+	if other.Base() != "" {
+		t.Fatalf("未配置的账号不应有 base，实际 %q", other.Base())
+	}
+	if _, err := other.GetSelfInfo(); err == nil {
+		t.Fatal("未配置地址的账号调用动作必须失败")
+	}
 }

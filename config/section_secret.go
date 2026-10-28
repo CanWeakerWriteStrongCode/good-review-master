@@ -24,7 +24,8 @@ type secretSection struct {
 	LLMAPIKey          string            `yaml:"llm_api_key"`
 	WebPassword        string            `yaml:"web_password"`
 	JWTSecret          string            `yaml:"jwt_secret"`
-	AstrBotAccessToken string            `yaml:"astrbot_access_token"`
+	IMToken            string            `yaml:"im_token"`
+	AstrBotAccessToken string            `yaml:"astrbot_access_token"` // 旧键：一次性迁移
 	McpBuiltinToken    string            `yaml:"mcp_builtin_token"`
 	McpServerTokens    map[string]string `yaml:"mcp_server_tokens"`
 }
@@ -34,9 +35,10 @@ type secretSection struct {
 const (
 	envLLMAPIKey         = "GOOD_REVIEW_LLM_API_KEY"
 	envWebPassword       = "GOOD_REVIEW_WEB_PASSWORD"
-	envAstrBotToken      = "GOOD_REVIEW_ASTRBOT_TOKEN"
-	envLegacyBridgeToken = "GOOD_REVIEW_NAPCAT_TOKEN" // 一次性迁移：旧环境变量名
-	legacyBridgeTokenKey = "napcat_access_token"      // 一次性迁移：旧 secret.yaml 键
+	envIMToken           = "GOOD_REVIEW_IM_TOKEN"
+	envAstrBotToken      = "GOOD_REVIEW_ASTRBOT_TOKEN" // 旧名：一次性迁移
+	envLegacyBridgeToken = "GOOD_REVIEW_NAPCAT_TOKEN"  // 一次性迁移：旧环境变量名
+	legacyBridgeTokenKey = "napcat_access_token"       // 一次性迁移：旧 secret.yaml 键
 )
 
 func (s *secretSection) Name() string { return "secret" }
@@ -50,10 +52,17 @@ func (s *secretSection) Unmarshal(document *yaml.Node) error {
 		return err
 	}
 	// 一次性迁移：旧键名仍可用，但提示用户改名。
+	if s.IMToken == "" && s.AstrBotAccessToken != "" {
+		s.IMToken = s.AstrBotAccessToken
+		logutil.Warn("secret.yaml 的 astrbot_access_token 已更名为 im_token，请尽快修改")
+	}
 	if s.AstrBotAccessToken == "" {
 		if node := topLevelValue(document, legacyBridgeTokenKey); node != nil {
 			s.AstrBotAccessToken = strings.TrimSpace(node.Value)
-			logutil.Warn("secret.yaml 的 napcat_access_token 已更名为 astrbot_access_token，请尽快修改")
+			if s.IMToken == "" {
+				s.IMToken = s.AstrBotAccessToken
+			}
+			logutil.Warn("secret.yaml 的 napcat_access_token 已更名为 im_token，请尽快修改")
 		}
 	}
 	return nil
@@ -67,11 +76,14 @@ func (s *secretSection) applyEnv() {
 	if value := strings.TrimSpace(os.Getenv(envWebPassword)); value != "" {
 		s.WebPassword = value
 	}
-	if value := strings.TrimSpace(os.Getenv(envAstrBotToken)); value != "" {
-		s.AstrBotAccessToken = value
+	if value := strings.TrimSpace(os.Getenv(envIMToken)); value != "" {
+		s.IMToken = value
+	} else if value := strings.TrimSpace(os.Getenv(envAstrBotToken)); value != "" {
+		s.IMToken = value
+		logutil.Warn("环境变量 GOOD_REVIEW_ASTRBOT_TOKEN 已更名为 GOOD_REVIEW_IM_TOKEN，请尽快修改")
 	} else if value := strings.TrimSpace(os.Getenv(envLegacyBridgeToken)); value != "" {
-		s.AstrBotAccessToken = value
-		logutil.Warn("环境变量 GOOD_REVIEW_NAPCAT_TOKEN 已更名为 GOOD_REVIEW_ASTRBOT_TOKEN，请尽快修改")
+		s.IMToken = value
+		logutil.Warn("环境变量 GOOD_REVIEW_NAPCAT_TOKEN 已更名为 GOOD_REVIEW_IM_TOKEN，请尽快修改")
 	}
 }
 
@@ -79,6 +91,7 @@ func (s *secretSection) SetDefaults() {
 	s.LLMAPIKey = strings.TrimSpace(s.LLMAPIKey)
 	s.WebPassword = strings.TrimSpace(s.WebPassword)
 	s.JWTSecret = strings.TrimSpace(s.JWTSecret)
+	s.IMToken = strings.TrimSpace(s.IMToken)
 	s.AstrBotAccessToken = strings.TrimSpace(s.AstrBotAccessToken)
 	s.McpBuiltinToken = strings.TrimSpace(s.McpBuiltinToken)
 	for name, token := range s.McpServerTokens {

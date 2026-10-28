@@ -31,18 +31,20 @@ func TestMain(m *testing.M) {
 }
 
 type fakeConsumer struct {
+	account   string
 	events    []onebot.Event
 	err       error
 	rejectAll bool
 }
 
-func (f *fakeConsumer) AcceptEvent(_ context.Context, event onebot.Event) (bool, error) {
+func (f *fakeConsumer) AcceptEvent(_ context.Context, account string, event onebot.Event) (bool, error) {
 	if f.err != nil {
 		return false, f.err
 	}
 	if f.rejectAll {
 		return false, nil
 	}
+	f.account = account
 	f.events = append(f.events, event)
 	return true, nil
 }
@@ -52,47 +54,57 @@ func newTestServer(t *testing.T, token string, consumer EventConsumer) *Server {
 	return NewServer("127.0.0.1:0", token, consumer)
 }
 
-func postEvent(t *testing.T, server *Server, token, body string) *httptest.ResponseRecorder {
+func postEvent(t *testing.T, server *Server, account, token, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/im/event", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/im/event/"+account, strings.NewReader(body))
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-OneBot-Version", "12")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 	return rec
 }
 
+const groupMessage = `{
+	"id":"event-1","time":1700000000.5,"type":"message","detail_type":"group","sub_type":"normal",
+	"self":{"platform":"qq","user_id":"OPENID_A"},
+	"message_id":"99","alt_message":"@bot 锐评下",
+	"message":[
+		{"type":"mention","data":{"user_id":"OPENID_A"}},
+		{"type":"text","data":{"text":"锐评下"}}
+	],
+	"group_id":"123456","user_id":"42"
+}`
+
 func TestServerAcceptsGroupMessage(t *testing.T) {
 	consumer := &fakeConsumer{}
 	server := newTestServer(t, "secret", consumer)
 
-	rec := postEvent(t, server, "secret", `{
-		"post_type":"message","message_type":"group",
-		"group_id":"123456","user_id":"42","sender":{"nickname":"小明","card":""},
-		"raw_message":"[CQ:at,qq=123456] 锐评下","message_id":99,
-		"time":1700000000,"self_id":"123456","mentioned":true
-	}`)
+	rec := postEvent(t, server, "1906xxxx", "secret", groupMessage)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body=%s", rec.Code, rec.Body)
 	}
 	if len(consumer.events) != 1 {
 		t.Fatalf("consumer got %d events, want 1", len(consumer.events))
 	}
+	if consumer.account != "1906xxxx" {
+		t.Fatalf("account = %q（必须来自路径）", consumer.account)
+	}
 	got := consumer.events[0]
-	if got.GroupID != "123456" || got.UserID != "42" || got.MessageID != 99 || got.Time != 1700000000 {
+	if got.GroupID != "123456" || got.UserID != "42" || got.MessageID != "99" {
 		t.Fatalf("unexpected event: %+v", got)
 	}
-	if got.SelfID != "123456" {
-		t.Fatalf("self_id not decoded: %+v", got)
+	if got.Self.Platform != "qq" || got.Self.UserID != "OPENID_A" {
+		t.Fatalf("self 未解码：%+v", got.Self)
 	}
-	if got.Sender.Nickname != "小明" || got.DisplayName() != "小明" {
-		t.Fatalf("sender.nickname not decoded: %+v", got)
+	if got.Account != "1906xxxx" {
+		t.Fatalf("event.Account 应由路径写入：%q", got.Account)
 	}
-	if !got.Mentioned {
-		t.Fatalf("mentioned not decoded: %+v", got)
+	if !got.MentionsBot() {
+		t.Fatalf("mention 段应与 self.user_id 匹配：%+v", got.Message)
 	}
 }
 
@@ -100,7 +112,7 @@ func TestServerRejectsBadToken(t *testing.T) {
 	consumer := &fakeConsumer{}
 	server := newTestServer(t, "secret", consumer)
 
-	rec := postEvent(t, server, "wrong", `{"post_type":"message","message_type":"group","group_id":"1"}`)
+	rec := postEvent(t, server, "1906xxxx", "wrong", groupMessage)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -113,25 +125,50 @@ func TestServerAllowsEmptyToken(t *testing.T) {
 	consumer := &fakeConsumer{}
 	server := newTestServer(t, "", consumer)
 
-	rec := postEvent(t, server, "", `{"post_type":"message","message_type":"group","group_id":"1","message_id":1}`)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", rec.Code)
+	rec := postEvent(t, server, "1906xxxx", "", groupMessage)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
 	}
 }
 
-func TestServerIgnoresNonGroupEvents(t *testing.T) {
+func TestServerRejectsInvalidAccount(t *testing.T) {
+	consumer := &fakeConsumer{}
+	server := newTestServer(t, "", consumer)
+
+	rec := postEvent(t, server, "bad%20account", "", groupMessage)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestServerRejectsWrongVersion(t *testing.T) {
+	consumer := &fakeConsumer{}
+	server := newTestServer(t, "", consumer)
+
+	req := httptest.NewRequest(http.MethodPost, "/im/event/1906xxxx", strings.NewReader(groupMessage))
+	req.Header.Set("X-OneBot-Version", "11")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestServerIgnoresNonMessageEvents(t *testing.T) {
 	consumer := &fakeConsumer{}
 	server := newTestServer(t, "", consumer)
 
 	cases := []string{
-		`{"post_type":"notice","message_type":"group","group_id":"1"}`,
-		`{"post_type":"message","message_type":"private","group_id":""}`,
-		`{"post_type":"message","message_type":"group","group_id":""}`,
+		`{"type":"notice","detail_type":"group","self":{"platform":"qq"}}`,
+		`{"type":"message","detail_type":"private","self":{"platform":"qq"},"user_id":"1"}`,
+		`{"type":"message","detail_type":"group","group_id":"1","user_id":"1"}`,
+		`{"type":"message","detail_type":"group","self":{"platform":"qq"},"user_id":"1"}`,
+		`{"type":"message","detail_type":"group","self":{"platform":"qq"},"group_id":"1"}`,
 	}
 	for _, body := range cases {
-		rec := postEvent(t, server, "", body)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200 for %s", rec.Code, body)
+		rec := postEvent(t, server, "1906xxxx", "", body)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204 for %s", rec.Code, body)
 		}
 	}
 	if len(consumer.events) != 0 {
@@ -139,65 +176,19 @@ func TestServerIgnoresNonGroupEvents(t *testing.T) {
 	}
 }
 
-func TestServerRejectsInvalidJSON(t *testing.T) {
-	server := newTestServer(t, "", &fakeConsumer{})
-
-	rec := postEvent(t, server, "", `{"post_type":`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-func TestServerRejectsTrailingData(t *testing.T) {
-	server := newTestServer(t, "", &fakeConsumer{})
-
-	rec := postEvent(t, server, "", `{"post_type":"message","message_type":"group","group_id":"1"} {}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
-	}
-}
-
-func TestReadableEventJSONRestoresUnicodeAndNumbers(t *testing.T) {
-	raw := []byte(`{"raw_message":"@\u4e0d\u662f\u597d\u8bc4\u5927\u5e08 test","message_id":3484799710571075834}`)
-
-	got := string(readableEventJSON(raw))
-	if !strings.Contains(got, "不是好评大师") {
-		t.Fatalf("Unicode 转义应还原为中文：%s", got)
-	}
-	// 消息 ID 超过 2^53，走 float64 会被悄悄改写
-	if !strings.Contains(got, "3484799710571075834") {
-		t.Fatalf("大整数应逐字保留：%s", got)
-	}
-}
-
-func TestReadableEventJSONFallsBackToRaw(t *testing.T) {
-	raw := []byte(`{not json`)
-	if got := string(readableEventJSON(raw)); got != string(raw) {
-		t.Fatalf("解析失败应退回原文，got %q", got)
-	}
-}
-
-func TestServerReturnsIgnoredWhenConsumerDeclines(t *testing.T) {
+func TestServerNotTakenOver返回404(t *testing.T) {
 	consumer := &fakeConsumer{rejectAll: true}
 	server := newTestServer(t, "", consumer)
-
-	rec := postEvent(t, server, "", `{"post_type":"message","message_type":"group","group_id":"1","message_id":1,"self_id":"other-bot"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 ignored", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), `"ignored"`) {
-		t.Fatalf("body = %s", rec.Body.String())
-	}
-	if len(consumer.events) != 0 {
-		t.Fatal("declined event must not reach the queue")
+	rec := postEvent(t, server, "1906xxxx", "", groupMessage)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404（实现端据此交回自己的 Agent）", rec.Code)
 	}
 }
 
-func TestServerReturns503WhenQueueFull(t *testing.T) {
+func TestServerQueueFull返回503(t *testing.T) {
 	consumer := &fakeConsumer{err: errors.New("queue full")}
 	server := newTestServer(t, "", consumer)
-
-	rec := postEvent(t, server, "", `{"post_type":"message","message_type":"group","group_id":"1","message_id":1}`)
+	rec := postEvent(t, server, "1906xxxx", "", groupMessage)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}

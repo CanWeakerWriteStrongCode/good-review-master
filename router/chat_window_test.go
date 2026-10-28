@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"good-review-master/cache"
@@ -13,7 +14,7 @@ func makeChatMsgs(n int) []cache.Message {
 	msgs := make([]cache.Message, n)
 	for i := 0; i < n; i++ {
 		msgs[i] = cache.Message{
-			MessageID: int64(1001 + i),
+			MessageID: strconv.Itoa(1001 + i),
 			GroupID:   "10001",
 			UserID:    "1",
 			Nickname:  "张三",
@@ -35,7 +36,7 @@ func TestDecideChatWindow(t *testing.T) {
 		systemTokens     int
 		wantMode         string
 		wantReason       string // 空串表示不校验（扩展路径不关心 ResetReason）
-		wantFirstMsgID   int64  // 期望窗口首条 MsgID
+		wantFirstMsgID   string // 期望窗口首条 MsgID
 		wantLen          int    // 期望窗口条数
 	}{
 		{
@@ -49,26 +50,26 @@ func TestDecideChatWindow(t *testing.T) {
 			systemTokens:     100,
 			wantMode:         "reset",
 			wantReason:       "锚点丢失",
-			wantFirstMsgID:   1003,
+			wantFirstMsgID:   "1003",
 			wantLen:          3,
 		},
 		{
 			name:             "锚点命中且扩展更便宜：窗口 = 旧窗口 + 新消息",
 			msgs:             makeChatMsgs(7),
-			anchor:           &cache.LLMAnchor{Start: 1003, LastSent: 1005},
+			anchor:           &cache.LLMAnchor{Start: "1003", LastSent: "1005"},
 			cacheHitCost:     0.033,
 			cacheMissCost:    1.0,
 			maxContextTokens: 50000,
 			llmSendCount:     3,
 			systemTokens:     100,
 			wantMode:         "extend",
-			wantFirstMsgID:   1003,
+			wantFirstMsgID:   "1003",
 			wantLen:          5,
 		},
 		{
 			name:             "命中价极高时扩展贵于重置：走重置",
 			msgs:             makeChatMsgs(7),
-			anchor:           &cache.LLMAnchor{Start: 1003, LastSent: 1005},
+			anchor:           &cache.LLMAnchor{Start: "1003", LastSent: "1005"},
 			cacheHitCost:     1000, // 命中价抬高 → 扩展成本远大于重置
 			cacheMissCost:    1.0,
 			maxContextTokens: 50000,
@@ -76,13 +77,13 @@ func TestDecideChatWindow(t *testing.T) {
 			systemTokens:     100,
 			wantMode:         "reset",
 			wantReason:       "成本不优",
-			wantFirstMsgID:   1005,
+			wantFirstMsgID:   "1005",
 			wantLen:          3,
 		},
 		{
 			name:             "上下文护栏超限：强制重置且窗口截断到护栏内",
 			msgs:             makeChatMsgs(7),
-			anchor:           &cache.LLMAnchor{Start: 1003, LastSent: 1005},
+			anchor:           &cache.LLMAnchor{Start: "1003", LastSent: "1005"},
 			cacheHitCost:     0.033,
 			cacheMissCost:    1.0,
 			maxContextTokens: 115, // 系统100 + 单条约11：重置窗口(3条)超限，2条也>115，截到1条(111<=115)
@@ -90,13 +91,13 @@ func TestDecideChatWindow(t *testing.T) {
 			systemTokens:     100,
 			wantMode:         "reset",
 			wantReason:       "成本不优",
-			wantFirstMsgID:   1007,
+			wantFirstMsgID:   "1007",
 			wantLen:          1,
 		},
 		{
 			name:             "锚点 Start 已不在缓存：走重置",
 			msgs:             makeChatMsgs(5),
-			anchor:           &cache.LLMAnchor{Start: 9999, LastSent: 9999},
+			anchor:           &cache.LLMAnchor{Start: "9999", LastSent: "9999"},
 			cacheHitCost:     0.033,
 			cacheMissCost:    1.0,
 			maxContextTokens: 50000,
@@ -104,20 +105,20 @@ func TestDecideChatWindow(t *testing.T) {
 			systemTokens:     100,
 			wantMode:         "reset",
 			wantReason:       "锚点丢失",
-			wantFirstMsgID:   1003,
+			wantFirstMsgID:   "1003",
 			wantLen:          3,
 		},
 		{
 			name:             "LastSent 缺失但 Start 在：lastSent 回退到锚点自身，仍走扩展",
 			msgs:             makeChatMsgs(7),
-			anchor:           &cache.LLMAnchor{Start: 1003, LastSent: 99999},
+			anchor:           &cache.LLMAnchor{Start: "1003", LastSent: "99999"},
 			cacheHitCost:     0.033,
 			cacheMissCost:    1.0,
 			maxContextTokens: 50000,
 			llmSendCount:     3,
 			systemTokens:     100,
 			wantMode:         "extend",
-			wantFirstMsgID:   1003,
+			wantFirstMsgID:   "1003",
 			wantLen:          5,
 		},
 	}
@@ -137,7 +138,7 @@ func TestDecideChatWindow(t *testing.T) {
 				t.Fatal("Window 为空")
 			}
 			if got.Window[0].MessageID != tc.wantFirstMsgID {
-				t.Fatalf("窗口首条 MessageID = %d，期望 %d", got.Window[0].MessageID, tc.wantFirstMsgID)
+				t.Fatalf("窗口首条 MessageID = %s，期望 %s", got.Window[0].MessageID, tc.wantFirstMsgID)
 			}
 			if len(got.Window) != tc.wantLen {
 				t.Fatalf("窗口条数 = %d，期望 %d", len(got.Window), tc.wantLen)

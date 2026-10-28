@@ -34,7 +34,6 @@ func TestStripCQPrefix剥离各种at写法(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{name: "CQ at", raw: "[CQ:at,qq=0C2F9A2A] 锐评", want: "锐评"},
 		{name: "昵称加 ID", raw: "@不是好评大师(0C2F9A2A) 锐评", want: "锐评"},
 		{name: "多个 at 且机器人不在第一个", raw: "@张三(3319D7) @不是好评大师(0C2F9A2A) 锐评", want: "锐评"},
 		{name: "手打昵称", raw: "@不是好评大师 锐评", want: "锐评"},

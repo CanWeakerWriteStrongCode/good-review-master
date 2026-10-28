@@ -17,7 +17,7 @@ import (
 // parent 是分发链路的 ctx：用 GoCtx 而不是 Go，任务才能同时继承
 // 调用方的 trace span 与 Group 的关闭信号（详见 async.Group.GoCtx）。
 func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
-	logutil.InfoCtx(parent, "触发锐评", "group", groupID, "user", event.DisplayName())
+	logutil.InfoCtx(parent, "触发锐评", "group", groupID, "user", r.nameOf(groupID, event.UserID), "user_id", event.UserID)
 	// 一次锐评是一个完整的业务动作，全程用同一份配置：
 	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
 	cfg := r.appCfg()
@@ -123,7 +123,7 @@ func (r *Router) mcpToolsTokens() int {
 func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	type row struct {
 		nick  string
-		msgID int64
+		msgID string
 		url   string
 	}
 	rows := make([]row, 0)
@@ -148,7 +148,7 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	}
 	b.WriteString("不要编造没实际看过的图片内容。\n")
 	for i, row := range rows {
-		b.WriteString(fmt.Sprintf("图%d 发送者:%s (消息%d) url:%s\n", i+1, row.nick, row.msgID, row.url))
+		b.WriteString(fmt.Sprintf("图%d 发送者:%s (消息%s) url:%s\n", i+1, row.nick, row.msgID, row.url))
 	}
 	return strings.TrimSpace(b.String())
 }

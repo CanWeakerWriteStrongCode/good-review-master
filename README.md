@@ -48,7 +48,7 @@ QQ 官方机器人 ←→ AstrBot（sidecar，只做 IM 网关）←→ Go Bot �
 ```
 
 ```
-┌──────────┐  OneBot 11  ┌───────────┐  OneBot 11   ┌──────────────────┐
+┌──────────┐  OneBot 12  ┌───────────┐  OneBot 12   ┌──────────────────┐
 │   QQ 群   │ ←─────────→ │ AstrBot   │ ←──────────→ │  Go Bot          │
 └──────────┘    (WS/HTTP) │ + 桥接插件 │  事件/动作    │ (router/LLM/缓存) │
                           └───────────┘              └────────┬─────────┘
@@ -60,9 +60,9 @@ QQ 官方机器人 ←→ AstrBot（sidecar，只做 IM 网关）←→ Go Bot �
                                                      └──────────────┘
 ```
 
-AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 11 事件推给 Go；Go 的
-`send_group_msg` / `get_group_msg_history` 等动作再由插件透传回平台。部署方式见
-[sidecar/README.md](sidecar/README.md)。
+AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 事件推给 Go；Go 的
+`send_message` / `get_self_info` / `get_group_member_info` 等动作再由插件翻译回平台。
+部署方式见 [sidecar/README.md](sidecar/README.md)。
 
 ## 🚀 快速开始
 
@@ -118,10 +118,10 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 11 �
 
 | 配置项                         | 说明                              | 示例值                        |
 |-----------------------------|---------------------------------|----------------------------|
-| `astrbot.http_api`          | AstrBot 桥接动作代理地址（插件默认 6199） | `http://127.0.0.1:6199`    |
-| `astrbot.access_token`      | 与 AstrBot 插件共享的 token            | `""`                       |
+| `im.token`                  | 入站/出站共用的 OneBot token（建议放 `secret.yaml` 的 `im_token`） | `""` |
+| `im.accounts`               | 每个机器人账号的出站地址 `[{id, api_base}]`；`id` = `平台名_接收账号` | 见示例配置 |
 | `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群） | `123456,789012`            |
-| `bot.allow_self_ids`        | Go 接管的机器人账号（`self_id`；`*` 表示全部；空表示都不接管，交给 AstrBot Agent） | `*` |
+| `bot.workspace_accounts`    | 允许自动开通的工作空间 ID（如 `qq_1906xxxx`；`*` 表示全部） | `["qq_1906xxxx"]` |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |
 | `llm.api_key`               | 大模型 API Key（**建议移到 `secret.yaml`**） | `sk-xxx`                   |
 | `llm.api_base`              | 大模型接口地址                         | `https://api.deepseek.com` |
@@ -295,14 +295,15 @@ version → (无内部依赖)
 ### 消息处理流程
 
 ```
-IM ingress (im/server.go) → 队列 (bot/ingest.go)
-  → 启动时经桥接回填历史消息 (onebot, resty)
-  → 去重：O(1) msgID 集合
+IM ingress POST /im/event/{account} → 按 {platform}_{account} 开通/加载工作空间
+  → 队列 (bot/ingest.go)
+  → 去重：O(1) message_id 集合
+  → 历史来自共享 state.db（按 workspace_id 过滤，无平台历史接口）
   → ProcessMessage (bot/handler.go)
      → 白名单检查
      → 截断到最大长度
      → 存入环形缓冲区（零拷贝写入）
-     → @机器人检测（桥接层 mentioned + 昵称兜底）
+     → @机器人检测（mention.user_id == self.user_id + 昵称兜底）
      → 前缀树匹配 → 命中指令：调用该指令 handler（带该指令人格）
      → 未命中：兜底直接发大模型回答（不带人格）
 ```
@@ -451,7 +452,7 @@ cd tests/e2e && pnpm test
 ### 工程健壮性
 
 - **显式依赖注入，零 `init()` 副作用**：所有组件在 `main()` 自上而下构造。
-- **防御性**：白名单群、消息按 rune 截断、@检测以桥接层 mentioned 为主并用昵称兜底、配置缺失自动从模板生成并退出。
+- **防御性**：白名单群、消息按 rune 截断、@检测以标准 mention 为主并用唯一昵称兜底、配置缺失自动从模板生成并退出。
 - **可观测性**：zap + lumberjack 双输出（控制台 + 文件 20MB 轮转、30 天保留、gzip）。
 - **Web 面板**：`//go:embed` 内嵌 SPA、JWT(HS256) 鉴权、无免密模式。
 

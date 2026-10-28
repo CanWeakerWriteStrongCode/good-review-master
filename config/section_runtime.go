@@ -15,7 +15,7 @@ type runtimeSection struct {
 	MaxMsgRune      int    `yaml:"max_msg_rune"`
 	PollIntervalSec int    `yaml:"poll_interval_sec"` // 仅保留兼容：sidecar 推送模型不再轮询
 	IMListenAddr    string `yaml:"im_listen_addr"`
-	// BackfillOnStart 启动时是否经 OneBot 动作代理回填最近历史。
+	// BackfillOnStart 旧配置兼容字段：OneBot 12 没有标准历史动作，不再回填。
 	// QQ 官方机器人没有群历史接口，这种情况应设为 false，否则每次启动都会打一轮失败日志。
 	BackfillOnStart  *bool  `yaml:"backfill_on_start"`
 	WebPort          int    `yaml:"web_port"`

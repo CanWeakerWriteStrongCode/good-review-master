@@ -1,15 +1,18 @@
-"""AstrBot ↔ OneBot 11 桥接插件。
+"""AstrBot ↔ OneBot 12 桥接插件。
 
 拓扑（sidecar）：
 
     QQ 官方机器人 / OneBot / 微信 / TG ── AstrBot 适配器 ── 本插件 ──HTTP──> Go 核心
                                                     <──HTTP───  动作请求
 
-- 入站：把 AstrBot 收到的事件转成 OneBot 11 事件，POST 给 Go 的 /im/event；
-- 出站：监听一个本地 HTTP 端口，把 Go 发来的 send_group_msg / send_msg 交给平台适配器。
+- 入站：把 AstrBot 收到的事件转成 OneBot 12 事件，POST 到 Go 的 /im/event/{account}；
+  account 优先取事件所属平台实例的 AppID（一个进程挂多个 QQ 官方账号时各走各的）；
+- 出站：监听一个本地 HTTP 端口，实现 OneBot 12 的 POST / 动作服务
+  （send_message / get_self_info / get_group_info / get_group_member_info / ...）。
   aiocqhttp 走 AstrBot 的 send_by_session；qq_official 单独走官方被动回复 API
   （带 msg_id / msg_seq），否则会被当成主动推送受额度限制；
-- 事件转发后调用 stop_event()，让 AstrBot 自己的 LLM/插件流水线不再回复。
+- 事件转发后，仅在 Go 返回 2xx（已接管）时调用 stop_event()，
+  4xx（未接管）交给 AstrBot 自己的 Agent 兜底。
 
 部署要求：AstrBot 只当 IM 网关，它的 LLM Provider、人格、白名单等功能不要启用，
 业务过滤（白名单、@ 检测）全部在 Go 侧完成。
@@ -19,12 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import hmac
 import json
 import os
 import re
 import time
+import uuid
 from types import SimpleNamespace
 from typing import Any
 
@@ -43,8 +46,26 @@ DEFAULT_EVENT_URL = "http://127.0.0.1:18090/im/event"
 DEFAULT_LISTEN_HOST = "127.0.0.1"
 DEFAULT_LISTEN_PORT = 6199
 
-SEND_ACTIONS = ("send_group_msg", "send_msg")
-QUERY_ACTIONS = ("get_login_info", "get_group_info", "get_group_msg_history")
+ONEBOT_VERSION = "12"
+IMPL_NAME = "astrbot-plugin-onebot-bridge"
+PLUGIN_VERSION = "1.7.1"
+
+# AstrBot 适配器类型 → OB12 平台名。OB12 平台名不允许下划线，
+# 所以 qq_official 这类适配器名必须显式映射；其它（wecom/lark/telegram…）
+# 本身就是合法平台名，原样使用。
+PLATFORM_ALIASES = {
+    "qq_official": "qq",
+}
+
+QUERY_ACTIONS = (
+    "get_self_info",
+    "get_group_info",
+    "get_group_member_info",
+    "get_user_info",
+    "get_version",
+    "get_supported_actions",
+)
+SUPPORTED_ACTIONS = ("send_message",) + QUERY_ACTIONS
 
 # QQ 官方媒体类型（与 botpy / AstrBot 的上传接口一致）
 QQOFFICIAL_IMAGE = 1
@@ -71,8 +92,8 @@ CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
 @register(
     PLUGIN_NAME,
     "good-review",
-    "把 AstrBot 事件转发给外部 Go 服务，并把 OneBot 动作用作平台无关的发送/查询协议",
-    "1.6.6",
+    "把 AstrBot 事件以 OneBot 12 转发给外部 Go 服务，并实现 OneBot 12 动作服务",
+    "1.7.1",
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -88,6 +109,9 @@ class OneBotBridge(Star):
         # 多账号部署时身份必须按平台实例分开：两个账号可能同昵称、同群同时收消息。
         self._self_ids: dict[str, str] = {}     # platform_id -> 机器人稳定 ID
         self._self_names: dict[str, str] = {}   # platform_id -> 机器人昵称
+        # (platform_id, group_id) -> 本群可比较的机器人 user_id。
+        # QQ 官方的 openid 按群分配，不能跨群复用；没学到时发哨兵，Go 不触发回复。
+        self._self_by_group: dict[str, str] = {}
         # 每个群的 openid → 展示名，用于把 <@openid> 还原成「@昵称(openid)」。
         self._members: dict[str, dict[str, str]] = {}
         self._group_names: dict[str, str] = {}
@@ -132,26 +156,34 @@ class OneBotBridge(Star):
     @filter.regex(r".*", priority=100)
     async def forward_event(self, event: AstrMessageEvent):
         # 只有 Go 真正接管了这条消息才 stop_event()。
-        # Go 返回 200 ignored（账号不在 allow_self_ids 等）时不能拦，
-        # 否则 AstrBot 自己的 Agent 永远收不到消息。
+        # OB12 约定：2xx = 已接管；4xx（未授权/账号不归 Go）交给 AstrBot 自己的 Agent。
         stop = False
         try:
             msg = event.message_obj
-            if not getattr(msg, "group_id", ""):
+            group_id = str(getattr(msg, "group_id", "") or "")
+            if not group_id:
                 # 私聊 / WebChat 不归 Go 管：不转发也不拦，交给 AstrBot 自己的 Agent。
                 return
             await self._ensure_session()
             try:
                 await self._ensure_server()
             except Exception as exc:
-                # 动作代理起不来只影响"Go 发消息"，不该影响入站转发。
-                logger.error(f"[onebot-bridge] 动作代理启动失败: {exc}")
+                # 动作服务起不来只影响"Go 发消息"，不该影响入站转发。
+                logger.error(f"[onebot-bridge] 动作服务启动失败: {exc}")
             payload = self._build_payload(event)
             if payload is None:
                 # 机器人自己发的消息：不转发，也不让 AstrBot 再回复一遍。
                 stop = True
             else:
-                stop = await self._post_event(payload, self._platform_label(event))
+                account = self._account_for(self._platform_id(event))
+                if not account:
+                    logger.error(
+                        "[onebot-bridge] 无法确定接收账号：QQ 官方应从平台实例读到 AppID；"
+                        "其它平台请在插件配置里填 account"
+                    )
+                    return
+                base = str(self._cfg("go_event_url", DEFAULT_EVENT_URL) or DEFAULT_EVENT_URL)
+                stop = await self._post_event(f"{base.rstrip('/')}/{account}", payload)
         except Exception as exc:  # 插件异常不能拖垮 AstrBot 的事件循环
             logger.error(f"[onebot-bridge] 转发事件失败: {exc}")
         finally:
@@ -159,111 +191,177 @@ class OneBotBridge(Star):
                 event.stop_event()
 
     def _build_payload(self, event: AstrMessageEvent) -> dict | None:
+        """把一条 AstrBot 群消息转成 OneBot 12 事件。
+
+        事件体只用标准字段（id/time/type/detail_type/sub_type/self + 群消息字段），
+        没有任何私有路由字段：接收账号由上报路径表达，平台由 self.platform 表达。
+        """
         msg = event.message_obj
-        raw = getattr(msg, "raw_message", None)
         platform_id = self._platform_id(event)
+        group_id = str(getattr(msg, "group_id", "") or "")
+        chain = getattr(msg, "message", []) or []
 
-        if isinstance(raw, dict) and raw.get("post_type") in ("message", "message_sent"):
-            # aiocqhttp：AstrBot 的 OneBot 原始事件已经是目标格式，直接透传并补齐字段。
-            payload = dict(raw)
-            payload["sender"] = dict(raw.get("sender") or {})
-            payload["raw_message"] = raw.get("raw_message") or getattr(msg, "message_str", "") or ""
-        else:
-            # 其他平台（含 QQ 官方机器人）：用 AstrBot 的标准化字段拼一个 OneBot 11 事件。
-            # raw_message 在这里是 botpy 对象，不能透传；CQ 串由消息链重新生成，
-            # 覆盖 Go 侧需要的 @、引用、附件语义。
-            chain = getattr(msg, "message", []) or []
-            segments = self._to_segments(chain)
-            raw_message = self._to_cq_string(chain)
-            # 部分适配器只在 raw_data.message_reference 里给引用，消息链里没有 Reply 组件。
-            # 补一条标准 reply 段，Go 才能从 OneBot 标准字段里拿到 quote_id。
-            quote_id = self._quote_id(msg)
-            if quote_id and not any(seg["type"] == "reply" for seg in segments):
-                hashed_quote = str(_as_message_id(quote_id))
-                segments.insert(0, {"type": "reply", "data": {"id": hashed_quote}})
-                raw_message = f"[CQ:reply,id={hashed_quote}]" + raw_message
-            payload = {
-                "post_type": "message",
-                "message_type": "group" if getattr(msg, "group_id", "") else "private",
-                "group_id": str(getattr(msg, "group_id", "") or ""),
-                "user_id": str(getattr(msg.sender, "user_id", "")),
-                "sender": {
-                    "nickname": getattr(msg.sender, "nickname", "") or "",
-                    "card": getattr(msg.sender, "card", "") or "",
-                },
-                "message": segments,
-                "raw_message": raw_message,
-                "message_id": getattr(msg, "message_id", ""),
-                "self_id": str(getattr(msg, "self_id", "")),
-                "time": int(getattr(msg, "timestamp", 0) or time.time()),
-            }
-
-        payload["group_id"] = str(payload.get("group_id") or "")
-        payload["user_id"] = str(payload.get("user_id") or "")
-        payload["self_id"] = str(payload.get("self_id") or getattr(msg, "self_id", ""))
-        # platform_id 是 AstrBot 平台实例 ID（配置里的 id），每个实例唯一且恒定，
-        # 不依赖本条消息是否 @ 得到机器人。Go 侧用它做工作空间归属的主键：
-        # QQ 官方拿不到 mention 元数据时 self_id 只是占位值，不能当账号身份。
-        payload["platform_id"] = platform_id
-        # 机器人自己发出的消息要在归一化之前判断：QQ 官方 message_sent 事件的
-        # user_id 和 self_id 可能是两个不同的 openid，只比 user_id == self_id 会漏掉。
-        self_message = payload.get("post_type") == "message_sent"
-        payload["post_type"] = payload.get("post_type") or "message"
-        if payload["post_type"] == "message_sent":
-            # OneBot 把机器人自己发出的消息标成 message_sent；归一成 message 后
-            # Go 侧才能和普通消息走同一条缓存/去重路径。
-            payload["post_type"] = "message"
-        payload["message_type"] = payload.get("message_type") or (
-            "group" if payload["group_id"] else "private"
-        )
-        payload["time"] = int(payload.get("time") or time.time())
-        # Go 侧 MessageID 是 int64：QQ 官方机器人的消息 ID 是 ROBOT1.0_... 这种字符串，
-        # 哈希成一个稳定 int64，保证去重与锚点在重启后仍然成立。
-        original_message_id = payload.get("message_id")
-        payload["message_id"] = _as_message_id(original_message_id)
-        # REFIDX 只留在插件内部：Go 引用回复时传来哈希后的 message_id，
-        # 出站再由这里映射回 QQ 官方的 REFIDX，不进入事件字段。
-        self._remember_ref(
-            original_message_id,
-            payload["message_id"],
-            self._extract_ref_idx(msg),
-        )
-
-        # 先学习身份，再翻译 @：本条的发送者与 mentions 可能就是待解析的 openid。
+        # 先学习身份与成员名，再决定 self.user_id 和渲染 @昵称(ID)。
         self._remember_identity(msg, event)
-        # 每个平台实例打一次 mention 元数据样本：用来确认 QQ 群消息到底带不带 is_you。
-        # 只输出布尔/标记，不落 openid 明文。
-        raw_mentions = self._raw_mention_items(msg)
-        if raw_mentions and platform_id not in self._mention_diag_logged:
-            self._mention_diag_logged.add(platform_id)
-            summary = [
-                {
-                    "has_id": bool(item.get("id")),
-                    "has_member_openid": bool(item.get("member_openid")),
-                    "is_you": item.get("is_you"),
-                }
-                for item in raw_mentions
-            ]
-            logger.info(f"[onebot-bridge] mention 元数据样本 platform={platform_id!r}: {summary}")
-        self_id = self._self_id_for(platform_id)
-        if payload["self_id"] in SELF_ID_PLACEHOLDERS and self_id:
-            payload["self_id"] = self_id
-        # raw_message 保持平台原样（排障用）；display_message 是给缓存和大模型看的
-        # 统一形态：@昵称(openid)，机器人自己也是同样的格式。
-        payload["display_message"] = self._replace_mentions(
-            str(payload.get("raw_message") or ""), msg, payload["group_id"], platform_id
-        )
-        payload["mentioned"] = self._is_mentioned(event, msg, platform_id)
+        self_id = self._ob12_self_user_id(platform_id, group_id, msg)
+
+        segments = self._to_ob12_segments(chain)
+        raw_message_id = str(getattr(msg, "message_id", "") or "")
+        message_id = raw_message_id or f"local-{uuid.uuid4().hex}"
+        timestamp = float(getattr(msg, "timestamp", 0) or time.time())
+
+        payload = {
+            "id": message_id,
+            "time": timestamp,
+            "type": "message",
+            "detail_type": "group",
+            "sub_type": "",
+            "self": {"platform": self._ob12_platform(platform_id), "user_id": self_id},
+            "message_id": message_id,
+            "message": segments,
+            "alt_message": self._render_ob12(segments, group_id),
+            "group_id": group_id,
+            "user_id": str(getattr(getattr(msg, "sender", None), "user_id", "") or ""),
+        }
+
+        # Go 回复时会把 message_id 原样带回，这里顺手记下 REFIDX 供可见引用使用。
+        self._remember_ref(raw_message_id, message_id, self._extract_ref_idx(msg))
 
         if not self._cfg_bool("forward_self_messages", False):
-            if self_message or (payload["user_id"] == payload["self_id"] and payload["self_id"]):
+            raw = getattr(msg, "raw_message", None)
+            if isinstance(raw, dict) and raw.get("post_type") == "message_sent":
+                return None
+            if self_id and payload["user_id"] == self_id:
                 return None
         return payload
 
-    def _platform_label(self, event: AstrMessageEvent) -> str:
-        """平台名只放在 HTTP 头里：非 ASCII 值会让 aiohttp 拒绝发送。"""
-        label = str(self._cfg("platform_label", "") or event.get_platform_name() or "")
-        return label if label.isascii() else ""
+    def _ob12_platform(self, platform_id: str = "") -> str:
+        """事件 self.platform：优先按平台实例自动识别，配置值只作兜底。
+
+        平台名必须匹配 [a-z][-a-z0-9]*(\.[-a-z0-9]+)*，下划线不合法；
+        AstrBot 的 qq_official 通过 PLATFORM_ALIASES 映射成 qq。
+        """
+        candidates = (self._platform_type(platform_id), str(self._cfg("platform", "") or ""))
+        for candidate in candidates:
+            value = PLATFORM_ALIASES.get(candidate.strip().lower(), candidate.strip().lower())
+            value = re.sub(r"[^a-z0-9.-]", "-", value)
+            if re.match(r"^[a-z][-a-z0-9]*(\.[-a-z0-9]+)*$", value):
+                return value
+        logger.warning(
+            "[onebot-bridge] 无法识别平台实例 %s 的平台类型，临时使用 unknown",
+            platform_id or "<empty>",
+        )
+        return "unknown"
+
+    def _platform_type(self, platform_id: str) -> str:
+        """平台适配器类型，如 qq_official / wecom / lark；拿不到返回空串。"""
+        if not platform_id:
+            return ""
+        try:
+            inst = self.context.get_platform_inst(platform_id)
+        except Exception:
+            return ""
+        if inst is None:
+            return ""
+        meta = getattr(inst, "meta", None)
+        if callable(meta):
+            try:
+                name = str(getattr(meta(), "name", "") or "")
+                if name:
+                    return name
+            except Exception:
+                pass
+        return str(getattr(inst, "name", "") or "")
+
+    def _ob12_self_user_id(self, platform_id: str, group_id: str, msg) -> str:
+        """本群可用于和 mention.user_id 比较的机器人 ID；学不到时发哨兵。
+
+        QQ 官方的 openid 按群分配，绝不能拿 AppID / robot.id 去填：
+        它们和 mention 里的 openid 不是同一个命名空间，填进去只会伪造匹配。
+        """
+        key = self._account_key(platform_id, group_id)
+        learned = self._self_by_group.get(key, "")
+        if learned:
+            return learned
+        self_id = str(getattr(msg, "self_id", "") or "")
+        if self_id not in SELF_ID_PLACEHOLDERS:
+            return self_id
+        return "unknown_selfid"
+
+    @staticmethod
+    def _to_ob12_segments(chain) -> list[dict]:
+        segments: list[dict] = []
+        for comp in chain:
+            name = type(comp).__name__.lower()
+            if name == "plain":
+                text = str(getattr(comp, "text", "") or "")
+                if text:
+                    segments.append({"type": "text", "data": {"text": text}})
+            elif name == "atall":
+                segments.append({"type": "mention_all", "data": {}})
+            elif name == "at":
+                qq = str(getattr(comp, "qq", "") or "")
+                if qq:
+                    segments.append({"type": "mention", "data": {"user_id": qq}})
+            elif name == "reply":
+                # Go 侧缓存/锚点用同一条 message_id，引用关系因此能直接落地。
+                segments.append({
+                    "type": "reply",
+                    "data": {"message_id": str(getattr(comp, "id", "") or "")},
+                })
+            elif name == "image":
+                url = str(getattr(comp, "url", "") or getattr(comp, "file", "") or "")
+                if url:
+                    segments.append({"type": "image", "data": {"qq.url": url}})
+            elif name == "record":
+                url = str(getattr(comp, "url", "") or getattr(comp, "file", "") or "")
+                if url:
+                    segments.append({"type": "voice", "data": {"qq.url": url}})
+            elif name == "video":
+                url = str(getattr(comp, "url", "") or getattr(comp, "file", "") or "")
+                if url:
+                    segments.append({"type": "video", "data": {"qq.url": url}})
+            elif name == "file":
+                url = str(getattr(comp, "url", "") or getattr(comp, "file_", "") or "")
+                segments.append({
+                    "type": "file",
+                    "data": {
+                        "qq.name": str(getattr(comp, "name", "") or ""),
+                        "qq.url": url,
+                    },
+                })
+            elif name == "face":
+                segments.append({"type": "face", "data": {}})
+        return segments
+
+    def _render_ob12(self, segments: list[dict], group_id: str) -> str:
+        """alt_message：@ 统一成「@昵称(ID)」，媒体用占位符。
+
+        保留括号里的 openid：昵称会变、也可能重名，模型要靠它判断是不是同一个人。
+        """
+        parts: list[str] = []
+        for seg in segments:
+            seg_type = seg.get("type")
+            data = seg.get("data") or {}
+            if seg_type == "text":
+                parts.append(str(data.get("text", "")))
+            elif seg_type == "mention":
+                user_id = str(data.get("user_id", "") or "")
+                name = self._members.get(group_id, {}).get(user_id, "") or "用户"
+                parts.append(f"@{name}({user_id})")
+            elif seg_type == "mention_all":
+                parts.append("@所有人")
+            elif seg_type == "image":
+                parts.append("[图片]")
+            elif seg_type == "voice":
+                parts.append("[语音]")
+            elif seg_type == "video":
+                parts.append("[视频]")
+            elif seg_type == "file":
+                parts.append("[文件]")
+            elif seg_type == "face":
+                parts.append("[表情]")
+        return "".join(parts).strip()
 
     @staticmethod
     def _platform_id(event) -> str:
@@ -271,6 +369,33 @@ class OneBotBridge(Star):
             return str(event.get_platform_id() or "")
         except Exception:
             return ""
+
+    def _account_for(self, platform_id: str) -> str:
+        """入站上报路径里的账号：优先平台实例的 AppID，取不到才用配置兜底。
+
+        一个 AstrBot 进程可能挂多个 QQ 官方实例，静态 account 只能填一个值；
+        QQ 官方适配器保存了 appid，按事件所属实例取才不会把两个账号混成一个。
+        """
+        appid = self._platform_appid(platform_id)
+        if appid:
+            return appid
+        return str(self._cfg("account", "") or "").strip()
+
+    def _platform_appid(self, platform_id: str) -> str:
+        if not platform_id:
+            return ""
+        try:
+            inst = self.context.get_platform_inst(platform_id)
+        except Exception:
+            return ""
+        if inst is None:
+            return ""
+        appid = getattr(inst, "appid", "")
+        if appid:
+            return str(appid)
+        # 非 QQ 官方适配器没有 appid 时，退到 botpy 的 robot.id（若已 READY）
+        robot = getattr(getattr(inst, "client", None), "robot", None)
+        return str(getattr(robot, "id", "") or "")
 
     def _self_id_for(self, platform_id: str) -> str:
         return self._self_ids.get(platform_id, "")
@@ -288,6 +413,9 @@ class OneBotBridge(Star):
             mapped = self._group_platform.get(group_id, "")
             if mapped:
                 return mapped
+        configured = str(self._cfg("platform_id", "") or "")
+        if configured:
+            return configured
         return self._last_platform_id
 
     @staticmethod
@@ -340,6 +468,8 @@ class OneBotBridge(Star):
             self._self_ids[platform_id] = self_id
             if platform_id:
                 self._self_platform[self_id] = platform_id
+                if group_id:
+                    self._self_by_group[self._account_key(platform_id, group_id)] = self_id
 
         sender = getattr(msg, "sender", None)
         sender_id = str(getattr(sender, "user_id", "") or "")
@@ -360,6 +490,8 @@ class OneBotBridge(Star):
                 self._self_ids[platform_id] = mention_id
                 if platform_id:
                     self._self_platform[mention_id] = platform_id
+                    if group_id:
+                        self._self_by_group[self._account_key(platform_id, group_id)] = mention_id
                 if mention_name:
                     self._self_names[platform_id] = mention_name
 
@@ -374,6 +506,8 @@ class OneBotBridge(Star):
                 self._self_ids[platform_id] = mention_id
                 if platform_id:
                     self._self_platform[mention_id] = platform_id
+                    if group_id:
+                        self._self_by_group[self._account_key(platform_id, group_id)] = mention_id
                 if mention_name:
                     self._self_names[platform_id] = mention_name
 
@@ -438,180 +572,13 @@ class OneBotBridge(Star):
             return []
         return [item for item in items if isinstance(item, dict)]
 
-    @staticmethod
-    def _is_group_message(msg) -> bool:
-        """区分 QQ 群消息与频道/私聊消息。
-
-        群消息的占位 At 只会在真正被 @ 时由 force_group_mention 补上；
-        频道消息则会无条件补 At(qq=qq_official)，不能套用同一个判断。
-
-        注意：插件的 msg 是 AstrBotMessage 包装，真正的 botpy 消息在
-        msg.raw_message 上；只看外层类名会把所有消息都判成非群消息。
-        """
-        raw = getattr(msg, "raw_message", None)
-        names = type(msg).__name__.lower() + "|" + type(raw).__name__.lower()
-        return "groupmessage" in names
-
-    def _self_mention_ids(self, msg) -> list[str]:
-        """返回明确标了 is_you 的 mention id（插件对象 + 原始数据两路）。"""
-        ids: list[str] = []
-        for mention in self._mentions(msg):
-            if not bool(getattr(mention, "is_you", False)):
-                continue
-            mid = str(
-                getattr(mention, "id", "")
-                or getattr(mention, "member_openid", "")
-                or ""
-            )
-            if mid and mid not in ids:
-                ids.append(mid)
-        for item in self._raw_mention_items(msg):
-            if item.get("is_you") is not True:
-                continue
-            mid = str(item.get("id") or item.get("member_openid") or "")
-            if mid and mid not in ids:
-                ids.append(mid)
-        return ids
-
-    def _format_mention(self, group_id: str, mention_id: str, is_self: bool, platform_id: str = "") -> str:
-        mention_id = str(mention_id or "").strip()
-        if not mention_id:
-            return "@未知用户"
-        if mention_id.lower() == "all":
-            return "@所有人"
-        if is_self:
-            # 平台实例 ID 通常就是账号昵称，学不到 mention 昵称时用它兜底，
-            # Go 侧的「@昵称」兜底才有可匹配的文本。
-            name = self._self_name_for(platform_id) or platform_id or "你"
-        else:
-            name = self._members.get(group_id, {}).get(mention_id, "用户")
-        return f"@{name}({mention_id})"
-
-    def _replace_mentions(self, text: str, msg, group_id: str, platform_id: str = "") -> str:
-        """把平台的各种 @ 写法统一成「@昵称(openid)」。
-
-        raw_message 仍保留原样给排障；display_message 用这个结果，缓存和大模型都只读它。
-        未知成员也保留完整 openid：昵称以后可以补，但标识不会变。
-        机器人自己的身份按平台实例取：两个账号同群时不能共用一个 self_id。
-        """
-        if not text:
-            return text
-
-        self_id = self._self_id_for(platform_id)
-        is_self_by_id: dict[str, bool] = {}
-        for mention in self._mentions(msg):
-            mention_id = str(getattr(mention, "id", "") or "")
-            if mention_id:
-                is_self_by_id[mention_id] = bool(getattr(mention, "is_you", False))
-
-        def replace(match: re.Match) -> str:
-            mention_id = str(match.group(1) or "")
-            # 占位 At 在群消息里只由 force_group_mention（真实 @）补上，
-            # 可以放心渲染成本账号；频道消息的占位 At 不是 @ 证据，仍按普通用户处理。
-            placeholder_self = (
-                mention_id in SELF_ID_PLACEHOLDERS and self._is_group_message(msg)
-            )
-            is_self = is_self_by_id.get(mention_id, False) or placeholder_self or (
-                bool(self_id) and mention_id == self_id
-            )
-            return self._format_mention(group_id, mention_id, is_self, platform_id)
-
-        text = QQBOT_AT_RE.sub(replace, text)
-        text = ANGLE_AT_RE.sub(replace, text)
-        text = CQ_AT_RE.sub(replace, text)
-        return text
-
-    @staticmethod
-    def _quote_id(msg) -> str:
-        """取当前消息引用的那条消息的平台原始 ID（没有引用时为空）。
-
-        只用于补标准 reply 段：Go 侧只需要哈希后的 message_id，
-        被引用消息不在 chat log 里时就对不上，不需要额外内容。
-        """
-        chain = getattr(msg, "message", []) or []
-        reply = next(
-            (comp for comp in chain if type(comp).__name__.lower() == "reply"), None
-        )
-        if reply is not None and getattr(reply, "id", ""):
-            return str(reply.id)
-
-        raw = getattr(msg, "raw_message", None)
-        ref = getattr(raw, "message_reference", None)
-        if ref is not None and getattr(ref, "message_id", ""):
-            return str(ref.message_id)
-        if isinstance(raw, dict):
-            for segment in raw.get("message") or []:
-                if isinstance(segment, dict) and segment.get("type") == "reply":
-                    quote_id = (segment.get("data") or {}).get("id", "")
-                    if quote_id:
-                        return str(quote_id)
-        # 部分 AstrBot/qbotpy 组合只把原始数据放在 raw_data 里
-        raw_data = getattr(raw, "raw_data", None)
-        if isinstance(raw_data, dict):
-            ref = raw_data.get("message_reference") or {}
-            if isinstance(ref, dict) and ref.get("message_id"):
-                return str(ref["message_id"])
-        return ""
-
-    def _is_mentioned(self, event: AstrMessageEvent, msg, platform_id: str = "") -> bool:
-        """判断这条消息是否真的在 @ 本账号。
-
-        多账号同群时，AstrBot 对群 @ 事件固定 force_group_mention：拿不到 mention
-        元数据时会把 self_id 填成 qq_official 并伪造 At(qq=qq_official)，
-        event.is_at_or_wake_command 也会因此为真。这两者都不能当成本账号被 @ 的证据，
-        否则没被 @ 的账号也会执行指令。
-        """
-        # 1) mentions 里明确标了 is_you：最可靠的「真的被 @」证据
-        if self._self_mention_ids(msg):
-            return True
-
-        self_id = str(getattr(msg, "self_id", "") or "")
-        if self_id not in SELF_ID_PLACEHOLDERS:
-            # AstrBot 已从 mention 元数据拿到真实身份，@ / 唤醒前缀 / 回复都可信
-            if bool(getattr(event, "is_at_or_wake_command", False)):
-                return True
-        elif self._is_group_message(msg):
-            # QQ 官方 group_at_message_create 走 force_group_mention：拿不到 openid 时
-            # AstrBot 会补一个 At(qq="qq_official")；普通 group_message_create 不补。
-            # 所以「群消息里存在 At(qq=占位值)」等价于「本平台实例真的被 @」。
-            for comp in getattr(msg, "message", []) or []:
-                if type(comp).__name__.lower() == "at" and str(getattr(comp, "qq", "")) == self_id:
-                    return True
-
-        if self_id in SELF_ID_PLACEHOLDERS:
-            # 没有占位 At 时，只能用本平台实例已学到的真实 openid 证明
-            self_id = self._self_id_for(platform_id)
-            if not self_id:
-                return False
-
-        for comp in getattr(msg, "message", []) or []:
-            comp_name = type(comp).__name__.lower()
-            if comp_name == "atall":
-                # AstrBot 的 ignore_at_all 生效时不会把它算作唤醒
-                return bool(getattr(event, "is_at_or_wake_command", False))
-            if comp_name != "at":
-                continue
-            qq = str(getattr(comp, "qq", "") or "")
-            if qq and qq == self_id:
-                return True
-
-        raw = getattr(msg, "raw_message", None)
-        if isinstance(raw, dict):
-            content = str(raw.get("raw_message") or "")
-        else:
-            content = str(getattr(raw, "content", "") or "")
-        return bool(content) and (
-            f"<@{self_id}>" in content
-            or f"<@!{self_id}>" in content
-            or f'<qqbot-at-user id="{self_id}"' in content
-        )
-
-    async def _post_event(self, payload: dict[str, Any], platform: str = "") -> bool:
-        url = self._cfg("go_event_url", DEFAULT_EVENT_URL)
-        headers = {"Content-Type": "application/json"}
-        if platform:
-            # 平台名只是排障信息，放头里，不进 OneBot 事件字段。
-            headers["X-Platform"] = platform
+    async def _post_event(self, url: str, payload: dict[str, Any]) -> bool:
+        """推送一条 OB12 事件；返回 True 表示 Go 已接管（调用方应 stop_event）。"""
+        headers = {
+            "Content-Type": "application/json",
+            "X-OneBot-Version": ONEBOT_VERSION,
+            "X-Impl": IMPL_NAME,
+        }
         token = self._cfg("token", "")
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -630,22 +597,18 @@ class OneBotBridge(Star):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=5),
                 ) as resp:
-                    body = await resp.text()
+                    text = await resp.text()
+                    if resp.status < 300:
+                        # OB12：204/200 = 推送成功（本项目的部署约定里 = Go 已接管）。
+                        return True
                     if resp.status < 500:
-                        if resp.status >= 300:
-                            logger.warning(
-                                f"[onebot-bridge] Go 侧拒收事件 {resp.status}: {body[:200]}"
-                            )
-                            return False
-                        # 202 = Go 接管；200 ignored = 不归 Go（账号不在白名单等），
-                        # 后者必须放行给 AstrBot 自己的 Agent。
-                        accepted = resp.status == 202
-                        if not accepted:
-                            logger.debug(
-                                f"[onebot-bridge] Go 未接管事件（{resp.status}），交给 AstrBot: {body[:200]}"
-                            )
-                        return accepted
-                    last_error = f"HTTP {resp.status}: {body[:200]}"
+                        # 400/401/404 = 未被接管（账号非法、鉴权失败、名单拒绝），
+                        # 不能拦，AstrBot 自己的 Agent 要能兜底。
+                        logger.debug(
+                            f"[onebot-bridge] Go 未接管事件（{resp.status}），交给 AstrBot: {text[:200]}"
+                        )
+                        return False
+                    last_error = f"HTTP {resp.status}: {text[:200]}"
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 last_error = str(exc)
             if attempt < retries - 1:
@@ -676,6 +639,9 @@ class OneBotBridge(Star):
 
             app = web.Application()
             app.router.add_get("/health", self._handle_health)
+            # OB12 的 HTTP API 统一入口是 POST /（action 在 body 里）。
+            # 同时保留 /{action} 便于人工 curl 调试。
+            app.router.add_post("/", self._handle_action)
             app.router.add_post("/{action}", self._handle_action)
 
             runner = web.AppRunner(app, access_log=None)
@@ -702,22 +668,34 @@ class OneBotBridge(Star):
                 {"status": "failed", "retcode": 401, "message": "unauthorized"}, status=401
             )
 
-        action = request.match_info["action"]
-        # get_login_info 这类动作没有参数，Go 侧发的是空 body；不能直接 request.json()。
         raw_body = await request.read()
         try:
-            params = json.loads(raw_body) if raw_body.strip() else {}
-            if not isinstance(params, dict):
+            body = json.loads(raw_body) if raw_body.strip() else {}
+            if not isinstance(body, dict):
                 raise ValueError("body must be a JSON object")
         except Exception as exc:
             return web.json_response(
-                {"status": "failed", "retcode": 400, "message": f"invalid params: {exc}"},
+                {"status": "failed", "retcode": 400, "message": f"invalid request: {exc}"},
                 status=400,
             )
 
+        if "action" in body:
+            action = str(body.get("action") or "")
+            params = body.get("params") or {}
+            echo = body.get("echo")
+        else:
+            # 兼容 /{action} 的调试写法：path 决定动作，body 直接是 params。
+            action = str(request.match_info.get("action") or "")
+            params = body
+            echo = None
+        if not isinstance(params, dict):
+            return web.json_response({
+                "status": "failed", "retcode": 400, "message": "params must be an object", "echo": echo,
+            })
+
         timeout = max(1, self._cfg_int("action_timeout_sec", 10))
         try:
-            if action in SEND_ACTIONS:
+            if action == "send_message":
                 result = await asyncio.wait_for(self._send_message(action, params), timeout=timeout)
             elif action in QUERY_ACTIONS:
                 result = await asyncio.wait_for(self._query_action(action, params), timeout=timeout)
@@ -728,24 +706,40 @@ class OneBotBridge(Star):
                     "message": f"不支持的动作: {action}",
                 }
         except asyncio.TimeoutError:
-            return web.json_response({
+            result = {
                 "status": "failed",
                 "retcode": 408,
                 "message": f"action {action} timeout after {timeout}s",
-            })
+            }
         except Exception as exc:
             logger.warning(f"[onebot-bridge] action {action} 失败: {exc}")
-            return web.json_response({
+            result = {
                 "status": "failed",
                 "retcode": getattr(exc, "retcode", 1400),
                 "message": str(exc),
-            })
+            }
+
+        result.setdefault("status", "ok")
+        result.setdefault("retcode", 0)
+        result["echo"] = echo
         return web.json_response(result)
 
     async def _send_message(self, action: str, params: dict) -> dict:
         segments = self._normalize_segments(params.get("message", ""))
         if not segments:
             return {"status": "failed", "retcode": 400, "message": "message 为空"}
+        # 平台发送链路（官方被动回复 / send_by_session）仍是 OneBot 11 语义，
+        # 在这里统一翻译一次，后面的分支都拿到同一份段。
+        segments = [self._ob12_segment_to_ob11(seg) for seg in segments]
+        if action == "send_message":
+            detail_type = str(params.get("detail_type") or "")
+            if detail_type and detail_type != "group":
+                return {
+                    "status": "failed",
+                    "retcode": 1404,
+                    "message": f"暂不支持 detail_type={detail_type}（当前只有群消息）",
+                }
+            action = "send_group_msg"
 
         group_id = str(params.get("group_id") or "")
         user_id = str(params.get("user_id") or "")
@@ -815,6 +809,32 @@ class OneBotBridge(Star):
             segments.append({"type": seg_type, "data": data})
         return segments
 
+    @staticmethod
+    def _ob12_segment_to_ob11(seg: dict) -> dict:
+        """OB12 段 → OneBot 11 段（aiocqhttp 透传用）。不认识的段降级为文本。"""
+        seg_type = str(seg.get("type") or "")
+        data = dict(seg.get("data") or {})
+        if seg_type == "mention":
+            return {"type": "at", "data": {"qq": str(data.get("user_id", ""))}}
+        if seg_type == "mention_all":
+            return {"type": "at", "data": {"qq": "all"}}
+        if seg_type == "reply":
+            return {"type": "reply", "data": {"id": str(data.get("message_id", ""))}}
+        if seg_type == "voice":
+            return {"type": "record", "data": {"url": str(data.get("qq.url", ""))}}
+        if seg_type == "image":
+            url = str(data.get("qq.url", "") or data.get("url", ""))
+            return {"type": "image", "data": {"url": url, "file": url}}
+        if seg_type == "video":
+            url = str(data.get("qq.url", "") or data.get("url", ""))
+            return {"type": "video", "data": {"url": url, "file": url}}
+        if seg_type == "file":
+            url = str(data.get("qq.url", "") or data.get("url", ""))
+            return {"type": "file", "data": {"name": str(data.get("qq.name", "")), "url": url, "file": url}}
+        if seg_type == "text":
+            return seg
+        return {"type": "text", "data": {"text": str(data.get("text", ""))}}
+
     async def _send_via_onebot(
         self,
         adapter,
@@ -837,13 +857,7 @@ class OneBotBridge(Star):
                 return None
             params["user_id"] = int(user_id)
 
-        # OneBot 11 没有 markdown 段，透传前降级成文本。
-        params["message"] = [
-            {"type": "text", "data": {"text": str((seg.get("data") or {}).get("text", ""))}}
-            if seg.get("type") == "markdown"
-            else seg
-            for seg in segments
-        ]
+        params["message"] = segments
 
         result = await call(action, **params)
         if isinstance(result, dict) and "retcode" in result:
@@ -1139,20 +1153,18 @@ class OneBotBridge(Star):
     async def _query_action(self, action: str, params: dict) -> dict:
         group_id = str(params.get("group_id") or "")
         self_id = str(params.get("self_id") or "")
-        # 指定了账号但还没学到它的平台实例时，不能退回"第一个适配器"：
-        # 多账号下会把 A 的昵称当成 B 的返回，面板就会显示错误的账号名。
-        if action == "get_login_info" and self_id and self_id not in self._self_platform:
-            return {
-                "status": "failed",
-                "retcode": 1404,
-                "message": "账号身份尚未学习，无法定位平台实例",
-            }
         platform_id = self._platform_for_action(self_id, group_id)
         adapter = self._get_adapter(group_id, self_id)
-        if adapter is None:
+
+        if action in ("get_group_member_info", "get_user_info") and adapter is not None:
+            if self._is_aiocqhttp(adapter):
+                try:
+                    return await self._call_onebot_action(adapter, action, params)
+                except Exception:
+                    pass
+
+        if action not in ("get_version", "get_supported_actions") and adapter is None:
             return {"status": "failed", "retcode": 1404, "message": "没有已连接的消息平台适配器"}
-        if self._is_aiocqhttp(adapter):
-            return await self._call_onebot_action(adapter, action, params)
         return self._local_query(adapter, action, params, platform_id)
 
     @staticmethod
@@ -1165,7 +1177,7 @@ class OneBotBridge(Star):
             return type(adapter).__name__ == "AiocqhttpAdapter"
 
     def _local_query(self, adapter, action: str, params: dict, platform_id: str = "") -> dict:
-        if action == "get_login_info":
+        if action == "get_self_info":
             wanted_self = str(params.get("self_id") or "")
             target_platform = str(params.get("platform_id") or "") or platform_id
             if wanted_self:
@@ -1187,10 +1199,9 @@ class OneBotBridge(Star):
                 "status": "ok",
                 "retcode": 0,
                 "data": {
-                    "user_id": _as_int(self_id),
-                    "nickname": name,
-                    "openid": self_id,
-                    "platform_id": target_platform,
+                    "user_id": self_id,
+                    "user_name": name,
+                    "user_displayname": name,
                 },
             }
         if action == "get_group_info":
@@ -1203,12 +1214,40 @@ class OneBotBridge(Star):
                     "group_name": self._group_names.get(group_id, group_id),
                 },
             }
-        if action == "get_group_msg_history":
+        if action == "get_group_member_info":
+            group_id = str(params.get("group_id") or "")
+            user_id = str(params.get("user_id") or "")
+            name = self._members.get(group_id, {}).get(user_id, "")
             return {
-                "status": "failed",
-                "retcode": 1404,
-                "message": "该平台不提供群历史消息接口（QQ 官方机器人常见）",
+                "status": "ok",
+                "retcode": 0,
+                "data": {"user_id": user_id, "user_name": name, "user_displayname": name},
             }
+        if action == "get_user_info":
+            user_id = str(params.get("user_id") or "")
+            name = ""
+            for members in self._members.values():
+                if members.get(user_id):
+                    name = members[user_id]
+                    break
+            return {
+                "status": "ok",
+                "retcode": 0,
+                "data": {"user_id": user_id, "user_name": name, "user_displayname": name},
+            }
+        if action == "get_version":
+            return {
+                "status": "ok",
+                "retcode": 0,
+                "data": {
+                    "impl": IMPL_NAME,
+                    "version": PLUGIN_VERSION,
+                    "onebot_version": ONEBOT_VERSION,
+                    "platform": self._ob12_platform(platform_id),
+                },
+            }
+        if action == "get_supported_actions":
+            return {"status": "ok", "retcode": 0, "data": list(SUPPORTED_ACTIONS)}
         return {"status": "failed", "retcode": 1404, "message": f"不支持的动作: {action}"}
 
     async def _call_onebot_action(self, adapter, action: str, params: dict) -> dict:
@@ -1283,17 +1322,6 @@ class OneBotBridge(Star):
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
     @staticmethod
-    def _cq_value(value: Any) -> str:
-        """转义 CQ 码属性值，避免 url/name 里的逗号、方括号破坏分段。"""
-        text = str(value or "")
-        return (
-            text.replace("&", "&amp;")
-            .replace("[", "&#91;")
-            .replace("]", "&#93;")
-            .replace(",", "&#44;")
-        )
-
-    @staticmethod
     def _coerce_params(params: dict) -> dict:
         out = dict(params)
         for key in ("group_id", "user_id", "message_id", "count"):
@@ -1302,108 +1330,8 @@ class OneBotBridge(Star):
                 out[key] = int(value)
         return out
 
-    @staticmethod
-    def _to_segments(chain) -> list[dict]:
-        segments = []
-        for comp in chain:
-            name = type(comp).__name__.lower()
-            if name == "plain":
-                segments.append({"type": "text", "data": {"text": getattr(comp, "text", "")}})
-            elif name in ("at", "atall"):
-                qq = "all" if name == "atall" else str(getattr(comp, "qq", ""))
-                segments.append({"type": "at", "data": {"qq": qq}})
-            elif name == "reply":
-                # Reply 带的是平台原始 ID；与入站 message_id 用同一个哈希，
-                # Go 才能把 reply 段里的 id 直接当成 chat log 的 msg_id。
-                segments.append({
-                    "type": "reply",
-                    "data": {"id": str(_as_message_id(getattr(comp, "id", "")))},
-                })
-            elif name == "image":
-                source = getattr(comp, "url", "") or getattr(comp, "file", "") or ""
-                segments.append({"type": "image", "data": {"url": source, "file": source}})
-            elif name == "record":
-                source = getattr(comp, "url", "") or getattr(comp, "file", "") or ""
-                segments.append({"type": "record", "data": {"url": source, "file": source}})
-            elif name == "video":
-                source = getattr(comp, "url", "") or getattr(comp, "file", "") or ""
-                segments.append({"type": "video", "data": {"url": source, "file": source}})
-            elif name == "file":
-                segments.append({
-                    "type": "file",
-                    "data": {
-                        "name": str(getattr(comp, "name", "") or ""),
-                        "url": str(getattr(comp, "url", "") or ""),
-                        "file": str(getattr(comp, "file_", "") or ""),
-                    },
-                })
-            elif name == "face":
-                segments.append({"type": "face", "data": {"id": str(getattr(comp, "id", ""))}})
-        return segments
-
-    @staticmethod
-    def _to_cq_string(chain) -> str:
-        """给非 aiocqhttp 平台生成 CQ 串，复用 Go 侧已有的 CQ 解析逻辑。"""
-        parts = []
-        for comp in chain:
-            name = type(comp).__name__.lower()
-            if name == "plain":
-                parts.append(str(getattr(comp, "text", "")))
-            elif name in ("at", "atall"):
-                qq = "all" if name == "atall" else getattr(comp, "qq", "")
-                parts.append(f"[CQ:at,qq={OneBotBridge._cq_value(qq)}]")
-            elif name == "reply":
-                reply_id = _as_message_id(getattr(comp, "id", ""))
-                parts.append(f"[CQ:reply,id={OneBotBridge._cq_value(reply_id)}]")
-            elif name == "image":
-                url = getattr(comp, "url", "") or getattr(comp, "file", "") or ""
-                parts.append(
-                    f"[CQ:image,url={OneBotBridge._cq_value(url)}]" if url else "[CQ:image]"
-                )
-            elif name == "record":
-                url = getattr(comp, "url", "") or getattr(comp, "file", "") or ""
-                parts.append(
-                    f"[CQ:record,url={OneBotBridge._cq_value(url)}]" if url else "[CQ:record]"
-                )
-            elif name == "video":
-                url = getattr(comp, "url", "") or getattr(comp, "file", "") or ""
-                parts.append(
-                    f"[CQ:video,url={OneBotBridge._cq_value(url)}]" if url else "[CQ:video]"
-                )
-            elif name == "file":
-                file_name = OneBotBridge._cq_value(getattr(comp, "name", "") or "")
-                url = str(getattr(comp, "url", "") or "")
-                if not url:
-                    local_ref = str(getattr(comp, "file_", "") or "")
-                    if local_ref.startswith(("http://", "https://", "file://")):
-                        url = local_ref
-                parts.append(f"[CQ:file,name={file_name},url={OneBotBridge._cq_value(url)}]")
-            elif name == "face":
-                parts.append(f"[CQ:face,id={OneBotBridge._cq_value(getattr(comp, 'id', ''))}]")
-        return "".join(parts)
-
-
 def _as_int(value) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _as_message_id(value) -> int:
-    """把各平台消息 ID 归一成 Go 侧使用的 int64。
-
-    QQ 官方机器人的消息 ID 是 ROBOT1.0_... 字符串，直接 int() 会得到 0，
-    导致所有消息在 Go 的去重 map 里都变成同一条。这里对非数字 ID 做稳定哈希。
-    """
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return 0
-    if text.isdigit():
-        return int(text)
-    digest = hashlib.sha256(text.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF

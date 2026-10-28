@@ -25,33 +25,25 @@ func TestHasGroup(t *testing.T) {
 	}
 }
 
-func TestHasSelfID(t *testing.T) {
-	explicit := &Config{AllowSelfIDs: []string{"bot-a", "bot-b"}}
-	if !explicit.HasSelfID("bot-a") || !explicit.HasSelfID("bot-b") {
-		t.Fatal("explicit self ids should match")
+func TestHasWorkspaceAccount(t *testing.T) {
+	explicit := &Config{WorkspaceAccounts: []string{"qq_1906xxxx", "qq_1904xxxx"}}
+	if !explicit.HasWorkspaceAccount("qq_1906xxxx") || !explicit.HasWorkspaceAccount("qq_1904xxxx") {
+		t.Fatal("explicit workspace accounts should match")
 	}
-	if explicit.HasSelfID("bot-c") {
-		t.Fatal("unknown self id must not match")
+	if explicit.HasWorkspaceAccount("qq_9999") {
+		t.Fatal("unknown workspace account must not match")
 	}
-	if !explicit.IsManagedAccount("bot-a") || explicit.IsManagedAccount("bot-c") {
-		t.Fatal("IsManagedAccount should only match explicit accounts")
-	}
-
-	// 适配器还没学到真实身份时 self_id 是占位值，无法判断归属，放行。
-	if !explicit.HasSelfID("") || !explicit.HasSelfID("qq_official") {
-		t.Fatal("placeholder self id should pass")
+	if explicit.AllowsAllWorkspaceAccounts() {
+		t.Fatal("explicit list must not allow all accounts")
 	}
 
-	wildcard := &Config{AllowSelfIDs: []string{"*"}}
-	if !wildcard.HasSelfID("any-bot") {
-		t.Fatal("wildcard should allow every account")
-	}
-	if wildcard.IsManagedAccount("any-bot") {
-		t.Fatal("wildcard cannot enumerate accounts, IsManagedAccount must be false")
+	wildcard := &Config{WorkspaceAccounts: []string{"*"}}
+	if !wildcard.HasWorkspaceAccount("any-platform_any-account") || !wildcard.AllowsAllWorkspaceAccounts() {
+		t.Fatal("wildcard should allow every workspace")
 	}
 
 	empty := &Config{}
-	if empty.HasSelfID("bot-a") {
-		t.Fatal("empty list must allow no account")
+	if empty.HasWorkspaceAccount("qq_1906xxxx") || empty.AllowsAllWorkspaceAccounts() {
+		t.Fatal("empty list must allow nothing")
 	}
 }

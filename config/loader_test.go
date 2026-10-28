@@ -38,11 +38,14 @@ func TestMain(m *testing.M) {
 
 // baseConfig 一份能通过全部校验的最小配置。
 const baseConfig = `
-astrbot:
-  http_api: "http://127.0.0.1:6199"
+im:
+  token: "im-token"
+  accounts:
+    - id: "qq_1906xxxx"
+      api_base: "http://127.0.0.1:6199"
 bot:
   allow_groups: "10001,10002"
-  allow_self_ids: "bot-openid-1,bot-openid-2"
+  workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
 runtime:
   llm_send_count: 3
   llm_timeout_sec: 20
@@ -89,8 +92,15 @@ func TestLoad基本配置(t *testing.T) {
 	if len(cfg.AllowGroups) != 2 || cfg.AllowGroups[0] != "10001" {
 		t.Errorf("AllowGroups = %v", cfg.AllowGroups)
 	}
-	if len(cfg.AllowSelfIDs) != 2 || cfg.AllowSelfIDs[0] != "bot-openid-1" {
-		t.Errorf("AllowSelfIDs = %v", cfg.AllowSelfIDs)
+	if len(cfg.WorkspaceAccounts) != 2 || cfg.WorkspaceAccounts[0] != "qq_1906xxxx" {
+		t.Errorf("WorkspaceAccounts = %v", cfg.WorkspaceAccounts)
+	}
+	if cfg.IMToken != "im-token" {
+		t.Errorf("IMToken = %q", cfg.IMToken)
+	}
+	if len(cfg.IMAccounts) != 1 || cfg.IMAccounts[0].ID != "qq_1906xxxx" ||
+		cfg.IMAccounts[0].APIBase != "http://127.0.0.1:6199" {
+		t.Errorf("IMAccounts = %+v", cfg.IMAccounts)
 	}
 	if cfg.PollInterval.Seconds() != 3 {
 		t.Errorf("PollInterval = %v", cfg.PollInterval)
@@ -140,8 +150,8 @@ astrbot_access_token: "ast-from-secret-file"
 	if cfg.WebPassword != "pw-from-secret-file" {
 		t.Errorf("secret.yaml 应优先，实际 WebPassword = %q", cfg.WebPassword)
 	}
-	if cfg.AstrBotAccessToken != "ast-from-secret-file" {
-		t.Errorf("secret.yaml 应优先，实际 AstrBotAccessToken = %q", cfg.AstrBotAccessToken)
+	if cfg.IMToken != "ast-from-secret-file" {
+		t.Errorf("旧键应迁移为 IMToken，实际 %q", cfg.IMToken)
 	}
 }
 
@@ -150,19 +160,31 @@ func Test旧napcat键仍可迁移(t *testing.T) {
 	if err != nil {
 		t.Fatalf("旧 secret 键应能加载：%v", err)
 	}
-	if cfg.AstrBotAccessToken != "legacy-token" {
-		t.Errorf("旧键应迁移为 AstrBotAccessToken，实际 %q", cfg.AstrBotAccessToken)
+	if cfg.IMToken != "legacy-token" {
+		t.Errorf("旧键应迁移为 IMToken，实际 %q", cfg.IMToken)
 	}
 }
 
-func Test旧napcat段仍可迁移(t *testing.T) {
-	legacyConfig := strings.Replace(baseConfig, "astrbot:", "napcat:", 1)
+func Test旧astrbot段仍能接住token(t *testing.T) {
+	legacyConfig := `
+astrbot:
+  http_api: "http://127.0.0.1:6199"
+  access_token: "legacy-ast-token"
+` + strings.Replace(baseConfig, `im:
+  token: "im-token"
+  accounts:
+    - id: "qq_1906xxxx"
+      api_base: "http://127.0.0.1:6199"
+`, "", 1)
 	cfg, err := loadWith(t, legacyConfig, "")
 	if err != nil {
 		t.Fatalf("旧 config 段应能加载：%v", err)
 	}
-	if cfg.AstrBotHTTPAPI != "http://127.0.0.1:6199" {
-		t.Errorf("旧段应迁移为 AstrBotHTTPAPI，实际 %q", cfg.AstrBotHTTPAPI)
+	if cfg.IMToken != "legacy-ast-token" {
+		t.Errorf("旧段的 access_token 应迁移为 IMToken，实际 %q", cfg.IMToken)
+	}
+	if len(cfg.IMAccounts) != 0 {
+		t.Errorf("旧段没有账号维度，不应凭空生成连接：%+v", cfg.IMAccounts)
 	}
 }
 
@@ -325,10 +347,10 @@ func TestValidate报错要指明字段与原因(t *testing.T) {
 			wantContain: "provider",
 		},
 		{
-			name: "astrbot 地址没有 scheme",
+			name: "im.accounts 地址没有 scheme",
 			configYAML: strings.Replace(baseConfig,
-				`  http_api: "http://127.0.0.1:6199"`, `  http_api: "127.0.0.1:6199"`, 1),
-			wantContain: "http_api",
+				`      api_base: "http://127.0.0.1:6199"`, `      api_base: "127.0.0.1:6199"`, 1),
+			wantContain: "api_base",
 		},
 		{
 			name: "开了 web_port 却没有密码",
@@ -424,7 +446,7 @@ func dirEntries(t *testing.T, dir string) []string {
 
 // configsEqual 逐字段比较两份配置。用 == 会漏掉切片与 map 的内部差异。
 func configsEqual(a, b *Config) bool {
-	if a.AstrBotHTTPAPI != b.AstrBotHTTPAPI || a.AstrBotAccessToken != b.AstrBotAccessToken ||
+	if a.IMToken != b.IMToken ||
 		a.MaxCacheMsg != b.MaxCacheMsg ||
 		a.LLMSendCount != b.LLMSendCount || a.LLMTimeout != b.LLMTimeout ||
 		a.MaxMsgRune != b.MaxMsgRune || a.PollInterval != b.PollInterval ||
@@ -435,6 +457,12 @@ func configsEqual(a, b *Config) bool {
 		return false
 	}
 	if strings.Join(a.AllowGroups, ",") != strings.Join(b.AllowGroups, ",") {
+		return false
+	}
+	if strings.Join(a.WorkspaceAccounts, ",") != strings.Join(b.WorkspaceAccounts, ",") {
+		return false
+	}
+	if !reflect.DeepEqual(a.IMAccounts, b.IMAccounts) {
 		return false
 	}
 	if strings.Join(a.CorsOrigins, ",") != strings.Join(b.CorsOrigins, ",") {

@@ -43,9 +43,6 @@ const configWatchInterval = 2 * time.Second
 //  3. 首跑与日志：main 负责建模板文件，这里负责把加载结果打成启动日志；
 //  4. 启动动作的时序：MCP 的 LogConfig/Start 与面板的 EnableDebug 都是
 //     构造之后的**方法调用**，Wire 只接构造函数。
-//
-// 顺序上有一处硬约束：**昵称必须在快照构造之前取到**（见 providers.go 的
-// provideBotNickname）——快照要求不可变，"先发布再往里面写昵称"正是这次重构要消掉的动作。
 func New(opts Options) (*App, error) {
 	// 配置只读这一次。**必须在造大模型客户端之前**：客户端的 provider 分支、
 	// 接口地址、采样参数全都来自它。校验失败就在这里返回，
@@ -107,7 +104,7 @@ func New(opts Options) (*App, error) {
 	logStartup(application)
 
 	if application.Web != nil && fakeLLM != nil {
-		application.Web.EnableDebug(application.Router, fakeLLM)
+		application.Web.EnableDebug(fakeLLM)
 	}
 
 	return application, nil
@@ -123,7 +120,7 @@ func New(opts Options) (*App, error) {
 func buildLLMClient(opts Options, cfg *config.Config) (llm.Client, *testutil.FakeLLM, error) {
 	if opts.TestMode {
 		fakeLLM := testutil.NewFakeLLM()
-		logutil.Warn("测试模式已启用：使用 FakeLLM，AstrBot 桥接地址由配置决定")
+		logutil.Warn("测试模式已启用：使用 FakeLLM，出站地址仍由 im.accounts 决定")
 		return fakeLLM, fakeLLM, nil
 	}
 
@@ -157,10 +154,15 @@ func buildLLMClient(opts Options, cfg *config.Config) (llm.Client, *testutil.Fak
 func logStartup(application *App) {
 	cfg := application.Config()
 	logutil.Info("🚀 【不是好评大师】机器人启动成功")
-	logutil.Info("AstrBot 桥接 API：" + cfg.AstrBotHTTPAPI)
-	logutil.Info("允许响应群（全局默认）：" + cfg.AllowGroupsStr())
-	logutil.Info("Go 接管的机器人账号：" + cfg.AllowSelfIDsStr())
-	logutil.Info("IM 事件入口：" + cfg.IMListenAddr)
+	if len(cfg.IMAccounts) == 0 {
+		logutil.Warn("未配置 im.accounts：可以接收事件，但发不出任何消息")
+	}
+	for _, account := range cfg.IMAccounts {
+		logutil.Info("出站账号：" + account.ID + " → " + account.APIBase)
+	}
+	logutil.Info("允许响应群（全局）：" + cfg.AllowGroupsStr())
+	logutil.Info("允许自动开通的工作空间：" + cfg.WorkspaceAccountsStr())
+	logutil.Info("IM 事件入口：" + cfg.IMListenAddr + "/im/event/{account}")
 	if application.Workspaces != nil {
 		application.Workspaces.LogSummary()
 	}
@@ -210,22 +212,19 @@ func warnRestartOnlyChanges(previous, next *config.Config) {
 		previous.MCPConfig.BreakerCooldown != next.MCPConfig.BreakerCooldown {
 		logutil.Warn("mcp 的熔断参数已变化，但需要重启才能生效（熔断器在启动时已按服务构造）")
 	}
-	if !sameWorkspaces(previous.Workspaces, next.Workspaces) {
-		logutil.Warn("bot.workspaces 已变化，但需要重启才能生效（工作空间的 Router/提示词/缓存按启动时的声明构造）")
+	if !sameIMAccounts(previous.IMAccounts, next.IMAccounts) {
+		logutil.Warn("im.accounts 已变化，但需要重启才能生效（OneBot 客户端在启动时已按当时的地址构造）")
 	}
 }
 
-// sameWorkspaces 只比较结构性字段：nickname / allow_groups 支持热更新，
-// 不在这里判变化，否则每次改昵称都会误报"需要重启"。
-func sameWorkspaces(previous, next []config.WorkspaceConf) bool {
+// sameIMAccounts 比较出站账号列表。地址变了需要重启；新增工作空间不需要
+// （账号的事件到达时会自动开通），但它的出站连接仍然来自启动期列表。
+func sameIMAccounts(previous, next []config.IMAccount) bool {
 	if len(previous) != len(next) {
 		return false
 	}
 	for i := range previous {
-		left, right := previous[i], next[i]
-		if left.ID != right.ID || left.PlatformID != right.PlatformID ||
-			left.PromptDir != right.PromptDir ||
-			strings.Join(left.SelfIDs, "\x00") != strings.Join(right.SelfIDs, "\x00") {
+		if previous[i] != next[i] {
 			return false
 		}
 	}
@@ -253,17 +252,15 @@ func sameMCPServers(previous, next []config.MCPServerConf) bool {
 // deriveConfig 把"只有本进程知道"的运行期值贴到一份刚加载出来的配置上，
 // 得到可以发布的快照内容。
 //
-// 这些值不在任何文件里（昵称来自 AstrBot 桥接，地址来自本次进程绑定的端口），
-// 但它们又必须出现在快照里，否则 bot 的 @检测 与 MCP 的工具注入就看不到。
-// 所以**每一次重新加载都要经过这里**，而不是只有启动时走一次。
+// 内嵌看图地址不在任何文件里（它来自本次进程绑定的端口），但必须出现在快照里，
+// 否则 MCP 的工具注入看不到它。所以**每一次重新加载都要经过这里**，
+// 而不是只有启动时走一次。
 //
 // 本函数不改动入参之外的东西，也不打日志（重载会反复调用，日志会刷屏）。
 //
 // 写成自由函数而不是 App 的方法：配置监听器的 provider 需要它，
 // 而 App 需要监听器——方法值会把依赖变成环。
-func deriveConfig(base *config.Config, nickname botNickname, addr builtinImageAddr) *config.Config {
-	base.BotNickname = string(nickname)
-
+func deriveConfig(base *config.Config, addr builtinImageAddr) *config.Config {
 	if addr == "" {
 		return base
 	}

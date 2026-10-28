@@ -40,8 +40,13 @@ copyFileSync(path.join(e2eDir, 'fixtures/config.yaml'), path.join(workdir, 'conf
 copyFileSync(path.join(e2eDir, 'fixtures/secret.yaml'), path.join(workdir, 'secret.yaml'))
 copyFileSync(path.join(e2eDir, 'fixtures/prompt_system.yaml'), path.join(workdir, 'prompt_system.yaml'))
 
-// 3. 清理上次运行残留的 prompt_custom.yaml（避免脏关键字污染）
+// 3. 清理上次运行残留的提示词与本地档案
+//    （避免脏关键字与旧消息污染新一轮断言；workspaces 目录是旧版本遗留，顺手清掉）
 rmSync(path.join(workdir, 'prompt_custom.yaml'), { force: true })
+rmSync(path.join(workdir, 'workspaces'), { recursive: true, force: true })
+for (const suffix of ['', '-wal', '-shm']) {
+  rmSync(path.join(workdir, `state.db${suffix}`), { force: true })
+}
 
 // 4. 构建测试二进制（内嵌当前前端）
 execSync(`go build -o "${exePath}" ./cmd/good-review`, { cwd: repoRoot, stdio: 'inherit' })

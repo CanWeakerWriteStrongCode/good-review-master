@@ -7,78 +7,60 @@ import (
 	"good-review-master/config"
 )
 
-func TestCollectGroupDetails按账号归属(t *testing.T) {
+func TestCollectDetails按工作空间归属(t *testing.T) {
 	cache.ResetAll()
 	defer cache.ResetAll()
 
-	gc1 := cache.GetGroupCache("g1", 4)
-	gc1.Add(cache.Message{MessageID: 1, SelfID: "bot-a", UserID: "u", Content: "a", Time: 100})
-	gc2 := cache.GetGroupCache("g2", 4)
-	gc2.Add(cache.Message{MessageID: 2, SelfID: "bot-b", UserID: "u", Content: "b", Time: 200})
+	store := cache.NewStore()
+	store.GetGroupCache("g1", 4).Add(cache.Message{MessageID: "1", SelfID: "openid-a", UserID: "u", Content: "a", Time: 100})
+	store.GetGroupCache("g2", 4).Add(cache.Message{MessageID: "2", SelfID: "openid-a", UserID: "u", Content: "b", Time: 200})
 
-	cfg := &config.Config{
-		AllowGroups:  []string{"g1", "g2"},
-		AllowSelfIDs: []string{"*"},
-	}
-	s := &Server{
-		groupNames:   map[string]string{"g1": "群1", "g2": "群2"},
-		accountNames: map[string]string{"bot-a": "账号A", "bot-b": "账号B"},
-	}
+	s := &Server{groupNames: map[string]string{"g1": "群1", "g2": "群2"}}
 
-	groups, accounts := s.collectGroupDetails(cfg)
+	groups, accounts := s.collectDetails([]string{"g1", "g2"}, "1906xxxx", store, "qq_1906xxxx", "小助理")
 	if len(groups) != 2 {
 		t.Fatalf("groups = %+v", groups)
 	}
-	if groups[0].SelfID != "bot-a" || groups[0].AccountName != "账号A" {
-		t.Fatalf("g1 应归属 bot-a：%+v", groups[0])
+	if groups[0].GroupName != "群1" || groups[0].AccountName != "小助理" || !groups[0].Cached {
+		t.Fatalf("g1 信息不对：%+v", groups[0])
 	}
-	if groups[1].SelfID != "bot-b" || groups[1].AccountName != "账号B" {
-		t.Fatalf("g2 应归属 bot-b：%+v", groups[1])
+	// self_id 仍是事件里的群内 openid，只作展示，不再当账号键
+	if groups[0].SelfID != "openid-a" {
+		t.Fatalf("g1 self_id = %q", groups[0].SelfID)
 	}
-	if len(accounts) != 2 {
+	if len(accounts) != 1 || accounts[0].SelfID != "1906xxxx" ||
+		accounts[0].Nickname != "小助理" || accounts[0].GroupCount != 2 || accounts[0].MessageCount != 2 {
 		t.Fatalf("accounts = %+v", accounts)
-	}
-	byID := map[string]AccountDetail{}
-	for _, acc := range accounts {
-		byID[acc.SelfID] = acc
-	}
-	if acc := byID["bot-a"]; acc.Nickname != "账号A" || acc.GroupCount != 1 || acc.MessageCount != 1 {
-		t.Fatalf("bot-a 汇总 = %+v", acc)
-	}
-	if acc := byID["bot-b"]; acc.Nickname != "账号B" || acc.GroupCount != 1 || acc.MessageCount != 1 {
-		t.Fatalf("bot-b 汇总 = %+v", acc)
 	}
 }
 
-func TestCollectGroupDetails显式账号无群(t *testing.T) {
+func TestCollectDetails无账号时不造账号行(t *testing.T) {
 	cache.ResetAll()
 	defer cache.ResetAll()
 
-	cfg := &config.Config{AllowSelfIDs: []string{"bot-a"}}
-	s := &Server{groupNames: map[string]string{}, accountNames: map[string]string{"bot-a": "账号A"}}
-
-	groups, accounts := s.collectGroupDetails(cfg)
-	if len(groups) != 0 {
+	s := &Server{groupNames: map[string]string{}}
+	groups, accounts := s.collectDetails([]string{"g1"}, "", cache.NewStore(), "", "")
+	if len(groups) != 1 {
 		t.Fatalf("groups = %+v", groups)
 	}
-	if len(accounts) != 1 || accounts[0].SelfID != "bot-a" || accounts[0].GroupCount != 0 {
-		t.Fatalf("accounts = %+v", accounts)
+	if len(accounts) != 0 {
+		t.Fatalf("没有接收账号时不应生成账号汇总：%+v", accounts)
 	}
 }
 
-func TestAccountIDs合并配置与缓存(t *testing.T) {
+func TestCollectGroupDetails旧路径(t *testing.T) {
 	cache.ResetAll()
 	defer cache.ResetAll()
 
-	gc := cache.GetGroupCache("g1", 4)
-	gc.Add(cache.Message{MessageID: 1, SelfID: "bot-b", UserID: "u", Content: "a", Time: 1})
+	cache.GetGroupCache("g1", 4).Add(cache.Message{MessageID: "1", SelfID: "openid-a", Content: "a", Time: 1})
 
-	cfg := &config.Config{
-		AllowGroups:  []string{"g1"},
-		AllowSelfIDs: []string{"bot-a"},
+	cfg := &config.Config{AllowGroups: []string{"g1"}}
+	s := &Server{groupNames: map[string]string{}}
+	groups, accounts := s.collectGroupDetails(cfg)
+	if len(groups) != 1 || groups[0].GroupID != "g1" || !groups[0].Cached {
+		t.Fatalf("groups = %+v", groups)
 	}
-	ids := accountIDs(cfg)
-	if len(ids) != 2 || ids[0] != "bot-a" || ids[1] != "bot-b" {
-		t.Fatalf("accountIDs = %v", ids)
+	if len(accounts) != 0 {
+		t.Fatalf("旧路径没有账号来源，不应生成账号汇总：%+v", accounts)
 	}
 }

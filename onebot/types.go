@@ -2,154 +2,194 @@ package onebot
 
 import (
 	"encoding/json"
-	"strconv"
 	"strings"
 )
 
-// Event OneBot 11 群消息事件（本项目只消费这一种）。
+// Self 是 OneBot 12 的机器人自身标识。平台是协议原生字段：
+// QQ 官方与将来自家 OneBot 实现都用 "qq"，账号由入站路径区分。
+type Self struct {
+	Platform string `json:"platform"`
+	UserID   string `json:"user_id"`
+}
+
+// SentinelSelfID 表示「本条事件里没有可与 mention.user_id 比较的机器人 ID」。
 //
-// 除标准字段外只保留两个扩展：
-//   - display_message：桥接层把各平台 @ 语法统一成「@昵称(稳定ID)」后的文本；
-//   - mentioned：桥接层对"这条消息是否在叫机器人"的结论。
+// QQ 官方在拿不到 mentions 时只给占位值；这时不能拿账号、AppID 或 robot.id 去填
+// self.user_id——它们与群内 openid 不同命名空间，填进去再补 mention 只是伪造匹配。
+// Go 见到哨兵一律判定「不可比较」，只入缓存、不触发回复。
+const SentinelSelfID = "unknown_selfid"
+
+// Event 是本项目消费的 OneBot 12 事件（只处理群消息，其余在入站层丢弃）。
 //
-// 其余平台差异（引用、群名、机器人身份）都走 OneBot 11 标准表示：
-// 引用是 reply 消息段，机器人身份是 self_id，群名走 get_group_info 动作。
+// Account 不是协议字段：它来自上报路径 /im/event/{account}，用于和 self.platform
+// 拼出工作空间 ID。事件体本身没有任何私有路由字段。
 type Event struct {
-	PostType    string          `json:"post_type"`
-	MessageType string          `json:"message_type"`
-	GroupID     string          `json:"group_id"`
-	UserID      string          `json:"user_id"`
-	Sender      Sender          `json:"sender"`
-	Message     json.RawMessage `json:"message"`
-	RawMessage  string          `json:"raw_message"`
-	// DisplayMessage 是桥接插件翻译后的可读文本：@ 已统一成「@昵称(稳定ID)」。
-	// RawMessage 保留平台原样用于排障；缓存和大模型只读 DisplayMessage。
-	DisplayMessage string `json:"display_message"`
-	MessageID      int64  `json:"message_id"`
-	Time           int64  `json:"time"`
-	SelfID         string `json:"self_id"`
-	// PlatformID 是 AstrBot 平台实例 ID（配置里的 id），每个实例唯一且恒定。
-	// self_id 在 QQ 官方拿不到 @ 元数据时是占位值，不能用来做账号归属；
-	// platform_id 不依赖 @，所以工作空间解析以它为主键。
-	PlatformID string `json:"platform_id"`
-	// Mentioned 由桥接层给出"这条消息是否在叫机器人"的判断。
-	// QQ 官方机器人的 @ 语义和 OneBot 的 CQ 码不同（group_openid/mentions），
-	// 让适配器把判断结果带进来，业务层就不必认识各平台的 @ 表示。
-	Mentioned bool `json:"mentioned"`
+	ID         string    `json:"id"`
+	Time       float64   `json:"time"`
+	Type       string    `json:"type"`
+	DetailType string    `json:"detail_type"`
+	SubType    string    `json:"sub_type"`
+	Self       Self      `json:"self"`
+	MessageID  string    `json:"message_id"`
+	Message    []Segment `json:"message"`
+	AltMessage string    `json:"alt_message"`
+	GroupID    string    `json:"group_id"`
+	UserID     string    `json:"user_id"`
+
+	Account string `json:"-"`
 }
 
-// Sender 消息发送者（OneBot 11 的 sender 结构，只保留本项目用到的字段）。
-type Sender struct {
-	Nickname string `json:"nickname"`
-	Card     string `json:"card"`
-}
-
-// DisplayName 返回展示名：昵称 → 群名片 → 稳定 ID。
-// 平台可能只给其中一项；用 ID 兜底可以避免日志和缓存里出现空昵称。
-func (e Event) DisplayName() string {
-	for _, name := range []string{e.Sender.Nickname, e.Sender.Card, e.UserID} {
-		if trimmed := strings.TrimSpace(name); trimmed != "" {
-			return trimmed
-		}
+// Platform 返回事件所属平台；缺失时按 QQ 官方处理。
+func (e Event) Platform() string {
+	if e.Self.Platform != "" {
+		return e.Self.Platform
 	}
-	return ""
+	return "qq"
 }
 
-// ReplyID 返回引用这条消息时应带的 ID。
-// 就是标准 message_id：桥接层出站时再把它映射回平台的引用 ID（如 QQ 官方的 REFIDX）。
-func (e Event) ReplyID() string {
-	if e.MessageID != 0 {
-		return strconv.FormatInt(e.MessageID, 10)
-	}
-	return ""
-}
-
-// IsSelfIDPlaceholder 判断适配器是否还没学到机器人的真实身份。
-// QQ 官方在拿不到 mention 元数据时会用这些占位值，不能当成账号 ID。
-func IsSelfIDPlaceholder(selfID string) bool {
-	switch selfID {
-	case "", "qq_official", "unknown_selfid":
+// IsSelfPlaceholder 判断 self.user_id 是否不可用于 @ 比较。
+func IsSelfPlaceholder(userID string) bool {
+	switch userID {
+	case "", SentinelSelfID, "qq_official":
 		return true
 	}
 	return false
 }
 
-// BotID 返回机器人的稳定 ID。
-// "qq_official" / "unknown_selfid" 是适配器的占位值，不代表任何真实身份。
+// BotID 返回可用于 @ 比较的机器人 ID；不可比较时返回空串。
 func (e Event) BotID() string {
-	if IsSelfIDPlaceholder(e.SelfID) {
+	if IsSelfPlaceholder(e.Self.UserID) {
 		return ""
 	}
-	return e.SelfID
+	return e.Self.UserID
 }
 
-// QuotedMessageID 返回被引用消息在本项目里的 message_id（没有引用时为 0）。
-// 引用是标准 OneBot 11 的 reply 消息段；桥接层把段里的 id 换成与入站 message_id
-// 同一套的 int64，因此能直接对上 chat log 的 message_id。
-func (e Event) QuotedMessageID() int64 {
-	var segments []struct {
-		Type string `json:"type"`
-		Data struct {
-			ID json.Number `json:"id"`
-		} `json:"data"`
+// MentionsBot 判断这条消息是否 @ 了本账号：存在 mention 段且 user_id 与 self.user_id 相等。
+//
+// 这是 OneBot 12 的标准判定；「收到事件」不等于「被 @」。
+func (e Event) MentionsBot() bool {
+	botID := e.BotID()
+	if botID == "" {
+		return false
 	}
-	if len(e.Message) > 0 && json.Unmarshal(e.Message, &segments) == nil {
-		for _, segment := range segments {
-			if segment.Type != "reply" {
+	for _, seg := range e.Message {
+		if seg.Type == SegmentMention && seg.String("user_id") == botID {
+			return true
+		}
+	}
+	return false
+}
+
+// MentionsAll 判断是否 @ 全体（@全体不等于 @ 本账号，不触发回复）。
+func (e Event) MentionsAll() bool {
+	for _, seg := range e.Message {
+		if seg.Type == SegmentMentionAll {
+			return true
+		}
+	}
+	return false
+}
+
+// QuotedMessageID 返回被引用消息的 ID；没有引用时为空。
+func (e Event) QuotedMessageID() string {
+	for _, seg := range e.Message {
+		if seg.Type == SegmentReply {
+			return seg.String("message_id")
+		}
+	}
+	return ""
+}
+
+// Images 返回消息里的图片 URL。QQ 官方只给 URL，按扩展规则放在 data["qq.url"]。
+func (e Event) Images() []string {
+	var out []string
+	for _, seg := range e.Message {
+		if seg.Type != SegmentImage {
+			continue
+		}
+		url := seg.String("qq.url")
+		if url == "" {
+			url = seg.String("url")
+		}
+		if url != "" {
+			out = append(out, url)
+		}
+	}
+	return out
+}
+
+// RenderText 把消息段渲染成给缓存和大模型看的文本：@ 统一成「@昵称(ID)」。
+//
+// nameOf 返回群成员展示名，拿不到时由调用方返回空串（这里回落成「用户」）。
+// openid 保留在括号里：昵称会变、也可能重名，模型要靠它判断是不是同一个人。
+func (e Event) RenderText(nameOf func(userID string) string) string {
+	var b strings.Builder
+	for _, seg := range e.Message {
+		switch seg.Type {
+		case SegmentText:
+			b.WriteString(seg.String("text"))
+		case SegmentMention:
+			id := seg.String("user_id")
+			if id == "" {
+				b.WriteString("@未知用户")
 				continue
 			}
-			if id, err := strconv.ParseInt(segment.Data.ID.String(), 10, 64); err == nil {
-				return id
+			name := ""
+			if nameOf != nil {
+				name = nameOf(id)
+			}
+			if name == "" {
+				name = "用户"
+			}
+			b.WriteString("@" + name + "(" + id + ")")
+		case SegmentMentionAll:
+			b.WriteString("@所有人")
+		case SegmentImage:
+			b.WriteString("[图片]")
+		case SegmentVoice, "record":
+			b.WriteString("[语音]")
+		case SegmentVideo:
+			b.WriteString("[视频]")
+		case SegmentFile:
+			b.WriteString("[文件]")
+		case SegmentLocation:
+			b.WriteString("[位置]")
+		case SegmentReply:
+			// 引用不进入正文，由 reply_id 单独表达。
+		default:
+			if seg.Type != "" {
+				b.WriteString("[" + seg.Type + "]")
 			}
 		}
 	}
-	// message 缺失或不是段数组时退回 raw_message 里的 CQ 码。
-	return ParseCQReplyID(e.RawMessage)
-}
-
-// HistoryMsg 群消息历史中的单条消息
-type HistoryMsg struct {
-	MessageID int64 `json:"message_id"`
-	GroupID   int64 `json:"group_id"`
-	UserID    int64 `json:"user_id"`
-	Sender    struct {
-		Nickname string `json:"nickname"`
-		Card     string `json:"card"`
-	} `json:"sender"`
-	RawMessage string `json:"raw_message"`
-	Time       int64  `json:"time"`
-}
-
-// LoginInfo get_login_info 响应
-type LoginInfo struct {
-	UserID   int64  `json:"user_id"`
-	Nickname string `json:"nickname"`
-	// OpenID 是 QQ 官方机器人的账号标识；aiocqhttp 不返回该字段。
-	OpenID string `json:"openid,omitempty"`
-	// PlatformID 是桥接插件解析出的 AstrBot 平台实例 ID，仅用于排障。
-	PlatformID string `json:"platform_id,omitempty"`
-}
-
-// Matches 判断返回的登录信息是否确实属于请求的账号。
-// QQ 官方用 openid 标识账号；没有 openid 时（aiocqhttp）回落到数字 user_id。
-func (l LoginInfo) Matches(selfID string) bool {
-	if selfID == "" {
-		return true
+	text := strings.TrimSpace(b.String())
+	if text == "" {
+		return e.AltMessage
 	}
-	if l.OpenID != "" {
-		return l.OpenID == selfID
+	return text
+}
+
+// PlainText 只拼接文本段（不含 @、图片等占位）。用于解析管理指令：
+// 指令关键字都在文本里，mention 的渲染结果只会干扰正则。
+func (e Event) PlainText() string {
+	var b strings.Builder
+	for _, seg := range e.Message {
+		if seg.Type == SegmentText {
+			b.WriteString(seg.String("text"))
+		}
 	}
-	return strconv.FormatInt(l.UserID, 10) == selfID
+	text := strings.TrimSpace(b.String())
+	if text == "" {
+		return e.AltMessage
+	}
+	return text
 }
 
-// GroupInfo get_group_info 响应。
-// 只保留群名：QQ 官方机器人的 group_id 是 group_openid 字符串，aiocqhttp 是数字，
-// 统一成 int64 会有一边解不出来；调用方本来也只需要群名。
-type GroupInfo struct {
-	GroupName string `json:"group_name"`
-}
-
-// FormatGroupID int64群号转字符串
-func FormatGroupID(id int64) string {
-	return strconv.FormatInt(id, 10)
+// RawJSON 返回事件原文（排障日志用）。仅调试接口构造事件时为空。
+func (e Event) RawJSON() string {
+	raw, err := json.Marshal(e)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }

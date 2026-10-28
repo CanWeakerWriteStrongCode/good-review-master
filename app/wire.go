@@ -19,8 +19,8 @@ import (
 // # 这一行 wire.Build 就是整个依赖图
 //
 // 顺序由 Wire 按类型自己排，人只声明"谁由谁造"。比如它从
-// provideOneBot → provideBotNickname → provideDerivedConfig 这条链看出
-// "昵称必须在快照之前取到"——而那原本是代码注释里的一句话。
+// provideOneBot → provideDerivedConfig 这条链看出"客户端必须先于快照"——
+// 而那原本是代码注释里的一句话。
 // 顺序从**阅读顺序**变成了**类型**，于是编译器能替你检查，这是引这套东西换到的主要收益。
 //
 // 校验：`go tool wire check ./app`。缺 provider 会在生成期报
@@ -48,7 +48,6 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 		wire.FieldsOf(new(*config.Config), "MCPConfig", "MetricsAddr"),
 
 		provideOneBot,
-		provideBotNickname,
 		provideBuiltinImageMCP,
 		provideBuiltinImageAddr,
 		provideDerivedConfig,
@@ -56,7 +55,7 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 		provideConfigSnapshot,
 
 		mcpclient.New,
-		// 每个机器人账号一套工作空间（Router/Prompt/Cache），由 workspace.New 内部构造。
+		// 每个机器人账号一套工作空间（Router/Cache + 共享 Prompt），由 workspace.New 内部构造。
 		provideWorkspaces,
 		provideDefaultRouter,
 		provideDefaultPrompt,

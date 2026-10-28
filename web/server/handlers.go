@@ -110,7 +110,7 @@ func (s *Server) handleAPIWorkspaces() gin.HandlerFunc {
 			info := s.workspaceInfo(view)
 			list = append(list, info)
 			groupCount += info.GroupCount
-			accountCount += len(accountIDsFor(view.SelfIDs, view.Store, view.Store.ListGroupIDs()))
+			accountCount += len(info.SelfIDs)
 		}
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
@@ -214,7 +214,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, store *cache.Stor
 			"workspace_id":   wsID,
 			"workspace_name": wsName,
 			"self_id":        stats.SelfID,
-			"account_name":   s.accountName(stats.SelfID),
+			"account_name":   wsName,
 			"messages":       gc.GetAll(),
 			"empty":          stats.Count == 0,
 		},
@@ -225,7 +225,7 @@ func (s *Server) handleAPIStatus() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := s.cfg()
 		groupCount := len(panelGroupIDs(cfg))
-		accountCount := len(accountIDs(cfg))
+		accountCount := 0
 		if views := s.workspaceViews(); len(views) > 0 {
 			groupCount = 0
 			accountCount = 0

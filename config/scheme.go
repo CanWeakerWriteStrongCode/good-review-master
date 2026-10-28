@@ -10,7 +10,7 @@ package config
 // informer 会反复调 Load（文件一变就调，还有 resync 兜底），域实例每次都必须是新的，
 // 否则 Unmarshal/SetDefaults 会在同一批对象上反复叠加。
 type sections struct {
-	AstrBot *astrbotSection
+	IM      *imSection
 	Bot     *botSection
 	Runtime *runtimeSection
 	LLM     *llmSection
@@ -24,7 +24,7 @@ type sections struct {
 
 func newSections() *sections {
 	return &sections{
-		AstrBot: &astrbotSection{},
+		IM:      &imSection{},
 		Bot:     &botSection{},
 		Runtime: &runtimeSection{},
 		LLM:     &llmSection{},
@@ -35,5 +35,5 @@ func newSections() *sections {
 
 // registry 返回全部读 config.yaml 的域，顺序即四步曲的执行顺序。
 func (s *sections) registry() []Section {
-	return []Section{s.AstrBot, s.Bot, s.Runtime, s.LLM, s.MCP}
+	return []Section{s.IM, s.Bot, s.Runtime, s.LLM, s.MCP}
 }

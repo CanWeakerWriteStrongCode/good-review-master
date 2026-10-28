@@ -1,64 +1,101 @@
 package onebot
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestNormalizeContentMasksRichCQ(t *testing.T) {
-	raw := "[CQ:reply,id=1][CQ:at,qq=2] 看这个 " +
-		"[CQ:image,url=https://example.com/a.png] " +
-		"[CQ:face,id=1][CQ:record,url=https://example.com/a.amr]" +
-		"[CQ:video,url=https://example.com/a.mp4]" +
-		"[CQ:file,name=a&#44;b.txt,url=https://example.com/f]"
-
-	content, images := NormalizeContent(raw, 500)
-	for _, want := range []string{
-		"[引用]", "[图片]", "[表情]", "[语音]",
-		"[视频:https://example.com/a.mp4]",
-		"[文件:a,b.txt https://example.com/f]",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("content %q missing %q", content, want)
+func TestRenderText(t *testing.T) {
+	event := Event{
+		Message: []Segment{
+			ReplySegment("9"),
+			MentionSegment("u1"),
+			TextSegment(" 看这个 "),
+			ImageSegment("https://example.com/a.png"),
+			{Type: "face"},
+		},
+	}
+	got := event.RenderText(func(userID string) string {
+		if userID == "u1" {
+			return "张三"
+		}
+		return ""
+	})
+	for _, want := range []string{"@张三(u1)", "看这个", "[图片]", "[face]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RenderText = %q, missing %q", got, want)
 		}
 	}
-	if len(images) != 1 || images[0] != "https://example.com/a.png" {
-		t.Errorf("images = %v", images)
+	if strings.Contains(got, "(9)") {
+		t.Errorf("reply 段不应进入正文：%q", got)
 	}
 }
 
-func TestEventReplyID(t *testing.T) {
-	if got := (Event{MessageID: 2}).ReplyID(); got != "2" {
-		t.Errorf("MessageID = %q", got)
-	}
-	if got := (Event{}).ReplyID(); got != "" {
-		t.Errorf("empty event = %q", got)
+func TestRenderText不知道昵称时用ID占位(t *testing.T) {
+	event := Event{Message: []Segment{MentionSegment("u1")}}
+	if got := event.RenderText(nil); got != "@用户(u1)" {
+		t.Fatalf("got %q", got)
 	}
 }
 
-func TestEventQuotedMessageID(t *testing.T) {
+func TestRenderText空内容回退AltMessage(t *testing.T) {
+	event := Event{AltMessage: "fallback", Message: []Segment{{Type: "unknown"}}}
+	if got := event.RenderText(nil); got != "[unknown]" {
+		t.Fatalf("got %q", got)
+	}
+	if got := (Event{AltMessage: "fallback"}).RenderText(nil); got != "fallback" {
+		t.Fatalf("空消息应回退 alt_message，got %q", got)
+	}
+}
+
+func TestMentionsBot(t *testing.T) {
+	base := Event{
+		Self:    Self{Platform: "qq", UserID: "bot-openid"},
+		Message: []Segment{TextSegment("hi"), MentionSegment("bot-openid")},
+	}
+	if !base.MentionsBot() {
+		t.Fatal("mention.user_id == self.user_id 应触发")
+	}
+
+	other := base
+	other.Self.UserID = "another"
+	if other.MentionsBot() {
+		t.Fatal("mention 别人不应触发")
+	}
+
+	sentinel := base
+	sentinel.Self.UserID = SentinelSelfID
+	if sentinel.MentionsBot() || sentinel.BotID() != "" {
+		t.Fatal("哨兵 self.user_id 不可比较，必须不触发")
+	}
+
+	all := Event{Self: Self{UserID: "bot"}, Message: []Segment{{Type: SegmentMentionAll}}}
+	if all.MentionsBot() || !all.MentionsAll() {
+		t.Fatal("@全体不等于 @ 本账号")
+	}
+}
+
+func TestQuotedMessageID和Images(t *testing.T) {
+	event := Event{Message: []Segment{
+		ReplySegment("42"),
+		ImageSegment("https://example.com/a.png"),
+		{Type: SegmentImage, Data: map[string]any{"url": "https://example.com/b.png"}},
+		TextSegment("hi"),
+	}}
+	if got := event.QuotedMessageID(); got != "42" {
+		t.Fatalf("QuotedMessageID = %q", got)
+	}
+	images := event.Images()
+	if len(images) != 2 || images[0] != "https://example.com/a.png" {
+		t.Fatalf("Images = %v", images)
+	}
+}
+
+func TestPlainText只取文本段(t *testing.T) {
 	event := Event{
-		Message: json.RawMessage(`[{"type":"reply","data":{"id":42}},{"type":"text","data":{"text":"hi"}}]`),
+		Message: []Segment{MentionSegment("u1"), TextSegment("#帮助")},
 	}
-	if got := event.QuotedMessageID(); got != 42 {
-		t.Fatalf("reply 段应解析出 quote msg_id，got %d", got)
-	}
-
-	event = Event{
-		Message:    json.RawMessage(`"[CQ:reply,id=7] hi"`),
-		RawMessage: "[CQ:reply,id=7] hi",
-	}
-	if got := event.QuotedMessageID(); got != 7 {
-		t.Fatalf("message 不是段数组时应退回 raw_message 的 CQ 码，got %d", got)
-	}
-
-	event = Event{RawMessage: "[CQ:reply,id=9] hi"}
-	if got := event.QuotedMessageID(); got != 9 {
-		t.Fatalf("raw_message CQ reply = %d", got)
-	}
-
-	if got := (Event{RawMessage: "hi"}).QuotedMessageID(); got != 0 {
-		t.Fatalf("没有引用时应为 0，got %d", got)
+	if got := event.PlainText(); got != "#帮助" {
+		t.Fatalf("PlainText = %q", got)
 	}
 }

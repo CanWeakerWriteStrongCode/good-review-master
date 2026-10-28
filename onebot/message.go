@@ -1,50 +1,72 @@
 package onebot
 
-// Segment 是 OneBot 11 消息段，也是 Go → AstrBot 桥接插件出站消息的统一格式。
-// 桥接插件按目标平台把它翻译成 AstrBot 消息链或官方接口字段：
-// 文本 / @ / 引用 / 图片 / 语音 / 视频 / 文件。
+// OneBot 12 消息段类型（只列本项目用到的）。
+const (
+	SegmentText       = "text"
+	SegmentMention    = "mention"
+	SegmentMentionAll = "mention_all"
+	SegmentImage      = "image"
+	SegmentVoice      = "voice"
+	SegmentAudio      = "audio"
+	SegmentVideo      = "video"
+	SegmentFile       = "file"
+	SegmentLocation   = "location"
+	SegmentReply      = "reply"
+)
+
+// Segment 是 OneBot 12 消息段：{type, data}。
+//
+// 入站时由适配器翻译平台消息；出站时 Go 用它表达文本 / @ / 引用 / 媒体。
+// 平台特有信息按 OneBot 12 扩展规则带前缀（QQ 官方媒体只有 URL，用 qq.url）。
 type Segment struct {
 	Type string         `json:"type"`
 	Data map[string]any `json:"data"`
 }
 
+// String 读取段参数里的字符串值；缺失或类型不对返回空串。
+func (s Segment) String(key string) string {
+	if s.Data == nil {
+		return ""
+	}
+	value, ok := s.Data[key]
+	if !ok {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
+}
+
 // TextSegment 纯文本段
 func TextSegment(text string) Segment {
-	return Segment{Type: "text", Data: map[string]any{"text": text}}
+	return Segment{Type: SegmentText, Data: map[string]any{"text": text}}
 }
 
-// AtSegment @ 群成员。qq 在 QQ 官方机器人场景下是 member_openid。
-func AtSegment(qq string) Segment {
-	return Segment{Type: "at", Data: map[string]any{"qq": qq}}
+// MentionSegment @ 群成员。userID 在 QQ 官方场景下是 member_openid。
+func MentionSegment(userID string) Segment {
+	return Segment{Type: SegmentMention, Data: map[string]any{"user_id": userID}}
 }
 
-// ReplySegment 引用回复。id 是本项目的 message_id；
-// 桥接层出站时再映射回平台自己的引用 ID（如 QQ 官方的 REFIDX）。
-func ReplySegment(id string) Segment {
-	return Segment{Type: "reply", Data: map[string]any{"id": id}}
+// ReplySegment 引用回复。messageID 是平台原始消息 ID（OB12 字符串）。
+func ReplySegment(messageID string) Segment {
+	return Segment{Type: SegmentReply, Data: map[string]any{"message_id": messageID}}
 }
 
-// ImageSegment 图片。url 可以是 http(s) URL、本地路径或 base64:// 数据。
+// ImageSegment 图片。QQ 官方只有 URL，按扩展规则放 qq.url。
 func ImageSegment(url string) Segment {
-	return Segment{Type: "image", Data: map[string]any{"file": url, "url": url}}
+	return Segment{Type: SegmentImage, Data: map[string]any{"qq.url": url}}
 }
 
-// FileSegment 文件。name 是展示名，url 可以是 http(s) URL 或本地路径。
+// FileSegment 文件。QQ 官方同样用 qq.url + qq.name 扩展。
 func FileSegment(name, url string) Segment {
-	return Segment{Type: "file", Data: map[string]any{"name": name, "file": url, "url": url}}
+	return Segment{Type: SegmentFile, Data: map[string]any{"qq.url": url, "qq.name": name}}
 }
 
-// RecordSegment 语音。url 可以是 http(s) URL、本地路径或 base64:// 数据。
-func RecordSegment(url string) Segment {
-	return Segment{Type: "record", Data: map[string]any{"file": url, "url": url}}
+// VoiceSegment 语音。
+func VoiceSegment(url string) Segment {
+	return Segment{Type: SegmentVoice, Data: map[string]any{"qq.url": url}}
 }
 
-// VideoSegment 视频。url 可以是 http(s) URL 或本地路径。
+// VideoSegment 视频。
 func VideoSegment(url string) Segment {
-	return Segment{Type: "video", Data: map[string]any{"file": url, "url": url}}
-}
-
-// MarkdownSegment Markdown 文本（仅 AstrBot 的 QQ 官方适配器支持，失败会回退为纯文本）。
-func MarkdownSegment(text string) Segment {
-	return Segment{Type: "markdown", Data: map[string]any{"text": text}}
+	return Segment{Type: SegmentVideo, Data: map[string]any{"qq.url": url}}
 }

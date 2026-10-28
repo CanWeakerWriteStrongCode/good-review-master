@@ -20,8 +20,8 @@ import (
 // # 这一行 wire.Build 就是整个依赖图
 //
 // 顺序由 Wire 按类型自己排，人只声明"谁由谁造"。比如它从
-// provideOneBot → provideBotNickname → provideDerivedConfig 这条链看出
-// "昵称必须在快照之前取到"——而那原本是代码注释里的一句话。
+// provideOneBot → provideDerivedConfig 这条链看出"客户端必须先于快照"——
+// 而那原本是代码注释里的一句话。
 // 顺序从**阅读顺序**变成了**类型**，于是编译器能替你检查，这是引这套东西换到的主要收益。
 //
 // 校验：`go tool wire check ./app`。缺 provider 会在生成期报
@@ -39,33 +39,32 @@ import (
 // 判据是 `git status` 里 wire_gen.go 有没有该有的差异。
 func initializeApp(inputs injectorInputs) (*App, error) {
 	appLoadedConfig := inputs.Loaded
-	client := provideOneBot(appLoadedConfig)
-	appBotNickname := provideBotNickname(client)
 	server := provideBuiltinImageMCP(appLoadedConfig)
 	appBuiltinImageAddr := provideBuiltinImageAddr(server)
-	config := provideDerivedConfig(appLoadedConfig, appBotNickname, appBuiltinImageAddr)
+	config := provideDerivedConfig(appLoadedConfig, appBuiltinImageAddr)
 	store := provideConfigStore(config)
 	snapshot := provideConfigSnapshot(store)
 	appPromptPaths := inputs.PromptPaths
-	llmClient := inputs.LLM
+	client := inputs.LLM
+	onebotClient := provideOneBot(appLoadedConfig)
 	mcpConf := config.MCPConfig
 	context := inputs.Ctx
 	manager := mcpclient.New(mcpConf, context)
-	workspaceManager, err := provideWorkspaces(snapshot, appPromptPaths, llmClient, client, manager, context)
+	workspaceManager, err := provideWorkspaces(snapshot, appPromptPaths, client, onebotClient, manager, context)
 	if err != nil {
 		return nil, err
 	}
 	promptConfig := provideDefaultPrompt(workspaceManager)
 	router := provideDefaultRouter(workspaceManager)
-	botBot := bot.NewBot(snapshot, client, workspaceManager)
+	botBot := bot.NewBot(snapshot, workspaceManager)
 	imServer := provideIMServer(snapshot, botBot)
-	serverServer := provideWebServer(snapshot, client, workspaceManager)
+	serverServer := provideWebServer(snapshot, onebotClient, workspaceManager)
 	string2 := config.MetricsAddr
 	registry := telemetry.NewRegistry()
 	metricsServer := provideMetricsServer(string2, registry)
 	sources := inputs.Sources
-	informer := provideConfigInformer(sources, store, appBotNickname, appBuiltinImageAddr)
-	observer := providePromptObserver(workspaceManager)
-	app := provideApp(snapshot, promptConfig, llmClient, client, manager, server, workspaceManager, router, botBot, imServer, serverServer, metricsServer, informer, observer)
+	informer := provideConfigInformer(sources, store, appBuiltinImageAddr)
+	observer := providePromptObserver(workspaceManager, appPromptPaths)
+	app := provideApp(snapshot, promptConfig, client, onebotClient, manager, server, workspaceManager, router, botBot, imServer, serverServer, metricsServer, informer, observer)
 	return app, nil
 }

@@ -3,46 +3,29 @@
 # 下面标了【密钥】的字段是为兼容旧配置保留的：留着仍能工作，但会打一条迁移告警。
 # 优先级：环境变量 > secret.yaml > 本文件。
 
-# ===== AstrBot 桥接配置 =====
-# Go 只和 AstrBot 桥接插件通信：入站事件由插件推送到 runtime.im_listen_addr，
-# 出站动作（发消息/查群信息）走下面这个动作代理地址。
-astrbot:
-  # AstrBot 桥接插件的动作代理地址（插件默认监听 6199）
-  http_api: "http://127.0.0.1:6199"
-  # 与 AstrBot 插件里配置的 token 保持同一个值；未设置则留空
-  access_token: ""          # 【密钥】→ secret.yaml 的 astrbot_access_token
-
 # ===== 机器人配置 =====
 bot:
   # 允许响应的群白名单（逗号分隔）。QQ 官方机器人填 group_openid（长字符串）。
   # 填 "*" 表示所有群都响应（注意：任意群都能触发大模型调用，成本不可控）。
   allow_groups: "123456,789012"
-  # 允许 Go 接管的机器人账号（OneBot self_id，逗号分隔）。多账号同时运行时，
-  # 不在列表里的账号会被 Go 忽略，桥接插件会把消息交还给 AstrBot 自己的 Agent。
-  # 填 "*" 表示接管所有账号；留空表示一个都不接管。
-  # 配置了下面的 workspaces 后，接管范围以各工作空间声明的 self_ids/platform_id 为准，
-  # 本项留空不再表示"不接管"。
-  allow_self_ids: "*"
+  # 允许自动开通的工作空间 ID（完整 ID = 平台名_接收账号），填 "*" 表示全部。
+  # 空列表 = 不自动开通（安全默认）；已记录在 state.db 里的工作空间不受名单影响，
+  # 重启会直接恢复。QQ 官方机器人的账号填 AppID，平台名固定 qq，所以是 qq_<AppID>。
+  workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
 
-  # ===== 多机器人账号工作空间（可选） =====
-  # 不写时等价于一个隐式 default 工作空间，行为与单账号版本完全一致。
-  # 每个工作空间有自己的缓存、群人格、指令表与提示词，互不影响。
-  # workspaces:
-  #   - id: "haoping"                       # 必填：稳定标识（字母/数字/_/-），用于目录、URL、日志
-  #     name: "好评大师的小助理"              # 可选：面板展示名，默认取 nickname
-  #     platform_id: "好评大师的小助理"        # 必填：AstrBot 平台实例 ID（配置里的 id，唯一）
-  #     self_ids:                           # 可选：该账号的 openid / QQ 号，用于归属兜底
-  #       - "0C2F9A2A..."
-  #     nickname: "好评大师的小助理"          # 可选：覆盖桥接查询到的昵称
-  #     allow_groups: "group_openid_A"      # 可选：覆盖全局群白名单（不合并）
-  #     prompt_dir: "workspaces/haoping"    # 可选：默认 workspaces/<id>
-  #
-  #   - id: "bushi"
-  #     name: "不是好评大师"
-  #     platform_id: "不是好评大师"
-  #     self_ids:
-  #       - "3319D7..."
-  #     prompt_dir: "workspaces/bushi"
+# ===== IM 接入（OneBot 12） =====
+# 入站事件由实现端（AstrBot 插件 / Satori sidecar）推送到 runtime.im_listen_addr，
+# 路径是 /im/event/{account}。出站动作按账号走下面的 api_base。
+im:
+  # 入站校验与出站请求共用的 token；留空表示不校验（仅建议监听回环地址时这么用）
+  token: ""                 # 【密钥】→ secret.yaml 的 im_token
+  # 每个机器人账号一条连接。id 必须等于工作空间 ID（平台名_接收账号），
+  # 不要多个账号共用一个根地址再靠 self 选路：QQ 官方的 self.user_id 是群作用域 openid。
+  accounts:
+    - id: "qq_1906xxxx"
+      api_base: "http://127.0.0.1:6199"
+    # - id: "qq_1904xxxx"
+    #   api_base: "http://127.0.0.1:6200"
 
 # ===== 运行时参数 =====
 runtime:
@@ -56,10 +39,11 @@ runtime:
   max_cache_msg: 3100
   # 旧轮询模型的间隔（秒）。sidecar 推送模型下不再使用，保留以兼容存量配置。
   poll_interval_sec: 3
-  # AstrBot 桥接插件推送事件的监听地址（与插件 go_event_url 对应）
+  # AstrBot 桥接插件推送事件的监听地址（与插件的 event_url 主机端口对应，
+  # 路径是 /im/event/{account}）
   im_listen_addr: "127.0.0.1:18090"
-  # 启动时是否经桥接动作代理回填最近历史。
-  # QQ 官方机器人没有群历史接口，保持 false；其他支持 get_group_msg_history 的平台可改 true。
+  # 启动时是否回填最近历史。OneBot 12 没有标准的群历史动作，
+  # 历史直接读共享 state.db（按 workspace_id 区分账号）；本项仅为兼容存量配置，实际不生效。
   backfill_on_start: false
   # Web 管理面板端口（<=0 禁用）
   web_port: 7090

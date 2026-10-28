@@ -21,35 +21,35 @@ func assemble(sections *sections) *Config {
 
 	apiKey := resolveSecret("llm.api_key", secret.LLMAPIKey, sections.LLM.APIKey)
 	webPassword := resolveSecret("runtime.web_password", secret.WebPassword, sections.Runtime.WebPassword)
-	astrBotToken := resolveSecret("astrbot.access_token", secret.AstrBotAccessToken, sections.AstrBot.AccessToken)
+	imToken := resolveSecret("im.token", secret.IMToken, sections.IM.Token)
 	builtinToken := resolveSecret("runtime.mcp_builtin_token", secret.McpBuiltinToken, sections.Runtime.McpBuiltinToken)
 	jwtSecret := resolveJWTSecret(secret.JWTSecret, sections.Runtime.JWTSecret, webPassword)
 
 	servers := resolveMCPServers(sections.MCP.AcceptedServers(), secret)
 
 	return &Config{
-		AstrBotHTTPAPI:     sections.AstrBot.HTTPAPI,
-		AstrBotAccessToken: astrBotToken,
-		AllowGroups:        parseCommaList(sections.Bot.AllowGroups),
-		AllowSelfIDs:       parseCommaList(sections.Bot.AllowSelfIDs),
-		Workspaces:         convertWorkspaces(sections.Bot.Workspaces),
-		MaxCacheMsg:        sections.Runtime.MaxCacheMsg,
-		LLMSendCount:       sections.Runtime.LLMSendCount,
-		LLMTimeout:         time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
-		MaxMsgRune:         sections.Runtime.MaxMsgRune,
-		PollInterval:       time.Duration(sections.Runtime.PollIntervalSec) * time.Second,
-		IMListenAddr:       sections.Runtime.IMListenAddr,
-		BackfillOnStart:    sections.Runtime.BackfillOnStart == nil || *sections.Runtime.BackfillOnStart,
-		WebPort:            sections.Runtime.WebPort,
-		WebUsername:        sections.Runtime.WebUsername,
-		WebPassword:        webPassword,
-		JWTSecret:          jwtSecret,
-		McpBuiltinToken:    builtinToken,
-		CorsOrigins:        sections.Runtime.CorsOriginList(),
-		EnablePprof:        sections.Runtime.EnablePprof,
-		ShutdownDelay:      time.Duration(sections.Runtime.ShutdownDelaySec) * time.Second,
-		MetricsAddr:        sections.Runtime.MetricsAddr,
-		OTLPEndpoint:       sections.Runtime.OTLPEndpoint,
+		IMToken:           imToken,
+		IMAccounts:        convertIMAccounts(sections.IM.Accounts),
+		BotNickname:       "",
+		AllowGroups:       parseCommaList(sections.Bot.AllowGroups),
+		WorkspaceAccounts: convertWorkspaceAccounts(sections.Bot.WorkspaceAccounts),
+		MaxCacheMsg:       sections.Runtime.MaxCacheMsg,
+		LLMSendCount:      sections.Runtime.LLMSendCount,
+		LLMTimeout:        time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
+		MaxMsgRune:        sections.Runtime.MaxMsgRune,
+		PollInterval:      time.Duration(sections.Runtime.PollIntervalSec) * time.Second,
+		IMListenAddr:      sections.Runtime.IMListenAddr,
+		BackfillOnStart:   sections.Runtime.BackfillOnStart == nil || *sections.Runtime.BackfillOnStart,
+		WebPort:           sections.Runtime.WebPort,
+		WebUsername:       sections.Runtime.WebUsername,
+		WebPassword:       webPassword,
+		JWTSecret:         jwtSecret,
+		McpBuiltinToken:   builtinToken,
+		CorsOrigins:       sections.Runtime.CorsOriginList(),
+		EnablePprof:       sections.Runtime.EnablePprof,
+		ShutdownDelay:     time.Duration(sections.Runtime.ShutdownDelaySec) * time.Second,
+		MetricsAddr:       sections.Runtime.MetricsAddr,
+		OTLPEndpoint:      sections.Runtime.OTLPEndpoint,
 		LLMConfig: LLMConf{
 			Provider:         sections.LLM.Provider,
 			APIKey:           apiKey,
@@ -81,25 +81,25 @@ func assemble(sections *sections) *Config {
 	}
 }
 
-// convertWorkspaces 把 YAML 形态的工作空间声明转成运行期形态。
-func convertWorkspaces(entries []workspaceSection) []WorkspaceConf {
-	out := make([]WorkspaceConf, 0, len(entries))
+// convertIMAccounts 把 YAML 形态的出站账号转成运行期形态。
+func convertIMAccounts(entries []imAccountSection) []IMAccount {
+	out := make([]IMAccount, 0, len(entries))
 	for _, entry := range entries {
-		selfIDs := make([]string, 0, len(entry.SelfIDs))
-		for _, id := range entry.SelfIDs {
-			if id = strings.TrimSpace(id); id != "" && id != "*" {
-				selfIDs = append(selfIDs, id)
-			}
-		}
-		out = append(out, WorkspaceConf{
-			ID:          strings.TrimSpace(entry.ID),
-			Name:        strings.TrimSpace(entry.Name),
-			PlatformID:  strings.TrimSpace(entry.PlatformID),
-			SelfIDs:     selfIDs,
-			Nickname:    strings.TrimSpace(entry.Nickname),
-			AllowGroups: parseCommaList(entry.AllowGroups),
-			PromptDir:   strings.TrimSpace(entry.PromptDir),
+		out = append(out, IMAccount{
+			ID:      strings.TrimSpace(entry.ID),
+			APIBase: strings.TrimRight(strings.TrimSpace(entry.APIBase), "/"),
 		})
+	}
+	return out
+}
+
+// convertWorkspaceAccounts 去掉空项并保持声明顺序（面板/日志按它读）。
+func convertWorkspaceAccounts(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			out = append(out, entry)
+		}
 	}
 	return out
 }

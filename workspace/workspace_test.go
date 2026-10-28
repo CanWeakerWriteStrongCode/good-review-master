@@ -4,20 +4,43 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/logutil"
-	"good-review-master/onebot"
 )
+
+// TestMain 把 cwd 切到临时目录：logutil 默认把日志写到 cwd/log，
+// 不隔离就会在仓库里留下 workspace/log/bot.log。
+func TestMain(m *testing.M) {
+	original, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	temp, err := os.MkdirTemp("", "workspace-test-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Chdir(temp); err != nil {
+		panic(err)
+	}
+	logutil.SetupLogger()
+
+	code := m.Run()
+
+	logutil.Close()
+	_ = os.Chdir(original)
+	_ = os.RemoveAll(temp)
+	os.Exit(code)
+}
 
 func testManager(t *testing.T, cfg *config.Config) *Manager {
 	t.Helper()
-	logutil.SetupLogger()
 	dir := t.TempDir()
 	system := filepath.Join(dir, "prompt_system.yaml")
-	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0644); err != nil {
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	manager, err := New(func() *config.Config { return cfg }, system,
@@ -25,150 +48,261 @@ func testManager(t *testing.T, cfg *config.Config) *Manager {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(manager.Close)
 	return manager
 }
 
-func twoWorkspaceConfig() *config.Config {
-	return &config.Config{
-		AllowGroups:  []string{"g1"},
-		AllowSelfIDs: []string{"*"},
-		Workspaces: []config.WorkspaceConf{
-			{ID: "a", Name: "账号A", PlatformID: "平台A", SelfIDs: []string{"a1"}, AllowGroups: []string{"g1"}},
-			{ID: "b", Name: "账号B", PlatformID: "平台B", SelfIDs: []string{"b1"}, AllowGroups: []string{"g1", "g2"}},
-		},
-	}
+func allowedConfig(accounts ...string) *config.Config {
+	return &config.Config{AllowGroups: []string{"g1"}, WorkspaceAccounts: accounts}
 }
 
-func TestResolve以platformID优先(t *testing.T) {
-	m := testManager(t, twoWorkspaceConfig())
-
+func TestWorkspaceID(t *testing.T) {
 	cases := []struct {
-		name  string
-		event onebot.Event
-		want  string
+		platform, account, want string
+		wantErr                 bool
 	}{
-		{"平台实例命中，忽略冲突的 self_id", onebot.Event{PlatformID: "平台A", SelfID: "b1"}, "a"},
-		{"没有 platform_id 时按 self_id 别名", onebot.Event{SelfID: "b1"}, "b"},
-		{"占位 self_id 且无 platform_id 时不猜", onebot.Event{SelfID: "qq_official"}, ""},
-		{"两者都不认识时不接管", onebot.Event{PlatformID: "平台X", SelfID: "x1"}, ""},
+		{"qq", "1906xxxx", "qq_1906xxxx", false},
+		{"zulip.my-instance", "abc", "zulip_my-instance_abc", false},
+		{"qq_official", "1", "", true}, // 下划线不符合 OB12 平台名
+		{"qq", "bad/account", "", true},
+		{"qq", "", "", true},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := m.Resolve(tc.event)
-			if tc.want == "" {
-				if got != nil {
-					t.Fatalf("Resolve() = %s，期望 nil", got.ID)
-				}
-				return
+		got, err := WorkspaceID(tc.platform, tc.account)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("WorkspaceID(%q,%q) 应失败，得到 %q", tc.platform, tc.account, got)
 			}
-			if got == nil || got.ID != tc.want {
-				t.Fatalf("Resolve() = %+v，期望 %s", got, tc.want)
-			}
-		})
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("WorkspaceID(%q,%q) = %q, %v; want %q", tc.platform, tc.account, got, err, tc.want)
+		}
 	}
 }
 
-func TestResolve单工作空间兜底(t *testing.T) {
-	cfg := &config.Config{
-		AllowGroups: []string{"g1"},
-		Workspaces: []config.WorkspaceConf{
-			{ID: "only", PlatformID: "平台A", SelfIDs: []string{"a1"}},
-		},
+func TestResolveOrCreate按名单开通(t *testing.T) {
+	m := testManager(t, allowedConfig("qq_1906xxxx"))
+
+	ws, err := m.ResolveOrCreate("qq", "1906xxxx")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
 	}
-	m := testManager(t, cfg)
-	if ws := m.Resolve(onebot.Event{SelfID: "unknown_selfid"}); ws == nil || ws.ID != "only" {
-		t.Fatalf("单工作空间应兜底，得到 %+v", ws)
+	if ws.ID != "qq_1906xxxx" || ws.Platform != "qq" || ws.Account != "1906xxxx" {
+		t.Fatalf("workspace = %+v", ws)
+	}
+	if ws.State == nil {
+		t.Fatal("工作空间应挂上 state.db 的 Scope")
+	}
+
+	again, err := m.ResolveOrCreate("qq", "1906xxxx")
+	if err != nil || again != ws {
+		t.Fatalf("同一账号应复用同一个工作空间")
+	}
+
+	denied, err := m.ResolveOrCreate("qq", "9999")
+	if err != nil || denied != nil {
+		t.Fatalf("不在名单里的账号应返回 nil（不接管），得到 %v, %v", denied, err)
 	}
 }
 
-func Test工作空间缓存隔离(t *testing.T) {
-	m := testManager(t, twoWorkspaceConfig())
-	wsA := m.Resolve(onebot.Event{PlatformID: "平台A"})
-	wsB := m.Resolve(onebot.Event{PlatformID: "平台B"})
-
-	wsA.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: 1, SelfID: "a1", Content: "a", Time: 1})
-	wsB.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: 1, SelfID: "b1", Content: "b", Time: 1})
-
-	if got := wsA.Cache.GetGroupCache("g1", 8).Len(); got != 1 {
-		t.Fatalf("账号 A 缓存 = %d, want 1", got)
+// Test档案里的工作空间无需名单 锁住 D4：名单只控制新建，
+// 重启后已有工作空间从 state.db 恢复，删掉名单不会让它停止工作。
+func Test档案里的工作空间无需名单(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if got := wsB.Cache.GetGroupCache("g1", 8).Len(); got != 1 {
-		t.Fatalf("账号 B 缓存 = %d, want 1", got)
+	newManager := func(cfg *config.Config) *Manager {
+		m, err := New(func() *config.Config { return cfg }, system,
+			filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		return m
 	}
+
+	first := newManager(allowedConfig("qq_existing"))
+	if ws, err := first.ResolveOrCreate("qq", "existing"); err != nil || ws == nil {
+		t.Fatalf("首次开通失败：%v, %v", ws, err)
+	}
+	first.Close()
+
+	// 重启时名单为空：工作空间已在档案里，仍应被加载
+	restarted := newManager(allowedConfig())
+	t.Cleanup(restarted.Close)
+	if _, ok := restarted.ByID("qq_existing"); !ok {
+		t.Fatalf("档案里的工作空间应被恢复，实际 %+v", restarted.List())
+	}
+}
+
+func Test启动恢复时跳过不完整档案(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := New(func() *config.Config { return &config.Config{} }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	// 只有 platform、没有 account：无法重建工作空间，应跳过而不是报错退出
+	first.stateStore.Scope("qq_bad").SetMeta("platform", "qq")
+	first.stateStore.Scope("not-a-workspace!").SetMeta("platform", "qq")
+	first.Close()
+
+	m, err := New(func() *config.Config { return &config.Config{} }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("不完整档案不该让启动失败：%v", err)
+	}
+	t.Cleanup(m.Close)
+	if len(m.List()) != 0 {
+		t.Fatalf("不完整档案应被跳过，实际 %+v", m.List())
+	}
+}
+
+func Test并发开通只创建一次(t *testing.T) {
+	m := testManager(t, allowedConfig("qq_1"))
+
+	var wg sync.WaitGroup
+	results := make([]*Workspace, 16)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ws, err := m.ResolveOrCreate("qq", "1")
+			if err != nil {
+				t.Errorf("ResolveOrCreate: %v", err)
+			}
+			results[i] = ws
+		}(i)
+	}
+	wg.Wait()
+	for i := 1; i < len(results); i++ {
+		if results[i] != results[0] {
+			t.Fatalf("并发开通应只创建一个实例")
+		}
+	}
+}
+
+func Test缓存隔离而提示词共享(t *testing.T) {
+	m := testManager(t, allowedConfig("qq_a", "qq_b"))
+	wsA, _ := m.ResolveOrCreate("qq", "a")
+	wsB, _ := m.ResolveOrCreate("qq", "b")
+
+	wsA.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: "1", Content: "a", Time: 1})
+	wsB.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: "1", Content: "b", Time: 1})
 	if wsA.Cache.GetGroupCache("g1", 8).GetAll()[0].Content != "a" {
 		t.Fatal("账号 A 的缓存被账号 B 污染")
 	}
-}
 
-func Test工作空间提示词隔离(t *testing.T) {
-	m := testManager(t, twoWorkspaceConfig())
-	wsA, _ := m.ByID("a")
-	wsB, _ := m.ByID("b")
-
-	if err := wsA.Prompt.AddCommand("chat_review", "只在A", "提示词", nil); err != nil {
+	// 提示词只有一份：任何账号的增删都写根目录的 prompt_custom.yaml。
+	if wsA.Prompt != wsB.Prompt {
+		t.Fatal("所有工作空间应共享同一个提示词配置")
+	}
+	if err := wsA.Prompt.AddCommand("chat_review", "共享指令", "提示词", nil); err != nil {
 		t.Fatalf("AddCommand() error = %v", err)
 	}
-	wsA.Prompt.Reload()
-
-	if len(wsA.Prompt.Snapshot().CmdConfigs["chat_review"]) != 1 {
-		t.Fatal("账号 A 应看到自己添加的指令")
-	}
-	if len(wsB.Prompt.Snapshot().CmdConfigs["chat_review"]) != 0 {
-		t.Fatal("账号 B 不应看到账号 A 添加的指令")
-	}
-}
-
-func Test工作空间群白名单继承与覆盖(t *testing.T) {
-	m := testManager(t, twoWorkspaceConfig())
-	wsA, _ := m.ByID("a")
-	wsB, _ := m.ByID("b")
-
-	if wsA.AllowsGroup("g2") {
-		t.Fatal("账号 A 只声明了 g1，不应放行 g2")
-	}
-	if !wsB.AllowsGroup("g2") {
-		t.Fatal("账号 B 声明了 g2，应放行")
+	wsB.Prompt.Reload()
+	if len(wsB.Prompt.Snapshot().CmdConfigs["chat_review"]) != 1 {
+		t.Fatal("账号 B 应看到共享提示词里新增的指令")
 	}
 }
 
 func TestManager识别昵称唯一性(t *testing.T) {
-	cfg := twoWorkspaceConfig()
-	cfg.Workspaces[0].Nickname = "同名"
-	cfg.Workspaces[1].Nickname = "同名"
-	m := testManager(t, cfg)
+	m := testManager(t, allowedConfig("qq_a", "qq_b"))
+	wsA, _ := m.ResolveOrCreate("qq", "a")
+	wsB, _ := m.ResolveOrCreate("qq", "b")
+
+	wsA.setName("同名")
+	wsB.setName("同名")
 	if m.NicknameUnique("同名") {
 		t.Fatal("两个账号同名时不能用昵称做归属兜底")
 	}
-
-	cfg.Workspaces[1].Nickname = "另一个"
-	m = testManager(t, cfg)
+	wsB.setName("另一个")
 	if !m.NicknameUnique("另一个") {
 		t.Fatal("昵称唯一时应允许兜底")
 	}
-}
-
-func TestBindEvent补齐占位身份(t *testing.T) {
-	m := testManager(t, twoWorkspaceConfig())
-	ws, _ := m.ByID("a")
-
-	event := ws.BindEvent(onebot.Event{SelfID: "qq_official"})
-	if event.SelfID != "a1" || event.PlatformID != "平台A" {
-		t.Fatalf("占位 self_id 应回填为工作空间身份：%+v", event)
-	}
-
-	// 真实 self_id 不覆盖：同账号可能有多个别名，事件里那个才是本次接收者。
-	event = ws.BindEvent(onebot.Event{SelfID: "a2"})
-	if event.SelfID != "a2" {
-		t.Fatalf("真实 self_id 不该被覆盖：%+v", event)
+	if m.NicknameUnique("") {
+		t.Fatal("空昵称不能做兜底")
 	}
 }
 
-func TestIsManagedAccount跨工作空间(t *testing.T) {
-	m := testManager(t, twoWorkspaceConfig())
-	if !m.IsManagedAccount("a1") || !m.IsManagedAccount("b1") {
-		t.Fatal("两个账号的消息都应被识别为托管账号")
+func TestDefault只在单工作空间时返回(t *testing.T) {
+	m := testManager(t, allowedConfig("qq_a", "qq_b"))
+	if m.Default() != nil {
+		t.Fatal("没有工作空间时 Default 应为 nil")
 	}
-	if m.IsManagedAccount("u1") {
-		t.Fatal("普通群友不应被当成托管账号")
+	wsA, _ := m.ResolveOrCreate("qq", "a")
+	if m.Default() != wsA {
+		t.Fatal("只有一个工作空间时应返回它")
+	}
+	m.ResolveOrCreate("qq", "b")
+	if m.Default() != nil {
+		t.Fatal("多个工作空间时不能猜默认账号")
+	}
+}
+
+// Test多账号共用一个档案库 锁住"单库 + workspace_id"的语义：
+// 库文件在工作目录而不是每个工作空间一个库；两个账号写同一个群、同一个 message_id
+// 互不覆盖，重启后各自恢复自己的内容。
+func Test多账号共用一个档案库(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_a", "qq_b"},
+		MaxCacheMsg:       10,
+	}
+
+	m, err := New(func() *config.Config { return cfg }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	wsA, err := m.ResolveOrCreate("qq", "a")
+	if err != nil || wsA == nil {
+		t.Fatalf("ResolveOrCreate(a) = %v, %v", wsA, err)
+	}
+	wsB, err := m.ResolveOrCreate("qq", "b")
+	if err != nil || wsB == nil {
+		t.Fatalf("ResolveOrCreate(b) = %v, %v", wsB, err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "state.db")); err != nil {
+		t.Fatalf("档案库应位于工作目录：%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "workspaces")); !os.IsNotExist(err) {
+		t.Fatalf("不应再创建工作空间目录：%v", err)
+	}
+
+	wsA.State.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "from-a", Time: 1})
+	wsB.State.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "from-b", Time: 2})
+	m.Close()
+
+	// 名单为空：只可能从档案恢复，不能再靠"目录存在"兜底。
+	cfg = &config.Config{AllowGroups: []string{"g1"}, MaxCacheMsg: 10}
+	m2, err := New(func() *config.Config { return cfg }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("重启 New() error = %v", err)
+	}
+	defer m2.Close()
+
+	for id, want := range map[string]string{"qq_a": "from-a", "qq_b": "from-b"} {
+		ws, ok := m2.ByID(id)
+		if !ok || ws == nil {
+			t.Fatalf("%s 重启后应被扫描加载", id)
+		}
+		msgs, err := ws.State.LoadRecent(10)
+		if err != nil || len(msgs) != 1 || msgs[0].Content != want {
+			t.Fatalf("%s 恢复的消息 = %+v, %v; want %q", id, msgs, err, want)
+		}
 	}
 }

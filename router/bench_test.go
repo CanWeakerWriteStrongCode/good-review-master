@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"good-review-master/cache"
@@ -64,7 +65,7 @@ func benchMessages(n int) []cache.Message {
 	msgs := make([]cache.Message, n)
 	for i := range msgs {
 		msgs[i] = cache.Message{
-			MessageID: int64(i + 1),
+			MessageID: strconv.Itoa(i + 1),
 			GroupID:   "1",
 			UserID:    "123456",
 			Nickname:  "张三",
@@ -81,7 +82,7 @@ func benchMessages(n int) []cache.Message {
 func BenchmarkDecideChatWindow(b *testing.B) {
 	for _, count := range []int{100, 1000, 3100} {
 		msgs := benchMessages(count)
-		anchor := &cache.LLMAnchor{Start: 1, LastSent: int64(count / 2)}
+		anchor := &cache.LLMAnchor{Start: "1", LastSent: strconv.Itoa(count / 2)}
 
 		b.Run(fmt.Sprintf("消息数=%d", count), func(b *testing.B) {
 			b.ReportAllocs()

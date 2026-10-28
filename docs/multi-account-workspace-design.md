@@ -2,6 +2,12 @@
 
 > 状态：P0–P2 已实施（2026-10-28），P3 待定
 > 适用版本：当前 `main`（AstrBot sidecar + 多工作空间架构）
+> **注意：本文描述的是 `platform_id` + OneBot 11 时代的实现，正在被
+> [im-protocol-standardization.md](im-protocol-standardization.md) 与
+> [workspace-auto-provisioning-design.md](workspace-auto-provisioning-design.md) 取代；
+> 冲突时以后者为准（契约改 OneBot 12，账号键为 `{self.platform}_{路径 account}`，
+> `self.user_id` 只做 @ 判定，工作空间自动开通；**提示词改为全局共享，工作空间不再有
+> 目录或私有配置文件，私有数据统一进 `state.db`**）。**
 
 ## 1. 目标与边界
 

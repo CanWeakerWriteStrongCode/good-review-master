@@ -8,10 +8,10 @@ import (
 
 // Message 群聊消息
 //
-// 字段命名对齐 OneBot 11 的 message_id / user_id / nickname；JSON 标签保持不变，
-// 因为 /api 面板和调试注入已经按 msg_id/nick/content/quote_id 约定在用。
+// 字段命名对齐 OneBot 12 的 message_id / user_id / nickname；message_id 是字符串，
+// 保持平台原值（QQ 官方是长数字串，Satori 可能是任意字符串）。
 type Message struct {
-	MessageID int64    `json:"msg_id"`
+	MessageID string   `json:"msg_id"`
 	GroupID   string   `json:"group_id"`
 	SelfID    string   `json:"self_id,omitempty"` // 收到这条消息的机器人账号；同一群多账号时用于去重
 	UserID    string   `json:"user_id"`
@@ -19,24 +19,24 @@ type Message struct {
 	Card      string   `json:"card"`
 	Content   string   `json:"content"`
 	Images    []string `json:"images,omitempty"`   // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
-	ReplyToID int64    `json:"quote_id,omitempty"` // 本条引用的消息 message_id；0=没有引用
+	ReplyToID string   `json:"quote_id,omitempty"` // 本条引用的消息 message_id；空=没有引用
 	Time      int64    `json:"time"`
 }
 
 // GroupMsgCache 群消息环形缓存（零拷贝实现）
 type GroupMsgCache struct {
-	buf     []Message          // 固定大小环形缓冲区，只分配一次
-	writeAt int                // 下一个写入位置
-	seenSet map[int64]struct{} // O(1) 去重查找
-	filled  bool               // 是否已写满一圈
+	buf     []Message           // 固定大小环形缓冲区，只分配一次
+	writeAt int                 // 下一个写入位置
+	seenSet map[string]struct{} // O(1) 去重查找
+	filled  bool                // 是否已写满一圈
 	mu      sync.RWMutex
 }
 
 // LLMAnchor 缓存扩展窗口锚点（per-group）：记录上次发送窗口的首尾消息 message_id。
 // Start 是窗口第一条消息（缓存命中前缀的起点），LastSent 是窗口最后一条消息（区分新增内容）。
 type LLMAnchor struct {
-	Start    int64 // 上次发送窗口首条消息 message_id
-	LastSent int64 // 上次发送窗口末条消息 message_id
+	Start    string // 上次发送窗口首条消息 message_id
+	LastSent string // 上次发送窗口末条消息 message_id
 }
 
 // Store 一个工作空间的消息缓存与选窗锚点。
@@ -76,7 +76,7 @@ func (s *Store) GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 		if gc, ok = s.caches[groupID]; !ok {
 			gc = &GroupMsgCache{
 				buf:     make([]Message, maxSize),
-				seenSet: make(map[int64]struct{}, maxSize),
+				seenSet: make(map[string]struct{}, maxSize),
 			}
 			s.caches[groupID] = gc
 		}
@@ -87,15 +87,14 @@ func (s *Store) GetGroupCache(groupID string, maxSize int) *GroupMsgCache {
 
 // Add 添加消息到环形缓存（满了直接覆盖，零拷贝）
 //
-// 这里刻意**没有**埋点。cache_messages 指标由轮询侧按群更新（见 bot/polling.go）：
+// 这里刻意**没有**埋点。cache_messages 指标由消费侧（bot.ProcessMessage）按群更新：
 // 在 Add 里写 prometheus 会给每条消息都增加分配，直接毁掉本函数的
-// "零拷贝、0 allocs/op" 性质（cache/bench_test.go 把它钉住了），
-// 而按群每轮更新一次在精度上毫无损失——缓存条数本来就只有秒级的变化速度。
+// "零拷贝、0 allocs/op" 性质（cache/bench_test.go 把它钉住了）。
 func (gc *GroupMsgCache) Add(msg Message) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 
-	if msg.MessageID != 0 {
+	if msg.MessageID != "" {
 		if _, ok := gc.seenSet[msg.MessageID]; ok {
 			return
 		}
@@ -103,12 +102,12 @@ func (gc *GroupMsgCache) Add(msg Message) {
 
 	// 淘汰即将被覆盖的老消息
 	old := gc.buf[gc.writeAt]
-	if old.MessageID != 0 {
+	if old.MessageID != "" {
 		delete(gc.seenSet, old.MessageID)
 	}
 
 	gc.buf[gc.writeAt] = msg
-	if msg.MessageID != 0 {
+	if msg.MessageID != "" {
 		gc.seenSet[msg.MessageID] = struct{}{}
 	}
 	gc.writeAt++
@@ -163,7 +162,7 @@ func (gc *GroupMsgCache) Stats() CacheStats {
 	for i := 0; i < n; i++ {
 		idx := (gc.writeAt - 1 - i + len(gc.buf)) % len(gc.buf)
 		msg := gc.buf[idx]
-		if msg.MessageID == 0 && msg.Content == "" && msg.Time == 0 {
+		if msg.MessageID == "" && msg.Content == "" && msg.Time == 0 {
 			continue
 		}
 		if stats.LastTime == 0 {
@@ -182,8 +181,8 @@ func (gc *GroupMsgCache) Stats() CacheStats {
 // HasSeen 检查这条消息是否已经处理过（O(1) map 查找）。
 // 一个 Store 只属于一个账号，所以 message_id 本身已经足够；selfID 参数保留
 // 是为了调用方语义清晰，不参与判定。
-func (gc *GroupMsgCache) HasSeen(selfID string, msgID int64) bool {
-	if msgID == 0 {
+func (gc *GroupMsgCache) HasSeen(selfID string, msgID string) bool {
+	if msgID == "" {
 		return false
 	}
 	gc.mu.RLock()
@@ -222,13 +221,13 @@ func (gc *GroupMsgCache) Len() int {
 
 // chatLine 单条群聊消息在 JSON 行中的字段（发给大模型的表示）。
 // UserID 是发言者的稳定标识（QQ 官方机器人是 openid，aiocqhttp 是数字 QQ），
-// 昵称会变，它不会；为空时省略。MessageID 为 0 时省略。
+// 昵称会变，它不会；为空时省略。MessageID 为空时省略。
 type chatLine struct {
-	MessageID int64  `json:"message_id,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
 	Nickname  string `json:"nickname"`
 	Message   string `json:"message"`
-	ReplyID   int64  `json:"reply_id,omitempty"`
+	ReplyID   string `json:"reply_id,omitempty"`
 }
 
 // BuildChatLog 将消息列表组装为发给大模型的群聊上下文：每条消息一行 JSON 对象，如
@@ -280,7 +279,7 @@ func (s *Store) SetLLMAnchor(groupID string, anchor LLMAnchor) {
 }
 
 // FindMsgIndex 在消息列表中查找指定 message_id 的索引，未找到返回 -1
-func FindMsgIndex(msgs []Message, msgID int64) int {
+func FindMsgIndex(msgs []Message, msgID string) int {
 	for i, msg := range msgs {
 		if msg.MessageID == msgID {
 			return i

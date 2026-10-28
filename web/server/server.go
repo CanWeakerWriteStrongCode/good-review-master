@@ -21,18 +21,16 @@ import (
 
 // Server Web 管理面板服务器
 type Server struct {
-	cfg            config.Snapshot
-	engine         *gin.Engine
-	httpServer     *http.Server
-	obClient       *onebot.Client
-	workspaces     *workspace.Manager // nil = 旧测试路径，退回进程级默认缓存
-	groupNames     map[string]string  // groupID → groupName 缓存
-	groupNamesMu   sync.RWMutex
-	accountNames   map[string]string // selfID → 机器人昵称缓存（多账号面板用）
-	accountNamesMu sync.RWMutex
-	loginLimiter   *loginRateLimiter
-	draining       atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
-	startedAt      time.Time   // 供 /api/diagnostics 报运行时长
+	cfg          config.Snapshot
+	engine       *gin.Engine
+	httpServer   *http.Server
+	obClient     *onebot.Client
+	workspaces   *workspace.Manager // nil = 旧测试路径，退回进程级默认缓存
+	groupNames   map[string]string  // groupID → groupName 缓存
+	groupNamesMu sync.RWMutex
+	loginLimiter *loginRateLimiter
+	draining     atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
+	startedAt    time.Time   // 供 /api/diagnostics 报运行时长
 }
 
 // New 创建 Web 服务器实例。
@@ -67,7 +65,6 @@ func New(cfg config.Snapshot, obClient *onebot.Client, workspaces *workspace.Man
 		obClient:     obClient,
 		workspaces:   workspaces,
 		groupNames:   make(map[string]string),
-		accountNames: make(map[string]string),
 		loginLimiter: newLoginRateLimiter(),
 		startedAt:    time.Now(),
 	}

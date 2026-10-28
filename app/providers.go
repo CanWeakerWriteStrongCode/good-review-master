@@ -46,9 +46,6 @@ import (
 // loadedConfig 刚从文件加载出来、还没贴派生值的配置。
 type loadedConfig struct{ *config.Config }
 
-// botNickname 机器人昵称（启动时从 AstrBot 桥接取到，之后不变）。
-type botNickname string
-
 // builtinImageAddr 内嵌看图 MCP 的监听地址；空表示本会话没启用。
 type builtinImageAddr string
 
@@ -87,8 +84,8 @@ type injectorInputs struct {
 
 // provideWorkspaces 按配置构造每个机器人账号的工作空间。
 //
-// 提示词文件按工作空间目录解析（不存在则回退全局），因此多账号可以各自维护
-// 指令与人格；单账号/旧配置时等价于原来的单份 PromptConfig。
+// 提示词文件由所有工作空间共享（全局 prompt_system.yaml + prompt_custom.yaml），
+// 各工作空间只隔离缓存、选窗锚点、群人格与成员名。
 func provideWorkspaces(cfg config.Snapshot, paths promptPaths, llmClient llm.Client,
 	obClient *onebot.Client, mcp *mcpclient.Manager, ctx context.Context) (*workspace.Manager, error) {
 	return workspace.New(cfg, paths.System, paths.Custom, llmClient, obClient, mcp, ctx)
@@ -102,7 +99,7 @@ func provideDefaultRouter(manager *workspace.Manager) *router.Router {
 	return nil
 }
 
-// provideDefaultPrompt 暴露默认工作空间的提示词（保持 App.Prompt 字段语义）。
+// provideDefaultPrompt 暴露默认工作空间持有的共享提示词（保持 App.Prompt 字段语义）。
 func provideDefaultPrompt(manager *workspace.Manager) *config.PromptConfig {
 	if def := manager.Default(); def != nil {
 		return def.Prompt
@@ -110,35 +107,22 @@ func provideDefaultPrompt(manager *workspace.Manager) *config.PromptConfig {
 	return nil
 }
 
-// provideOneBot 建 OneBot 客户端。
-// sidecar 模式下它指向 AstrBot 桥接插件的动作代理（仍然是 OneBot 11 语义），
-// 收消息走 im 包，发消息/查历史仍然走这里。
-// onebot.NewClient 收两个 string，Wire 分不清哪个是地址哪个是 token，所以包一层。
+// provideOneBot 建 OneBot 12 出站客户端。
+// 一个账号一份 base URL：QQ 官方的 self.user_id 是群作用域 openid，无法用来选账号，
+// 所以按工作空间 ID 绑定地址，动作请求本身不带任何私有路由字段。
 func provideOneBot(loaded loadedConfig) *onebot.Client {
-	return onebot.NewClient(loaded.AstrBotHTTPAPI, loaded.AstrBotAccessToken)
+	accounts := make([]onebot.Account, 0, len(loaded.IMAccounts))
+	for _, account := range loaded.IMAccounts {
+		accounts = append(accounts, onebot.Account{ID: account.ID, APIBase: account.APIBase})
+	}
+	return onebot.NewClient(accounts, loaded.IMToken)
 }
 
-// provideIMServer 建 AstrBot sidecar 的入站入口。
+// provideIMServer 建 IM 入站入口。
 // 监听地址与 token 在启动时固化（与 Web 端口一致），配置热更新不会换端口。
 func provideIMServer(cfg config.Snapshot, consumer im.EventConsumer) *im.Server {
 	current := cfg()
-	return im.NewServer(current.IMListenAddr, current.AstrBotAccessToken, consumer)
-}
-
-// provideBotNickname 取机器人昵称。
-//
-// 失败不致命（只告警、返回空昵称）：昵称只影响 @文本提及 的兜底识别，
-// QQ 官方机器人的 @ 触发由桥接层写入的 mentioned 决定。
-// **必须在快照构造之前**完成——昵称要作为不可变快照的一部分
-// 发布出去，而不是发布之后再往快照里写。
-func provideBotNickname(obClient *onebot.Client) botNickname {
-	info, err := obClient.GetLoginInfo()
-	if err != nil {
-		logutil.Warn("获取机器人昵称失败，@检测仅依赖桥接层 mentioned", "err", err)
-		return ""
-	}
-	logutil.Info("机器人昵称", "nickname", info.Nickname)
-	return botNickname(info.Nickname)
+	return im.NewServer(current.IMListenAddr, current.IMToken, consumer)
 }
 
 // provideBuiltinImageMCP 在 llm.image_max>0 时启动内嵌「看图」MCP 服务（提供 view_image）。
@@ -180,8 +164,8 @@ func provideBuiltinImageAddr(builtinServer *mcpserver.Server) builtinImageAddr {
 }
 
 // provideDerivedConfig 把"只有本进程知道"的运行期值贴到配置上，得到可以发布的快照内容。
-func provideDerivedConfig(loaded loadedConfig, nickname botNickname, addr builtinImageAddr) *config.Config {
-	return deriveConfig(loaded.Config, nickname, addr)
+func provideDerivedConfig(loaded loadedConfig, addr builtinImageAddr) *config.Config {
+	return deriveConfig(loaded.Config, addr)
 }
 
 // provideConfigStore 建快照存储。之后所有消费者读到的都是这里发布出去的版本。
@@ -218,17 +202,17 @@ func provideMetricsServer(addr string, registry *telemetry.Registry) *telemetry.
 
 // provideConfigInformer 建配置监听器。
 //
-// list 里走的是 deriveConfig 而**不是**裸的 config.Load：昵称与内嵌看图地址
+// list 里走的是 deriveConfig 而**不是**裸的 config.Load：内嵌看图地址
 // 不在任何文件里，每次重读磁盘都必须重新贴上去，否则一次热重载之后
-// @检测会失灵、view_image 会消失（都不报错，只是悄悄没了）。
+// view_image 会消失（不报错，只是悄悄没了）。
 func provideConfigInformer(sources config.Sources, target *store.Store[config.Config],
-	nickname botNickname, addr builtinImageAddr) *store.Informer[config.Config] {
+	addr builtinImageAddr) *store.Informer[config.Config] {
 	informer := store.NewInformer(target, func() (*config.Config, error) {
 		reloaded, err := config.Load(sources)
 		if err != nil {
 			return nil, err
 		}
-		return deriveConfig(reloaded, nickname, addr), nil
+		return deriveConfig(reloaded, addr), nil
 	}, store.NewFilePoller(configWatchInterval, sources.Config, sources.Secret))
 	// AddEventHandler 是构造之后的一次方法调用，Wire 表达不了，所以在这个 provider 里做掉
 	informer.AddEventHandler(warnRestartOnlyChanges)
@@ -236,10 +220,10 @@ func provideConfigInformer(sources config.Sources, target *store.Store[config.Co
 }
 
 // providePromptObserver 建提示词监听器。
-// 监听**全部工作空间**的提示词文件：A 账号改了指令，不能等 B 账号的文件也变化。
-func providePromptObserver(manager *workspace.Manager) *store.Observer {
+// 提示词只有全局两份，所有工作空间共享；变化后重读一次并重建各 Router。
+func providePromptObserver(manager *workspace.Manager, paths promptPaths) *store.Observer {
 	return store.NewObserver(
-		store.NewFilePoller(configWatchInterval, manager.PromptPaths()...),
+		store.NewFilePoller(configWatchInterval, paths.System, paths.Custom),
 		manager.ReloadPrompts,
 	)
 }

@@ -51,7 +51,7 @@ func (r *Router) registerInternalCommands() {
 }
 
 func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
-	content := event.RawMessage
+	content := event.PlainText()
 	matches := addCmdRe.FindStringSubmatch(content)
 	if len(matches) != 4 {
 		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtAddCmd)
@@ -95,7 +95,7 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 }
 
 func (r *Router) handleDeleteCommand(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
-	content := event.RawMessage
+	content := event.PlainText()
 	matches := delCmdRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
 		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtDelCmd)
@@ -118,7 +118,7 @@ func (r *Router) handleDeleteCommand(_ context.Context, event onebot.Event, grou
 }
 
 func (r *Router) handleAddRule(ctx context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
-	content := event.RawMessage
+	content := event.PlainText()
 	matches := addRuleRe.FindStringSubmatch(content)
 	if len(matches) != 3 {
 		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtAddRule)
@@ -153,7 +153,7 @@ func (r *Router) handleAddRule(ctx context.Context, event onebot.Event, groupID 
 }
 
 func (r *Router) handleDeleteRule(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
-	content := event.RawMessage
+	content := event.PlainText()
 	matches := delRuleRe.FindStringSubmatch(content)
 	if len(matches) != 2 {
 		r.reply(event, groupID, "❌ 格式错误\n正确格式："+fmtDelRule)

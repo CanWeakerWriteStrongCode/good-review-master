@@ -1,26 +1,36 @@
 {
+  "account": {
+    "description": "接收账号兜底值（可选）：QQ 官方会自动从平台实例读取 AppID，通常留空；其它平台读不到时填，值会拼进 /im/event/{account}",
+    "type": "string",
+    "default": ""
+  },
+  "platform": {
+    "description": "事件 self.platform 兜底值（可选）：通常从平台实例自动识别（qq_official→qq、wecom、lark…），读不到时才用此值",
+    "type": "string",
+    "default": ""
+  },
+  "platform_id": {
+    "description": "AstrBot 平台实例 ID（可选）：动作请求没有小组件时用它定位账号；多账号部署建议填",
+    "type": "string",
+    "default": ""
+  },
   "go_event_url": {
-    "description": "Go 侧 IM 事件入口地址（对应 runtime.im_listen_addr）",
+    "description": "Go 侧 IM 事件入口前缀（对应 runtime.im_listen_addr），实际路径是 {go_event_url}/{account}",
     "type": "string",
     "default": "http://127.0.0.1:18090/im/event"
   },
   "token": {
-    "description": "与 Go 侧共享的 Bearer token（填 config.yaml/secret.yaml 里的 astrbot.access_token）",
-    "type": "string",
-    "default": ""
-  },
-  "platform_label": {
-    "description": "作为 X-Platform 请求头的值；留空则用 AstrBot 的平台名（qq_official / aiocqhttp），非 ASCII 值会被省略",
+    "description": "与 Go 侧共享的 Bearer token（填 secret.yaml 的 im_token）",
     "type": "string",
     "default": ""
   },
   "action_listen_host": {
-    "description": "动作代理监听地址；非回环地址必须配 token",
+    "description": "OneBot 12 动作服务监听地址；非回环地址必须配 token",
     "type": "string",
     "default": "127.0.0.1"
   },
   "action_listen_port": {
-    "description": "动作代理监听端口；Go 的 astrbot.http_api 指向这里",
+    "description": "动作服务监听端口；Go 的 im.accounts[].api_base 指向 http://host:port",
     "type": "int",
     "default": 6199
   },

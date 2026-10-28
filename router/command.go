@@ -11,6 +11,7 @@ import (
 	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/llm"
+	"good-review-master/logutil"
 	"good-review-master/onebot"
 	"good-review-master/telemetry"
 
@@ -121,9 +122,23 @@ type Router struct {
 	workspace string
 
 	// groupPersona 各群当前人格（#切换人格/#取消人格 维护，纯 @ 聊天时生效）。
-	// 内存态，重启清空，与 cache/锚点一致。同一分发路径读写，加锁防未来并发扩展。
+	// 同一分发路径读写，加锁防未来并发扩展。
 	groupPersonaMu sync.RWMutex
 	groupPersona   map[string]*groupPersonaBinding // groupID → 本群当前人格
+
+	// personaStore 可选：把群人格的**源关键字**持久化到共享 state.db（带 workspace_id）。
+	// 只存关键字而不是渲染后的文本：提示词热更新后要按新版本重新绑定。
+	personaStore PersonaStore
+
+	// displayName 按群查成员显示名（工作空间的成员目录）。nil 时日志与 handler
+	// 只用 user_id，不影响功能——昵称只是给人看的。
+	displayName func(groupID, userID string) string
+}
+
+// PersonaStore 持久化群当前人格。由工作空间的 state.Store 实现。
+type PersonaStore interface {
+	SaveGroupPersona(groupID, keyword string)
+	DeleteGroupPersona(groupID string)
 }
 
 // NewRouter 创建路由器并初始化所有内部指令。
@@ -275,14 +290,13 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona)
 	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
 		attribute.String("router.category", route.Category))
-	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, event.DisplayName(), extra)
+	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, r.nameOf(groupID, event.UserID), extra)
 }
 
 // reply 回复触发消息：引用原消息并 @ 发送者。
-// 桥接层会按平台翻译：QQ 官方机器人用 message_reference + <qqbot-at-user>，
-// 其他 OneBot 平台用 reply / at 段；拿不到引用 ID 时退化为纯文本。
+// QQ 官方机器人用 message_reference + at 段；拿不到引用 ID 时退化为纯文本。
 func (r *Router) reply(event onebot.Event, groupID, text string) {
-	r.obClient.SendGroupReply(groupID, event.SelfID, event.ReplyID(), event.UserID, text)
+	r.obClient.SendGroupReply(groupID, event.QuotedMessageID(), event.UserID, text)
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
@@ -349,15 +363,65 @@ func (r *Router) getGroupPersona(groupID string) (*groupPersonaBinding, bool) {
 // setGroupPersona 记录某群当前人格
 func (r *Router) setGroupPersona(groupID string, b *groupPersonaBinding) {
 	r.groupPersonaMu.Lock()
-	defer r.groupPersonaMu.Unlock()
 	r.groupPersona[groupID] = b
+	r.groupPersonaMu.Unlock()
+	if r.personaStore != nil && b != nil {
+		r.personaStore.SaveGroupPersona(groupID, b.keyword)
+	}
 }
 
 // clearGroupPersona 清空某群当前人格（#取消人格）
 func (r *Router) clearGroupPersona(groupID string) {
 	r.groupPersonaMu.Lock()
-	defer r.groupPersonaMu.Unlock()
 	delete(r.groupPersona, groupID)
+	r.groupPersonaMu.Unlock()
+	if r.personaStore != nil {
+		r.personaStore.DeleteGroupPersona(groupID)
+	}
+}
+
+// SetDisplayName 注入成员显示名查询（工作空间成员目录）。必须在分发前调用。
+func (r *Router) SetDisplayName(fn func(groupID, userID string) string) { r.displayName = fn }
+
+// nameOf 返回成员显示名；没有目录时返回空串，调用方自行回退。
+func (r *Router) nameOf(groupID, userID string) string {
+	if r.displayName == nil {
+		return ""
+	}
+	return r.displayName(groupID, userID)
+}
+
+// SetPersonaStore 注入人格持久化。必须在开始处理消息前调用。
+func (r *Router) SetPersonaStore(store PersonaStore) { r.personaStore = store }
+
+// RestorePersonas 把 state.db 里本工作空间存的关键字重新绑定成当前路由表里的人格。
+// 关键字在提示词里已经不存在时降级为默认人格并告警——提示词被人改过是常态。
+func (r *Router) RestorePersonas(stored map[string]string) {
+	for groupID, keyword := range stored {
+		binding := r.personaBinding(keyword)
+		if binding == nil {
+			logutil.Warn("持久化的群人格关键字已不存在，按默认人格处理", "group", groupID, "keyword", keyword)
+			if r.personaStore != nil {
+				r.personaStore.DeleteGroupPersona(groupID)
+			}
+			continue
+		}
+		r.setGroupPersona(groupID, binding)
+	}
+}
+
+// personaBinding 按关键字找一条自带人格的路由，复制成自包含绑定。
+func (r *Router) personaBinding(keyword string) *groupPersonaBinding {
+	for _, route := range r.routesSnapshot() {
+		if route.Keyword == keyword && route.Persona != nil {
+			return &groupPersonaBinding{
+				keyword:     keyword,
+				persona:     *route.Persona,
+				sharedRules: route.SharedRules,
+			}
+		}
+	}
+	return nil
 }
 
 // availablePersonaNames 列出所有"自带人格"的关键字（可作为 #切换人格 的目标人格）。
@@ -383,22 +447,18 @@ func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Eve
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
-	r.chatReview(ctx, event, groupID, systemPrompt, "", event.DisplayName(), text)
+	r.chatReview(ctx, event, groupID, systemPrompt, "", r.nameOf(groupID, event.UserID), text)
 }
 
 // stripCQPrefix 去除消息开头的 @ 标记，让后面的文本能命中关键字。
-// 支持三种写法：CQ at 码、桥接层翻译的「@昵称(ID)」、以及手打的「@昵称」。
+// 支持「@昵称(ID)」与手打的「@昵称」两种写法。
 // 只用于路由匹配；聊天记录里的完整内容不会被改动。
 func (r *Router) stripCQPrefix(rawMsg string, cfg *config.Config) string {
 	text := strings.TrimSpace(rawMsg)
 	// 每轮只剥一个标记，剥完再看下一个；一条消息可能先后 @ 了多个人，机器人不一定排第一
 	for {
 		before := text
-		if strings.HasPrefix(text, "[CQ:at,qq=") {
-			if idx := strings.Index(text, "]"); idx != -1 {
-				text = text[idx+1:]
-			}
-		} else if trimmed := trimLeadingMentionToken(text); trimmed != text {
+		if trimmed := trimLeadingMentionToken(text); trimmed != text {
 			text = trimmed
 		} else if cfg.BotNickname != "" && strings.HasPrefix(text, "@"+cfg.BotNickname) {
 			text = strings.TrimPrefix(text, "@"+cfg.BotNickname)
@@ -422,9 +482,9 @@ func trimLeadingMentionToken(text string) string {
 	if open < 0 {
 		return text
 	}
-	close := strings.IndexByte(text[open+1:], ')')
-	if close < 0 {
+	closeIdx := strings.IndexByte(text[open+1:], ')')
+	if closeIdx < 0 {
 		return text
 	}
-	return text[open+1+close+1:]
+	return text[open+1+closeIdx+1:]
 }

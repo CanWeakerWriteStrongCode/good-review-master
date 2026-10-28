@@ -6,13 +6,12 @@ import (
 	"good-review-master/config"
 )
 
-// TestDerive贴上昵称与内嵌看图服务 锁住快照的完整性。
+// TestDerive贴上内嵌看图服务 锁住快照的完整性。
 //
-// 这条不是可有可无的：昵称与内嵌看图地址都不在任何配置文件里，
-// 重读磁盘拿到的配置**必然**不含它们。若重载路径忘了走 derive，
-// 快照就会悄悄丢掉这两项——而且不会报错，只表现为"某次改配置之后
-// @机器人 不响应了"/"view_image 工具不见了"。
-func TestDerive贴上昵称与内嵌看图服务(t *testing.T) {
+// 内嵌看图地址不在任何配置文件里，重读磁盘拿到的配置**必然**不含它。
+// 若重载路径忘了走 derive，快照就会悄悄丢掉这一项——而且不会报错，
+// 只表现为 view_image 工具不见了。
+func TestDerive贴上内嵌看图服务(t *testing.T) {
 	loaded := &config.Config{
 		McpBuiltinToken: "tok",
 		MCPConfig: config.MCPConf{
@@ -21,11 +20,8 @@ func TestDerive贴上昵称与内嵌看图服务(t *testing.T) {
 		},
 	}
 
-	got := deriveConfig(loaded, "好评大师", "http://127.0.0.1:12345/mcp")
+	got := deriveConfig(loaded, "http://127.0.0.1:12345/mcp")
 
-	if got.BotNickname != "好评大师" {
-		t.Errorf("昵称应被贴上，实际 %q", got.BotNickname)
-	}
 	if !got.MCPConfig.Enabled {
 		t.Error("注入了内嵌看图服务就应自动开启 mcp.enabled")
 	}
@@ -50,7 +46,7 @@ func TestDerive不共享底层数组(t *testing.T) {
 	existing[0] = config.MCPServerConf{Name: "ddg-search"}
 	loaded := &config.Config{MCPConfig: config.MCPConf{Enabled: true, Servers: existing}}
 
-	got := deriveConfig(loaded, "", "http://127.0.0.1:9999/mcp")
+	got := deriveConfig(loaded, "http://127.0.0.1:9999/mcp")
 
 	if len(existing) != 1 {
 		t.Fatalf("原切片被 append 改动了（len 变成 %d），旧快照已被污染", len(existing))
@@ -68,7 +64,7 @@ func TestDerive未启用看图时不动MCP配置(t *testing.T) {
 			Servers: []config.MCPServerConf{{Name: "only", Transport: "http", URL: "https://x/mcp"}},
 		},
 	}
-	got := deriveConfig(loaded, "n", "")
+	got := deriveConfig(loaded, "")
 
 	if got.MCPConfig.Enabled {
 		t.Error("没启用看图就不该自动开启 mcp.enabled")

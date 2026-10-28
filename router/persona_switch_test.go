@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 		},
 	}
 	fake := testutil.NewFakeLLM()
-	obClient := onebot.NewClient("http://127.0.0.1:1", "") // 死地址，SendGroupMessage 仅日志
+	obClient := onebot.NewClient(nil, "") // 死地址，SendGroupMessage 仅日志
 	router := NewRouter(staticSnapshot(cfg), promptCfg, fake, obClient, nil, context.Background())
 
 	// 收尾顺序（t.Cleanup 是 LIFO，所以先登记日志、后登记排空 = 先排空、后关日志）：
@@ -100,20 +101,20 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 func (e *switchTestEnv) seedMsg(t *testing.T) {
 	t.Helper()
 	cache.GetGroupCache(e.groupID, 100).Add(cache.Message{
-		MessageID: time.Now().UnixNano(), GroupID: e.groupID, UserID: "1", Nickname: "张三", Content: "今天好累",
+		MessageID: strconv.FormatInt(time.Now().UnixNano(), 10), GroupID: e.groupID, UserID: "1", Nickname: "张三", Content: "今天好累",
 	})
 }
 
 func (e *switchTestEnv) route(t *testing.T, text string, msgID int64) {
 	t.Helper()
 	e.router.RouteMessage(context.Background(), text, onebot.Event{
-		PostType:    "message",
-		MessageType: "group",
-		GroupID:     e.groupID,
-		UserID:      "1",
-		Sender:      onebot.Sender{Nickname: "李四"},
-		RawMessage:  text,
-		MessageID:   msgID,
+		Type:       "message",
+		DetailType: "group",
+		GroupID:    e.groupID,
+		UserID:     "1",
+		Self:       onebot.Self{Platform: "qq", UserID: "bot"},
+		Message:    []onebot.Segment{onebot.TextSegment(text)},
+		MessageID:  strconv.FormatInt(msgID, 10),
 	}, e.groupID)
 }
 
@@ -136,14 +137,14 @@ func TestSwitchPersona_DefaultChatInjectsGroupPersona(t *testing.T) {
 	e := newSwitchTestEnv(t)
 	e.seedMsg(t)
 
-	e.route(t, "[CQ:at,qq=123456] #切换人格 锐评下", 1)
+	e.route(t, "@bot(u1) #切换人格 锐评下", 1)
 
 	b, ok := e.router.getGroupPersona(e.groupID)
 	if !ok || b.keyword != "锐评下" {
 		t.Fatalf("切换人格后群状态应为 锐评下, ok=%v binding=%+v", ok, b)
 	}
 
-	e.route(t, "[CQ:at,qq=123456] 今天心情怎么样", 2)
+	e.route(t, "@bot(u1) 今天心情怎么样", 2)
 	calls := waitLLMCalls(t, e.fake, 1)
 	sys, log := calls[0].SystemPrompt, calls[0].ChatLog
 	if !strings.Contains(sys, "【人格】") || !strings.Contains(sys, "身份：毒舌点评人") {
@@ -165,13 +166,13 @@ func TestSwitchPersona_CancelRestoresNormal(t *testing.T) {
 	e := newSwitchTestEnv(t)
 	e.seedMsg(t)
 
-	e.route(t, "[CQ:at,qq=123456] #切换人格 锐评下", 1)
-	e.route(t, "[CQ:at,qq=123456] #取消人格", 2)
+	e.route(t, "@bot(u1) #切换人格 锐评下", 1)
+	e.route(t, "@bot(u1) #取消人格", 2)
 	if _, ok := e.router.getGroupPersona(e.groupID); ok {
 		t.Fatal("#取消人格 后群人格应被清空")
 	}
 
-	e.route(t, "[CQ:at,qq=123456] 随便聊聊", 3)
+	e.route(t, "@bot(u1) 随便聊聊", 3)
 	calls := waitLLMCalls(t, e.fake, 1)
 	sys := calls[0].SystemPrompt
 	if strings.Contains(sys, "【人格】") {
@@ -187,12 +188,12 @@ func TestSwitchPersona_UnknownNameNotSet(t *testing.T) {
 	e := newSwitchTestEnv(t)
 	e.seedMsg(t)
 
-	e.route(t, "[CQ:at,qq=123456] #切换人格 不存在的角色", 1)
+	e.route(t, "@bot(u1) #切换人格 不存在的角色", 1)
 	if _, ok := e.router.getGroupPersona(e.groupID); ok {
 		t.Fatal("切换不存在的人格不应设置群状态")
 	}
 
-	e.route(t, "[CQ:at,qq=123456] 今天天气不错", 2)
+	e.route(t, "@bot(u1) 今天天气不错", 2)
 	calls := waitLLMCalls(t, e.fake, 1)
 	sys := calls[0].SystemPrompt
 	if strings.Contains(sys, "【人格】") {
@@ -207,7 +208,7 @@ func TestSwitchPersona_UnknownNameNotSet(t *testing.T) {
 func TestSwitchPersona_EmptyNameRepliesUsage(t *testing.T) {
 	e := newSwitchTestEnv(t)
 
-	e.route(t, "[CQ:at,qq=123456] #切换人格", 1)
+	e.route(t, "@bot(u1) #切换人格", 1)
 	if _, ok := e.router.getGroupPersona(e.groupID); ok {
 		t.Fatal("空参数 #切换人格 不应设置群状态")
 	}
@@ -222,10 +223,10 @@ func TestSwitchPersona_KeywordCommandKeepsOwnPersona(t *testing.T) {
 	e.seedMsg(t)
 
 	// 群人格切到 锐评下（毒舌点评人）
-	e.route(t, "[CQ:at,qq=123456] #切换人格 锐评下", 1)
+	e.route(t, "@bot(u1) #切换人格 锐评下", 1)
 
 	// 命中关键字 温柔（温柔大姐姐）→ 应使用指令自带人格，而非群人格
-	e.route(t, "[CQ:at,qq=123456] 温柔 今天心情如何", 2)
+	e.route(t, "@bot(u1) 温柔 今天心情如何", 2)
 	calls := waitLLMCalls(t, e.fake, 1)
 	sys, log := calls[0].SystemPrompt, calls[0].ChatLog
 	if !strings.Contains(sys, "身份：温柔大姐姐") {

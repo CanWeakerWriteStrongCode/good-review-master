@@ -1,7 +1,9 @@
 {
+  "account": "",
+  "platform": "",
+  "platform_id": "",
   "go_event_url": "http://127.0.0.1:18090/im/event",
-  "token": "<与 Go 的 astrbot.access_token 相同>",
-  "platform_label": "",
+  "token": "<与 Go 的 im_token 相同>",
   "action_listen_host": "127.0.0.1",
   "action_listen_port": 6199,
   "forward_self_messages": false,

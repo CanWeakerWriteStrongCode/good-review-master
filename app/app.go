@@ -38,7 +38,7 @@ type App struct {
 	Workspaces *workspace.Manager
 	Router     *router.Router // 默认工作空间的 Router（debug 触发/兼容）
 	Bot        *bot.Bot
-	IM         *im.Server               // AstrBot sidecar 的事件入口
+	IM         *im.Server               // OneBot 12 事件入口
 	Web        *webserver.Server        // web_port<=0 时为 nil
 	Metrics    *telemetry.MetricsServer // metrics_addr=off 时为 nil
 
@@ -65,11 +65,11 @@ func (a *App) Ctx() context.Context { return a.ctx }
 // Start 启动消息消费、IM 事件入口、Web 管理面板与配置监听，不阻塞。
 // MCP 建连已在 New 中完成（内嵌看图的地址必须参与装配），故这里不再启动它。
 func (a *App) Start() {
-	// 消费循环先起：它会做历史回填，回填期间到达的事件在队列里等着，
-	// 保证缓存里的消息顺序仍是"先旧后新"。
+	// 消费循环先起：启动时各工作空间会从共享 state.db 按 workspace_id 恢复最近消息，
+	// 这期间到达的事件在队列里等着，缓存顺序仍是"先旧后新"。
 	go a.Bot.Run(a.ctx)
 
-	// IM 入口与消费循环同时起：AstrBot 可能在回填期间就推事件，
+	// IM 入口与消费循环同时起：实现端可能立刻推事件，
 	// 此时 Bot 的入站队列负责缓冲，不丢消息。
 	go func() {
 		if err := a.IM.Start(); err != nil {
@@ -154,6 +154,8 @@ func (a *App) Shutdown(ctx context.Context) {
 			if err := a.Workspaces.Wait(); err != nil {
 				logutil.Error("等待 goroutine 退出失败", "err", err)
 			}
+			// 在途任务全部结束后再关库：异步写队列要先排空，否则最后几条消息会丢。
+			a.Workspaces.Close()
 		}
 
 		// 关闭 MCP 会话（stdio 子进程随之终止）。Close 目前恒返回 nil——

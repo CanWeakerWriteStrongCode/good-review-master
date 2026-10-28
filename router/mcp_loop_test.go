@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -323,7 +324,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 	msgs := make([]cache.Message, 0, 10)
 	for i := 0; i < 10; i++ {
 		msgs = append(msgs, cache.Message{
-			MessageID: int64(i + 1), GroupID: "10001", UserID: "1", Nickname: "张三", Content: "今天好累啊",
+			MessageID: strconv.Itoa(i + 1), GroupID: "10001", UserID: "1", Nickname: "张三", Content: "今天好累啊",
 		})
 	}
 	groupID := "guard-test-group"
@@ -350,7 +351,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 
 	t.Run("不带工具时护栏内可扩展", func(t *testing.T) {
 		cache.ResetAll()
-		cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: 1, LastSent: 5})
+		cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: "1", LastSent: "5"})
 		// 命中(前5条)+新增(后5条) ≈ 全部 10 条，<= 护栏 → 扩展
 		r := buildRouter(nil, guardTokens)
 		got := r.selectChatWindow(msgs, groupID, "", r.appCfg())
@@ -361,7 +362,7 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 
 	t.Run("工具清单顶穿护栏后强制重置", func(t *testing.T) {
 		cache.ResetAll()
-		cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: 1, LastSent: 5})
+		cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: "1", LastSent: "5"})
 		// 同样的消息与锚点，只多 100 token 的工具清单 → 固定前缀远超护栏 → 必须重置并截断
 		mcpTokens := 100
 		r := buildRouter(&fakeMCP{tokens: mcpTokens}, guardTokens)
@@ -370,8 +371,8 @@ func TestSelectChatWindow_工具token计入上下文护栏(t *testing.T) {
 			t.Fatal("工具 token 未计入护栏，窗口没有收缩")
 		}
 		// 截断应保留最新消息
-		if got[len(got)-1].MessageID != 10 {
-			t.Fatalf("重置应保留最新的消息，得到最后 MessageID=%d", got[len(got)-1].MessageID)
+		if got[len(got)-1].MessageID != "10" {
+			t.Fatalf("重置应保留最新的消息，得到最后 MessageID=%s", got[len(got)-1].MessageID)
 		}
 		// 截断后的窗口（前缀 = systemPrompt + 工具清单）不得再超护栏（只剩 1 条仍超则豁免）
 		systemTokens := baseSystemTokens + mcpTokens

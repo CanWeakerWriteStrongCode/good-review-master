@@ -25,11 +25,11 @@
 ## Architecture
 
 ```
-QQ official bot ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go Bot ←→ LLM API
+QQ official bot ←→ AstrBot sidecar (OneBot 12 IM gateway) ←→ Go Bot ←→ LLM API
 ```
 
 ```
-┌──────────┐  OneBot 11  ┌────────────────┐  events/actions  ┌──────────────────┐
+┌──────────┐  OneBot 12  ┌────────────────┐  events/actions  ┌──────────────────┐
 │ QQ Group │ ←─────────→ │ AstrBot + bridge│ ←──────────────→ │  Go Bot          │
 └──────────┘   (WS/HTTP)  └────────────────┘                  └────────┬─────────┘
                                                               │
@@ -44,14 +44,15 @@ QQ official bot ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go Bot ←�
 ### Message Flow
 
 ```
-IM ingress (im/server.go) → queue (bot/ingest.go)
-  → Backfill history through the bridge at startup (onebot, resty)
-  → Dedup via O(1) msgID set
+IM ingress POST /im/event/{account} → provision/load workspace {platform}_{account}
+  → queue (bot/ingest.go)
+  → Dedup via O(1) message_id set
+  → History comes from the shared state.db, filtered by workspace_id (no platform history action)
   → ProcessMessage (bot/handler.go)
      → Whitelist check
      → Truncate to max length
      → Store in ring buffer (zero-copy write)
-     → @bot detection (bridge's mentioned flag + nickname fallback)
+     → @bot detection (mention.user_id == self.user_id + nickname fallback)
      → Prefix trie match → matched: dispatch to that command's handler (with its persona)
      → No match: fall back to a plain LLM reply (no persona)
 ```
@@ -116,10 +117,10 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `astrbot.http_api` | AstrBot bridge action proxy URL (default 6199) | `http://127.0.0.1:6199` |
-| `astrbot.access_token` | Shared token with the bridge plugin | `""` |
+| `im.token` | Shared OneBot token (prefer `secret.yaml` `im_token`) | `""` |
+| `im.accounts` | Per-account outbound endpoints `[{id, api_base}]`; `id` = `platform_account` | see example config |
 | `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups) | `123456,789012` |
-| `bot.allow_self_ids` | Bot accounts managed by Go (`self_id`; `*` for all; empty hands every account back to AstrBot's own agent) | `*` |
+| `bot.workspace_accounts` | Workspace IDs allowed to auto-provision (`qq_1906xxxx`; `*` for all) | `["qq_1906xxxx"]` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |
 | `llm.api_key` | LLM API key (**move to `secret.yaml`**) | `sk-xxx` |
 | `llm.api_base` | LLM API base URL | `https://api.deepseek.com` |
@@ -462,6 +463,6 @@ Every command can carry a 5-dimension persona (`Persona` in `config/prompt.go`),
 ### Engineering Robustness
 
 - **Explicit dependency injection, zero `init()` side effects**: all components are constructed top-down in `main()`.
-- **Defenses**: group whitelist, per-message rune truncation, @detection via the bridge's mentioned flag with nickname fallback, auto-generate missing config from embedded templates then exit.
+- **Defenses**: group whitelist, per-message rune truncation, @detection via the standard mention with unique-nickname fallback, auto-generate missing config from embedded templates then exit.
 - **Observability**: zap + lumberjack dual output (console + 20MB-rotating file, 30-day retention, gzip).
 - **Web panel**: SPA embedded via `//go:embed`, JWT (HS256) auth, no password-less mode.

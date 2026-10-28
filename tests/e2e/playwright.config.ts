@@ -15,6 +15,8 @@ export default defineConfig({
   // 准备（构建二进制 + 写 config.yaml）由 scripts/prep.mjs 在 playwright 启动前完成——
   // 见 package.json 的 test 脚本。webServer 先于 globalSetup 启动，准备不能放 globalSetup。
   testDir: './specs',
+  // 推送一条事件让工作空间开通，之后 debug 接口才有对象可操作。
+  globalSetup: './scripts/global-setup.ts',
   timeout: 30_000,
   workers: 1,
   fullyParallel: false,

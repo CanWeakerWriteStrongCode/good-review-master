@@ -15,8 +15,12 @@ __pycache__/
 /config.yaml
 /prompt_system.yaml
 /prompt_custom.yaml
-# 多账号工作空间的提示词与自定义指令（运行期数据）
+# 旧版本工作空间目录（已废弃：工作空间不再有目录，仅防残留被误提交）
 /workspaces/
+# 本地档案库（消息/锚点/人格等，单库按 workspace_id 区分账号）
+/state.db
+/state.db-wal
+/state.db-shm
 # 密钥文件：单独一份、权限 0600，绝不能进版本库
 /secret.yaml
 

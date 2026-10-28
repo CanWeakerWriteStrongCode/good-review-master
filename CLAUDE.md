@@ -104,7 +104,7 @@ generates no diff at all, so `git status` after generating remains the only dete
 ## Architecture
 
 ```
-QQ official bot ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go bot ←→ LLM API (OpenAI-compatible)
+QQ official bot ←→ AstrBot sidecar (OneBot 12 IM gateway) ←→ Go bot ←→ LLM API (OpenAI-compatible)
 Browser / MiniProgram ←→ Gin web server (:web_port) ←→ IM ingress + Cache (read-only)
 ```
 
@@ -112,8 +112,9 @@ Browser / MiniProgram ←→ Gin web server (:web_port) ←→ IM ingress + Cach
 
 ```
 main → app, config, logutil, apppath, version
-app → config, config/store, llm, onebot, im, router, bot, web/server, mcpclient, mcpserver, telemetry, logutil, internal/testutil
-bot → config, cache, onebot, router, telemetry
+app → config, config/store, llm, onebot, im, router, bot, workspace, web/server, mcpclient, mcpserver, telemetry, logutil, internal/testutil
+bot → config, cache, onebot, routing via workspace
+workspace → cache, config, llm, onebot, router, telemetry, workspace/state
 im → logutil, onebot, telemetry
 router → config, cache, llm, onebot, async, telemetry
 web/server → config, logutil, onebot, cache, version, telemetry
@@ -129,7 +130,7 @@ telemetry → (仅 prometheus / otel，无任何内部依赖)
 apppath → (no internal deps)
 ```
 
-`app` is the composition root (see below); `im` is the HTTP ingress for AstrBot-pushed OneBot 11 events; `bot` is the event consumer (queue + dedup + backfill); `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the OneBot 11 **action** client (resty-based, pointed at the AstrBot bridge) **plus CQ-code parsing** (`cqimage.go`); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK) wrapped in an outbound rate-limit/circuit-breaker decorator; `telemetry` owns every metric and trace; `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`app` is the composition root (see below); `im` is the HTTP ingress for OneBot 12 webhook events (`POST /im/event/{account}`); `bot` is the event consumer (queue + dedup); `workspace` owns one account's runtime (cache, router, a `state.Scope` view into the shared `state.db`) and provisions it on first event as `{platform}_{account}`; there are no per-workspace directories or config files — prompt YAMLs are shared by all workspaces; `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the OneBot 12 **action** client (resty-based, one base URL per account) plus segment/event rendering; `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK) wrapped in an outbound rate-limit/circuit-breaker decorator; `telemetry` owns every metric and trace; `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
 
 **`telemetry` is a deliberate hole in the "no cross-package imports" rule.** It is a leaf
 (only prometheus + otel), and low-level packages (`pool`, `cache`, `llm`, …) import it directly
@@ -231,7 +232,7 @@ see the section above); `app/build.go` only does the parts Wire cannot express. 
 
 All four YAML files are auto-created from embedded templates on first run if missing (`config.InitDefaultFiles()`, the only place allowed to create files). `config.yaml`, `secret.yaml` and `prompt_system.yaml` use templates under `config/`; `prompt_custom.yaml` is created empty on first keyword addition.
 
-`config.yaml` has five sections: `astrbot`, `bot`, `runtime`, `llm`, `mcp`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
+`config.yaml` has five sections: `im`, `bot`, `runtime`, `llm`, `mcp`. Prompt files have `cmd:` (map of category → list of `{keyword, prompt}`) and `rules:` (map of category → shared rules string appended to every prompt of that category).
 
 `prompt_system.yaml` is parsed once at startup and cached (`Config.systemPrompt`) — subsequent checks read the cached pointer, not the file. `prompt_custom.yaml` is read on every write operation (add/delete command/rule) and on `Reload()`.
 
@@ -243,7 +244,7 @@ The config layer follows the *shape* of K8s' API machinery (external/internal sp
 | --- | --- |
 | `config/section.go` | the `Section` interface + shared helpers (`decodeSection`, `validateEndpoint`, …) |
 | `config/scheme.go` | **the registry**: `newSections()` + `registry()`. Adding a domain = one file + one line |
-| `config/section_{astrbot,bot,runtime,llm,mcp}.go` | each holds its own yaml tags, defaults, and validation |
+| `config/section_{im,bot,runtime,llm,mcp}.go` | each holds its own yaml tags, defaults, and validation |
 | `config/section_secret.go` | the secret domain — **sources differ**, see below |
 | `config/loader.go` | the four-step load: read → decode → SetDefaults → Validate |
 | `config/convert.go` | external → internal (`assemble`), plus secret precedence |
@@ -288,8 +289,8 @@ cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X througho
 | Changed | Takes effect |
 | --- | --- |
 | `prompt_system.yaml` / `prompt_custom.yaml` | within ~2s (`PromptConfig.Reload()` **and** `Router.Rebuild()`) |
-| `allow_groups`, `allow_self_ids`, thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
-| `web_port`, `im_listen_addr`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
+| `allow_groups`, `workspace_accounts` (new provisioning), thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
+| `im.accounts`, `web_port`, `im_listen_addr`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
 
 The limiter and breaker are **stateful** (a token bucket, a consecutive-failure counter), so
 re-reading their numbers mid-flight would silently change what the counters mean. That's why
@@ -381,20 +382,21 @@ func trieMatch(root *trieNode, text string) *Route   // O(k), k = len(text)
 ### Message flow
 
 ```
-im HTTP ingress (im/server.go) → AcceptEvent → bot queue (bot/ingest.go)
-                                 → dedup via cache.HasMsgID (O(1) map)
+im HTTP ingress (im/server.go) → AcceptEvent(account, event)
+                                 → workspace.ResolveOrCreate(self.platform, account)
+                                 → bot queue (bot/ingest.go)
+                                 → dedup via cache.HasSeen (O(1) map)
                                  → ProcessMessage (bot/handler.go)
-                                    → whitelist check (Config.HasGroup)
-                                    → truncate to MaxMsgRune
-                                    → add to ring cache (zero-copy)
-                                    → @bot detection (mentioned flag + nickname fallback)
+                                    → whitelist check (workspace.AllowsGroup)
+                                    → render segments to text + truncate to MaxMsgRune
+                                    → add to ring cache (zero-copy) + async write to state.db
+                                    → @bot detection (mention.user_id == self.user_id, nickname fallback)
                                     → router.RouteMessage → handler
 ```
 
-At startup, before consuming the queue, `BackfillHistory` pulls the last 30 messages per
-allow-listed group through the same OneBot action proxy. Ordering matters: backfill first, then
-drain the queue, otherwise old messages would be appended after new ones and the LLM context
-would be out of order.
+There is no history backfill: OneBot 12 has no standard group-history action. At startup each
+workspace restores the most recent `runtime.max_cache_msg` messages from the shared `state.db`,
+filtered by its `workspace_id`.
 
 ## Adding a new command type
 
@@ -417,9 +419,25 @@ Guard checks use `promptCfg.KeywordInSystemCmd(keyword)` and `CategoryInSystemRu
 
 ## @mention detection (`bot/handler.go`)
 
-`Bot.ProcessMessage` treats `event.Mentioned` (computed by the bridge from the platform's @ semantics) as the primary trigger. `Bot.isAtBot(event, content, cfg)` is the fallback: it matches the bot's stable ID (`event.BotID()` from `self_id`) inside `[CQ:at,qq=...]`, `<@id>`, or the translated `@昵称(ID)`, then falls back to a leading `@nickname`. On QQ official bots the numeric QQ / group number do not exist, only `member_openid` / `group_openid`, so there is no `bot.qq` config.
+The primary trigger is the OneBot 12 standard rule: a `mention` segment whose `user_id`
+equals `self.user_id`. `self.user_id` comes from the platform's per-mention "is this you"
+flag (`mentions[].is_you` on QQ official, `self_id` on aiocqhttp) and is learned per
+`(platform instance, group)` because QQ official openids are group-scoped. When the adapter
+cannot provide a comparable id, the bridge sends the sentinel `unknown_selfid`; `Event.MentionsBot()`
+is then always false and Go only caches the message — it never fakes a match with AppID/robot.id.
 
-The bridge emits `display_message` alongside the raw text. Every @ is rendered as `@昵称(openid)` (the bot itself uses the same form; unknown members use `@用户(openid)`; @all becomes `@所有人`). The cache and the LLM read only `display_message`; `raw_message` stays untouched for debugging. Inbound events decode the standard `sender` object; `Event.DisplayName()` resolves the display name as nickname → card → user_id. `self_id` carries the bot's stable ID — the bridge replaces adapter placeholders (`qq_official` / `unknown_selfid`) with the openid it learned from @ events — and the system prompt includes it so the model can recognize `@botname(openid)` as itself. Chat-log lines are JSONL with OneBot-11 field names where they fit (`message_id`, `user_id`, `message`, plus `nickname` for `sender.nickname`); transport-only fields (`sender` nesting, `group_id`, `post_type`) are deliberately omitted to save tokens, and `reply_id` is the project's compact stand-in for the reply segment's `data.id`. `user_id` is a string (openid or numeric QQ), so a nickname change does not break identity. When the inbound message quotes another message, the bridge emits a standard `reply` message segment whose `id` is the hashed `message_id`; the cached chat line carries `reply_id` and the model matches it against `message_id` in the same log. If the quoted message is not in the sent window, no extra content is added. Platform name and group name are not event extensions: the platform goes in the `X-Platform` header, the group name comes from `get_group_info`. The nickname is fetched at startup via `onebot.Client.GetLoginInfo()`; failure is non-fatal.
+`isAtBot(content, cfg, allowNickname)` is the fallback for adapters that emit no `mention`
+segment: it accepts a leading `@昵称` (only when that nickname uniquely belongs to one
+workspace) or `@你`. `@全体` / `mention_all` never triggers.
+
+The cache and the LLM read `Event.RenderText(nameOf)`: every `mention` becomes
+`@昵称(ID)` (unknown members use `@用户(ID)`; `mention_all` becomes `@所有人`; media become
+placeholders). Member names come from a per-workspace in-memory directory seeded from inbound
+messages/`mentions` and refreshed asynchronously via `get_group_member_info`; a brand-new member
+may therefore render as `@用户(ID)` on first sight. `alt_message` is only the fallback when the
+segment list renders empty. Chat-log lines stay compact JSONL (`message_id`, `user_id`,
+`nickname`, `message`, `reply_id`) — `reply_id` is the `reply` segment's `message_id`.
+Platform name comes from `self.platform`; group name comes from `get_group_info`.
 
 ## LLM client (`llm/`)
 
@@ -433,24 +451,30 @@ type Client interface {
 
 ## OneBot client (`onebot/`)
 
-In the sidecar topology this client points at the AstrBot bridge plugin
-(`sidecar/astrbot_plugin_onebot_bridge`), which proxies each action to the platform, so the
-wire contract is still OneBot 11. Outbound messages are OneBot 11 segment arrays
-(text / at / reply / image / record / video / file / markdown); the plugin translates them
-to the target platform (QQ official rich-media upload, `message_reference` quoting, etc.).
+The client implements the OneBot 12 HTTP API (`POST /` with `{action, params, echo}`). There is
+one root client per process holding a shared resty connection; `For(workspaceID)` returns a
+lightweight view bound to that account's `api_base`. Actions never carry a private `self` field:
+account selection is the base URL, because QQ official `self.user_id` is a group-scoped openid
+and cannot select an account.
 
 ```go
-type Client struct { /* unexported: httpAPI, accessToken, restyClient */ }
-func NewClient(httpAPI, accessToken string) *Client
-func (ob *Client) GetLoginInfo() (*LoginInfo, error)
-func (ob *Client) GetGroupInfo(groupID string) (*GroupInfo, error)
-func (ob *Client) SendGroupMessage(groupID, content string)
-func (ob *Client) SendGroupReply(groupID, replyID, atUser, content string)
-func (ob *Client) SendGroupMessageSegments(groupID string, segments []Segment)
-func (ob *Client) FetchGroupMsgHistory(groupID string, count int) ([]HistoryMsg, error)
+type Client struct { /* unexported: token, base, bases, resty */ }
+type Account struct { ID, APIBase string }
+func NewClient(accounts []Account, token string) *Client
+func (c *Client) For(workspaceID string) *Client
+func (c *Client) GetSelfInfo() (*SelfInfo, error)
+func (c *Client) GetGroupInfo(groupID string) (*GroupInfo, error)
+func (c *Client) GetGroupMemberInfo(groupID, userID string) (*MemberInfo, error)
+func (c *Client) SendGroupMessage(groupID, content string)
+func (c *Client) SendGroupReply(groupID, replyID, atUser, content string)
+func (c *Client) SendGroupMessageSegments(groupID string, segments []Segment)
 ```
 
-Uses `resty` — Base URL, auth token, and Content-Type set once in `NewClient()`. All methods use `SetBody()` + `SetResult()` for automatic JSON marshal/unmarshal. Built-in retry (2 attempts). No repeated boilerplate per endpoint. No dependency on `config` package.
+`Event` mirrors the standard fields (`id`, `time`, `type`, `detail_type`, `sub_type`, `self`,
+string `message_id`, `message` segments, `alt_message`, `group_id`, `user_id`); `Account` is
+filled from the inbound path and is not serialized. `Segment{Type, Data}` covers
+text/mention/mention_all/reply/image/voice/video/file; QQ official media URLs use the `qq.url`
+extension.
 
 ## Web Management Panel (`web/server/` + `web/frontend/`)
 

@@ -13,80 +13,39 @@ import (
 // 消费者仍然写 cfg.BotNickname，一行都不用改。
 // 这不只是图省事：mcpclient / router / web/server 的测试都直接构造这个结构体的字面量。
 type Config struct {
-	AstrBotHTTPAPI     string
-	AstrBotAccessToken string
-	BotNickname        string   // 运行时设置（GetLoginInfo 结果），不来自配置文件
-	AllowGroups        []string // 群白名单；含 "*" 表示全部群
-	AllowSelfIDs       []string // 机器人账号（self_id）白名单；含 "*" 表示全部账号
-	MaxCacheMsg        int      // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
-	LLMSendCount       int      // 每次发送 LLM 的消息条数（重置窗口）
-	LLMTimeout         time.Duration
-	MaxMsgRune         int
-	PollInterval       time.Duration // 旧轮询间隔（保留兼容，sidecar 推送模型不再使用）
-	IMListenAddr       string        // AstrBot sidecar 推送事件的监听地址
-	BackfillOnStart    bool          // 启动时是否回填最近历史（QQ 官方机器人无历史接口，应关）
-	WebPort            int           // Web 管理面板端口，<=0 禁用
-	WebUsername        string        // Web 管理面板登录账号
-	WebPassword        string        // Web 管理面板登录密码
-	JWTSecret          string        // JWT 签名密钥；未配置时回退为 WebPassword
-	McpBuiltinToken    string        // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
-	CorsOrigins        []string      // 允许跨域访问管理面板的来源白名单；空=仅同源
-	EnablePprof        bool          // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
-	ShutdownDelay      time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
-	MetricsAddr        string        // Prometheus /metrics 的独立监听地址；等于 config.MetricsAddrOff 表示关闭
-	OTLPEndpoint       string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
-	LLMConfig          LLMConf
-	MCPConfig          MCPConf
-	Workspaces         []WorkspaceConf // 多账号工作空间；空 = 隐式 default（兼容旧配置）
+	IMToken           string      // OneBot 12 接入共享 token（入站校验 + 出站 Bearer）
+	IMAccounts        []IMAccount // 每个机器人账号的出站连接；按工作空间 ID 选
+	BotNickname       string      // 运行时设置（get_self_info 结果），不来自配置文件
+	AllowGroups       []string    // 群白名单；含 "*" 表示全部群
+	WorkspaceAccounts []string    // 允许自动开通的工作空间 ID；含 "*" 表示全部
+	MaxCacheMsg       int         // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
+	LLMSendCount      int         // 每次发送 LLM 的消息条数（重置窗口）
+	LLMTimeout        time.Duration
+	MaxMsgRune        int
+	PollInterval      time.Duration // 旧轮询间隔（保留兼容，sidecar 推送模型不再使用）
+	IMListenAddr      string        // AstrBot sidecar 推送事件的监听地址
+	BackfillOnStart   bool          // 旧配置兼容字段；OneBot 12 无历史动作，历史来自 state.db
+	WebPort           int           // Web 管理面板端口，<=0 禁用
+	WebUsername       string        // Web 管理面板登录账号
+	WebPassword       string        // Web 管理面板登录密码
+	JWTSecret         string        // JWT 签名密钥；未配置时回退为 WebPassword
+	McpBuiltinToken   string        // 内嵌 MCP 服务端鉴权 Bearer token（空=仅本机、不校验）
+	CorsOrigins       []string      // 允许跨域访问管理面板的来源白名单；空=仅同源
+	EnablePprof       bool          // 是否在已鉴权的 /api/debug/pprof/ 下开放 net/http/pprof
+	ShutdownDelay     time.Duration // 优雅关闭时「先置 not-ready、等一会儿、再停监听」的等待时长；0=不等待
+	MetricsAddr       string        // Prometheus /metrics 的独立监听地址；等于 config.MetricsAddrOff 表示关闭
+	OTLPEndpoint      string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
+	LLMConfig         LLMConf
+	MCPConfig         MCPConf
 }
 
-// WorkspaceConf 一个机器人账号的工作空间（运行期形态，来自 bot.workspaces）。
-type WorkspaceConf struct {
-	ID          string   // 稳定标识：目录名、日志、面板 URL、指标标签
-	Name        string   // 展示名；空时回退昵称/平台 ID
-	PlatformID  string   // AstrBot 平台实例 ID（唯一，事件归属主键）
-	SelfIDs     []string // 该账号可能出现的 self_id 别名（openid / 数字 QQ）
-	Nickname    string   // 覆盖昵称；空时取桥接 get_login_info
-	AllowGroups []string // 覆盖群白名单；空 = 继承全局 bot.allow_groups
-	PromptDir   string   // 提示词目录；空 = workspaces/<id>
-}
-
-// EffectiveWorkspaces 返回实际生效的工作空间列表。
+// IMAccount 一个机器人账号的出站连接。
 //
-// 没有显式配置时生成一个 default 工作空间：它不覆盖任何字段，群白名单、昵称
-// 仍来自全局配置。这样所有下游只认 Workspaces，不必到处判断"旧配置模式"。
-func (cfg *Config) EffectiveWorkspaces() []WorkspaceConf {
-	if len(cfg.Workspaces) > 0 {
-		return cfg.Workspaces
-	}
-	return []WorkspaceConf{{
-		ID:          "default",
-		Name:        cfg.BotNickname,
-		SelfIDs:     filterSelfIDs(cfg.AllowSelfIDs),
-		AllowGroups: cfg.AllowGroups,
-		Nickname:    cfg.BotNickname,
-	}}
-}
-
-// filterSelfIDs 去掉通配符：工作空间别名只接受具体账号，* 交给全局总闸判断。
-func filterSelfIDs(ids []string) []string {
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if id != "" && id != "*" {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
-// WorkspaceByID 按 ID 查工作空间声明（热重载时用最新配置覆盖启动期快照）。
-func (cfg *Config) WorkspaceByID(id string) (WorkspaceConf, bool) {
-	for _, ws := range cfg.Workspaces {
-		if ws.ID == id {
-			return ws, true
-		}
-	}
-	return WorkspaceConf{}, false
+// ID 是工作空间 ID（platform_account），不是平台内部账号：QQ 官方的群内 openid
+// 会随群变化，只有 AppID 这类外部稳定值才能当工作空间 ID 和路由键。
+type IMAccount struct {
+	ID      string
+	APIBase string
 }
 
 // MCPServerConf 单个 MCP 工具服务配置
@@ -162,50 +121,36 @@ func (cfg *Config) HasGroup(groupID string) bool {
 	return false
 }
 
-// HasSelfID 检查机器人账号是否由 Go 接管。白名单含 "*" 时放行所有账号。
+// HasWorkspaceAccount 判断某个工作空间 ID 是否允许自动开通。名单含 "*" 时放行全部。
 //
-// 适配器还没学到真实身份时 self_id 会是空串或占位值（QQ 官方常见），
-// 此时无法判断归属，放行并交给后续流程：否则刚启动的普通群消息会被丢掉，
-// 而 AstrBot 的 Agent 又会被插件放行，出现"同一账号两套行为"。
-func (cfg *Config) HasSelfID(selfID string) bool {
-	if len(cfg.AllowSelfIDs) == 0 {
-		// 配了工作空间就不再要求额外白名单：接管范围由各工作空间声明的
-		// platform_id / self_ids 决定，单一数据源比两处白名单更好排查。
-		return len(cfg.Workspaces) > 0
-	}
-	for _, id := range cfg.AllowSelfIDs {
-		if id == "*" || id == selfID {
-			return true
-		}
-	}
-	switch selfID {
-	case "", "qq_official", "unknown_selfid":
-		return true
-	}
-	return false
-}
-
-// IsManagedAccount 判断某个 user_id 是否是 Go 接管的机器人账号。
-// 用于把"另一个账号自己发的消息"从群聊上下文里过滤掉；通配符无法枚举，返回 false。
-func (cfg *Config) IsManagedAccount(userID string) bool {
-	if userID == "" {
-		return false
-	}
-	for _, id := range cfg.AllowSelfIDs {
-		if id != "*" && id == userID {
+// 只用于「新建」判定；已经有目录的工作空间由 workspace.Manager 直接加载，
+// 不受这里影响——否则把 ID 从名单里删掉会让一个正在运行的账号突然失联。
+func (cfg *Config) HasWorkspaceAccount(id string) bool {
+	for _, account := range cfg.WorkspaceAccounts {
+		if account == "*" || account == id {
 			return true
 		}
 	}
 	return false
 }
 
-// AllowSelfIDsStr 返回逗号分隔的账号白名单（用于日志输出）
-func (cfg *Config) AllowSelfIDsStr() string {
-	return strings.Join(cfg.AllowSelfIDs, ",")
+// AllowsAllWorkspaceAccounts 返回名单是否包含通配符 "*"。
+func (cfg *Config) AllowsAllWorkspaceAccounts() bool {
+	for _, account := range cfg.WorkspaceAccounts {
+		if account == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// WorkspaceAccountsStr 返回逗号分隔的工作空间白名单（用于日志输出）
+func (cfg *Config) WorkspaceAccountsStr() string {
+	return strings.Join(cfg.WorkspaceAccounts, ",")
 }
 
 // AllowsAllGroups 返回白名单是否包含通配符 "*"。
-// 通配符无法枚举具体群，回填和 Web 群列表需要单独处理。
+// 通配符无法枚举具体群，Web 群列表需要单独处理。
 func (cfg *Config) AllowsAllGroups() bool {
 	for _, group := range cfg.AllowGroups {
 		if group == "*" {

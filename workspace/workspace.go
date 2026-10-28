@@ -1,16 +1,22 @@
-// Package workspace 管理多机器人账号的工作空间。
+// Package workspace 管理机器人账号的工作空间。
 //
-// 一个工作空间 = 一个机器人账号的全部可观察状态：消息缓存、选窗锚点、群人格、
-// 指令表与提示词、身份昵称。各工作空间之间不共享任何运行时状态；
-// OneBot 客户端、MCP 连接、大模型客户端等外部资源仍由组合根共享。
+// 一个工作空间 = 一个接收账号的可观察状态：消息缓存、选窗锚点、群人格、成员显示名。
+// 档案统一落在共享 state.db，用 workspace_id 隔离；提示词是全局一份，所有工作空间共享；
+// 大模型、MCP 等外部资源由组合根共享。
+//
+// 工作空间的键是 `{platform}_{account}`：platform 来自事件标准字段 self.platform，
+// account 来自入站路径 /im/event/{account}。self.user_id 不参与归属——QQ 官方的
+// 群内 openid 换群就变，做路由键会让同一账号被拆成多个工作空间。
 package workspace
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 
 	"good-review-master/cache"
 	"good-review-master/config"
@@ -19,258 +25,374 @@ import (
 	"good-review-master/onebot"
 	"good-review-master/router"
 	"good-review-master/telemetry"
+	"good-review-master/workspace/state"
 )
 
-// Workspace 一个机器人账号的运行时。
+// platformPattern 是 OneBot 12 对平台名的约束（不允许下划线，所以不能用 qq_official）。
+var platformPattern = regexp.MustCompile(`^[a-z][-a-z0-9]*(\.[-a-z0-9]+)*$`)
+
+// idPattern 约束工作空间 ID：它会进数据库列与面板 URL。
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// WorkspaceID 把平台名与接收账号拼成工作空间 ID。
+//
+// 平台名里的点号替换成下划线（`zulip.my-instance` → `zulip_my-instance`），
+// 因为点号在 ID 里没有额外语义；ID 会进面板 URL 和数据库列，保持字符集简单。
+func WorkspaceID(platform, account string) (string, error) {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	account = strings.TrimSpace(account)
+	if !platformPattern.MatchString(platform) {
+		return "", fmt.Errorf("平台名 %q 不合法：必须匹配 [a-z][-a-z0-9]*", platform)
+	}
+	if !idPattern.MatchString(account) {
+		return "", fmt.Errorf("账号 %q 不合法：只能包含字母、数字、下划线和短横线（最多 64 字符）", account)
+	}
+	id := strings.ReplaceAll(platform, ".", "_") + "_" + account
+	if !idPattern.MatchString(id) {
+		return "", fmt.Errorf("工作空间 ID %q 超过 64 字符", id)
+	}
+	return id, nil
+}
+
+// splitID 从 ID 反推平台与账号（平台名不能含下划线，所以第一个下划线是分隔符）。
+func splitID(id string) (platform, account string, ok bool) {
+	platform, account, ok = strings.Cut(id, "_")
+	if !ok || platform == "" || account == "" {
+		return "", "", false
+	}
+	return platform, account, true
+}
+
+// Workspace 一个接收账号的运行时。
 type Workspace struct {
-	ID         string
-	PlatformID string
-	SelfIDs    []string
-	PromptDir  string
+	ID       string
+	Platform string
+	Account  string
 
 	Router *router.Router
+	// Prompt 是所有工作空间共享的同一份提示词配置（全局 prompt_system.yaml +
+	// prompt_custom.yaml）。私有数据一律进 state.db，不再有工作空间级配置文件。
 	Prompt *config.PromptConfig
 	Cache  *cache.Store
+	State  *state.Scope // nil = 持久化不可用，纯内存运行
 
-	appCfg     config.Snapshot
-	nickname   string // 启动时从桥接解析到的昵称；配置 nickname 为空时使用
-	systemPath string // 实际加载的系统提示词文件（工作空间覆盖或全局）
-	customPath string // 实际写入的自定义提示词文件
+	appCfg config.Snapshot
+
+	ob      *onebot.Client
+	members *directory
+
+	nameMu sync.RWMutex
+	name   string // 面板展示名（get_self_info 的 user_name，或 meta 缓存）
+
+	identityMu sync.RWMutex
+	identities map[string]string // group_id -> 本群学到的 self.user_id（避免每条消息都写库）
 }
 
 // View 是面板用的只读视图（不含 Router/Prompt 等运行时对象）。
 type View struct {
-	ID         string
-	Name       string
-	PlatformID string
-	SelfIDs    []string
-	Groups     []string
-	Store      *cache.Store
+	ID       string
+	Name     string
+	Platform string
+	Account  string
+	Groups   []string
+	Store    *cache.Store
+	HasState bool
 }
 
-// Manager 持有全部工作空间与归属索引。
+// Manager 持有全部工作空间，并负责按事件自动开通。
 type Manager struct {
-	appCfg     config.Snapshot
-	list       []*Workspace
-	byPlatform map[string]*Workspace
-	bySelfID   map[string]*Workspace
-	byNickname map[string]*Workspace
-	single     *Workspace
+	appCfg      config.Snapshot
+	llmClient   llm.Client
+	obClient    *onebot.Client
+	mcp         router.MCPProvider
+	shutdownCtx context.Context
+	stateStore  *state.Store
+	prompt      *config.PromptConfig
+
+	mu   sync.RWMutex
+	list []*Workspace
+	byID map[string]*Workspace
 }
 
-// New 按配置创建工作空间。没有 bot.workspaces 时创建一个隐式 default，
-// 提示词沿用全局文件，行为与单账号版本一致。
+// New 从 state.db 恢复已有工作空间，之后的账号由第一条事件自动开通。
 func New(appCfg config.Snapshot, systemPromptPath, customPromptPath string,
 	llmClient llm.Client, obClient *onebot.Client, mcp router.MCPProvider,
 	shutdownCtx context.Context) (*Manager, error) {
 
-	cfg := appCfg()
-	confs := cfg.EffectiveWorkspaces()
-	m := &Manager{
-		appCfg:     appCfg,
-		byPlatform: make(map[string]*Workspace, len(confs)),
-		bySelfID:   make(map[string]*Workspace, len(confs)),
-		byNickname: make(map[string]*Workspace),
-	}
-
-	for i, conf := range confs {
-		ws, err := newWorkspace(appCfg, cfg, conf, systemPromptPath, customPromptPath, llmClient, obClient, mcp, shutdownCtx)
-		if err != nil {
-			return nil, fmt.Errorf("初始化工作空间 %s 失败：%w", conf.ID, err)
-		}
-		m.list = append(m.list, ws)
-		if ws.PlatformID != "" {
-			m.byPlatform[ws.PlatformID] = ws
-		}
-		for _, selfID := range ws.SelfIDs {
-			m.bySelfID[selfID] = ws
-		}
-		if name := ws.Snapshot()().BotNickname; name != "" {
-			if _, exists := m.byNickname[name]; exists {
-				// 昵称重复时不能用于 @ 兜底：否则一条 "@同名" 的消息无法确定归属。
-				m.byNickname[name] = nil
-			} else {
-				m.byNickname[name] = ws
-			}
-		}
-		if i == 0 {
-			m.single = ws
-		}
-	}
-	if len(m.list) == 1 {
-		m.single = m.list[0]
-	} else {
-		m.single = nil
-	}
-	return m, nil
-}
-
-func newWorkspace(appCfg config.Snapshot, cfg *config.Config, conf config.WorkspaceConf,
-	systemPromptPath, customPromptPath string,
-	llmClient llm.Client, obClient *onebot.Client, mcp router.MCPProvider,
-	shutdownCtx context.Context) (*Workspace, error) {
-
-	promptDir := conf.PromptDir
-	if promptDir == "" {
-		promptDir = filepath.Join(filepath.Dir(systemPromptPath), "workspaces", conf.ID)
-	}
-	if err := os.MkdirAll(promptDir, 0755); err != nil {
-		return nil, fmt.Errorf("创建工作空间提示词目录失败：%w", err)
-	}
-	wsSystem := filepath.Join(promptDir, "prompt_system.yaml")
-	if _, err := os.Stat(wsSystem); err != nil {
-		wsSystem = systemPromptPath
-	}
-	wsCustom := filepath.Join(promptDir, "prompt_custom.yaml")
-	// 全局自定义文件在单账号（隐式 default）时继续沿用，避免升级后"自定义指令消失"。
-	if len(cfg.Workspaces) == 0 {
-		wsCustom = customPromptPath
-	} else if _, err := os.Stat(wsCustom); err != nil {
-		// 首次为账号创建工作空间：把现有全局自定义指令复制一份作为起点。
-		// 之后各账号独立读写自己的文件，不会再互相影响。
-		if raw, err := os.ReadFile(customPromptPath); err == nil {
-			if err := os.WriteFile(wsCustom, raw, 0644); err != nil {
-				return nil, fmt.Errorf("初始化工作空间自定义提示词失败：%w", err)
-			}
-		}
-	}
-	promptCfg, err := config.LoadPromptConfig(wsSystem, wsCustom)
+	// 提示词只有一份：所有工作空间共享根目录的 prompt_system.yaml / prompt_custom.yaml。
+	// 分开建对象会让各 Router 的写操作各有一把锁，最终仍写同一个文件，迟早互相覆盖。
+	promptCfg, err := config.LoadPromptConfig(systemPromptPath, customPromptPath)
 	if err != nil {
 		return nil, err
 	}
 
-	ws := &Workspace{
-		ID:         conf.ID,
-		PlatformID: conf.PlatformID,
-		SelfIDs:    append([]string(nil), conf.SelfIDs...),
-		PromptDir:  promptDir,
-		Prompt:     promptCfg,
-		Cache:      cache.NewStore(),
-		systemPath: wsSystem,
-		customPath: wsCustom,
+	m := &Manager{
+		appCfg:      appCfg,
+		llmClient:   llmClient,
+		obClient:    obClient,
+		mcp:         mcp,
+		shutdownCtx: shutdownCtx,
+		prompt:      promptCfg,
+		byID:        make(map[string]*Workspace),
 	}
-	ws.nickname = resolveNickname(cfg, conf, obClient)
-	ws.appCfg = func() *config.Config { return ws.snapshot(appCfg()) }
+	// 所有工作空间共用一个 state.db（同表、按 workspace_id 隔离）。
+	// 打不开就整体降级为纯内存，不拦住启动。
+	statePath := filepath.Join(filepath.Dir(systemPromptPath), state.FileName)
+	if opened, err := state.Open(statePath); err != nil {
+		logutil.Error("打开 state.db 失败，全部工作空间降级为纯内存", "path", statePath, "err", err)
+	} else {
+		m.stateStore = opened
+		opened.Report()
+	}
 
-	ws.Router = router.NewRouter(ws.appCfg, promptCfg, llmClient, obClient, mcp, shutdownCtx)
-	ws.Router.SetStore(ws.Cache)
-	ws.Router.SetWorkspace(ws.ID)
+	if err := m.restoreExisting(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// restoreExisting 从 state.db 恢复已记录的工作空间。
+//
+// 工作空间没有自己的目录或配置文件，meta 表是它在磁盘上的身份；
+// 所以重启直接按库恢复，不依赖第一次事件到达，面板启动即可看到。
+// 名单只管新建，不限制已有工作空间的使用。
+func (m *Manager) restoreExisting() error {
+	if m.stateStore == nil {
+		return nil
+	}
+	metas, err := m.stateStore.Workspaces()
+	if err != nil {
+		return fmt.Errorf("读取工作空间档案失败：%w", err)
+	}
+	for _, meta := range metas {
+		if _, _, ok := splitID(meta.ID); !ok || !idPattern.MatchString(meta.ID) {
+			logutil.Warn("跳过不是工作空间 ID 的档案", "workspace", meta.ID)
+			continue
+		}
+		if meta.Platform == "" || meta.Account == "" {
+			logutil.Warn("跳过缺少平台或账号的档案", "workspace", meta.ID,
+				"platform", meta.Platform, "account", meta.Account)
+			continue
+		}
+		ws, err := m.load(meta.ID, meta.Platform, meta.Account)
+		if err != nil {
+			logutil.Error("加载工作空间失败，跳过该档案", "id", meta.ID, "err", err)
+			continue
+		}
+		m.list = append(m.list, ws)
+		m.byID[meta.ID] = ws
+		telemetry.WorkspaceResolveTotal.WithLabelValues("loaded").Inc()
+	}
+	sort.Slice(m.list, func(i, j int) bool { return m.list[i].ID < m.list[j].ID })
+	return nil
+}
+
+// ResolveOrCreate 按 (platform, account) 找到或开通工作空间。
+//
+// 返回 nil 且无错误 = Go 不接管：不在 bot.workspace_accounts 名单里。
+// 已有工作空间由 state.db 在启动时恢复，不受名单影响；入站层据 nil 回 404，
+// 让实现端把消息交回自己的 Agent。
+//
+// 同步部分只做本地 IO（开 SQLite、建 Router）；昵称与成员名是网络调用，
+// 异步补，绝不阻塞入站。
+func (m *Manager) ResolveOrCreate(platform, account string) (*Workspace, error) {
+	id, err := WorkspaceID(platform, account)
+	if err != nil {
+		telemetry.WorkspaceResolveTotal.WithLabelValues("invalid").Inc()
+		return nil, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ws := m.byID[id]; ws != nil {
+		return ws, nil
+	}
+	if !m.appCfg().HasWorkspaceAccount(id) {
+		telemetry.WorkspaceResolveTotal.WithLabelValues("denied").Inc()
+		return nil, nil
+	}
+
+	ws, err := m.load(id, platform, account)
+	if err != nil {
+		return nil, err
+	}
+	logutil.Info("已自动开通工作空间", "id", id, "platform", platform, "account", account)
+	telemetry.WorkspaceResolveTotal.WithLabelValues("created").Inc()
+	m.list = append(m.list, ws)
+	m.byID[id] = ws
 	return ws, nil
 }
 
-// Snapshot 返回带上工作空间覆盖的配置快照。
-// 每次调用都从最新全局快照取，因此 nickname / allow_groups 的修改可以热生效。
-func (w *Workspace) Snapshot() config.Snapshot {
-	return w.appCfg
+// load 构造一个工作空间并登记到 state.db 的 meta（platform/account）。
+func (m *Manager) load(id, platform, account string) (*Workspace, error) {
+	cfg := m.appCfg()
+
+	st := m.stateStore.Scope(id)
+	// 平台名里的点号在 ID 中被替换成下划线，从 ID 反推会丢信息；
+	// meta 里存的是原始 (platform, account)，已有记录以它为准。
+	if saved := st.Meta("platform"); saved != "" {
+		platform = saved
+	}
+	if saved := st.Meta("account"); saved != "" {
+		account = saved
+	}
+
+	ws := &Workspace{
+		ID:         id,
+		Platform:   platform,
+		Account:    account,
+		Prompt:     m.prompt,
+		Cache:      cache.NewStore(),
+		State:      st,
+		ob:         m.obClient.For(id),
+		identities: make(map[string]string),
+	}
+	ws.members = newDirectory(ws.ob, st)
+	ws.appCfg = func() *config.Config { return ws.snapshot(m.appCfg()) }
+
+	ws.Router = router.NewRouter(ws.appCfg, m.prompt, m.llmClient, ws.ob, m.mcp, m.shutdownCtx)
+	ws.Router.SetStore(ws.Cache)
+	ws.Router.SetWorkspace(id)
+	if st != nil {
+		ws.Router.SetPersonaStore(st)
+	}
+
+	ws.restore(cfg)
+	st.SetMeta("platform", platform)
+	st.SetMeta("account", account)
+	ws.scheduleNameLookup(st)
+	return ws, nil
 }
+
+// restore 从 state.db 把档案读回内存：消息（尾部 N 条）、锚点、成员名、身份、群人格。
+// 任何一步失败都只告警——档案是附加能力，不能拦住启动。
+func (w *Workspace) restore(cfg *config.Config) {
+	if w.State == nil {
+		return
+	}
+	if msgs, err := w.State.LoadRecent(cfg.MaxCacheMsg); err != nil {
+		logutil.Warn("读取历史消息失败", "workspace", w.ID, "err", err)
+	} else {
+		for _, msg := range msgs {
+			w.Cache.GetGroupCache(msg.GroupID, cfg.MaxCacheMsg).Add(msg)
+		}
+		for _, groupID := range w.Cache.ListGroupIDs() {
+			if gc := w.Cache.GetCache(groupID); gc != nil {
+				telemetry.CacheMessages.WithLabelValues(w.ID, groupID).Set(float64(gc.Len()))
+			}
+		}
+		logutil.Info("已从 state.db 恢复消息", "workspace", w.ID, "messages", len(msgs))
+	}
+	if anchors, err := w.State.LoadAnchors(); err != nil {
+		logutil.Warn("读取选窗锚点失败", "workspace", w.ID, "err", err)
+	} else {
+		for group, anchor := range anchors {
+			w.Cache.SetLLMAnchor(group, anchor)
+		}
+	}
+	if identities, err := w.State.LoadIdentities(); err != nil {
+		logutil.Warn("读取群内机器人身份失败", "workspace", w.ID, "err", err)
+	} else {
+		w.identityMu.Lock()
+		for groupID, selfID := range identities {
+			w.identities[groupID] = selfID
+		}
+		w.identityMu.Unlock()
+	}
+	if members, err := w.State.LoadMembers(); err != nil {
+		logutil.Warn("读取成员名失败", "workspace", w.ID, "err", err)
+	} else {
+		w.members.seed(members)
+	}
+	if personas, err := w.State.LoadGroupPersonas(); err != nil {
+		logutil.Warn("读取群人格失败", "workspace", w.ID, "err", err)
+	} else {
+		w.Router.RestorePersonas(personas)
+	}
+	if name := w.State.Meta("name"); name != "" {
+		w.setName(name)
+	}
+}
+
+// scheduleNameLookup 异步补昵称：网络调用不能挡在入站路径上。
+func (w *Workspace) scheduleNameLookup(st *state.Scope) {
+	if w.name != "" || w.ob == nil || w.ob.Base() == "" {
+		return
+	}
+	go func() {
+		info, err := w.ob.GetSelfInfo()
+		if err != nil {
+			logutil.Debug("查询机器人自身信息失败（昵称暂缺）", "workspace", w.ID, "err", err)
+			return
+		}
+		name := info.UserDisplayName
+		if name == "" {
+			name = info.UserName
+		}
+		if name == "" {
+			return
+		}
+		w.setName(name)
+		if st != nil {
+			st.SetMeta("name", name)
+		}
+		logutil.Info("已补全工作空间昵称", "workspace", w.ID, "name", name)
+	}()
+}
+
+// Snapshot 返回带上本工作空间昵称的配置快照。
+// 每次调用都从最新全局快照取，因此全局白名单的修改可以热生效。
+func (w *Workspace) Snapshot() config.Snapshot { return w.appCfg }
 
 func (w *Workspace) snapshot(global *config.Config) *config.Config {
 	cp := *global
-	if conf, ok := global.WorkspaceByID(w.ID); ok {
-		if conf.Nickname != "" {
-			cp.BotNickname = conf.Nickname
-		} else if w.nickname != "" {
-			cp.BotNickname = w.nickname
-		}
-		if len(conf.AllowGroups) > 0 {
-			cp.AllowGroups = conf.AllowGroups
-		}
-	} else if w.nickname != "" {
-		cp.BotNickname = w.nickname
+	if name := w.Name(); name != "" {
+		cp.BotNickname = name
 	}
 	return &cp
 }
 
-// resolveNickname 取该账号的昵称：配置显式值 > 桥接按 self_id 查询 > 单工作空间时用全局昵称。
-func resolveNickname(cfg *config.Config, conf config.WorkspaceConf, obClient *onebot.Client) string {
-	if conf.Nickname != "" {
-		return conf.Nickname
-	}
-	if obClient != nil {
-		for _, selfID := range conf.SelfIDs {
-			info, err := obClient.GetLoginInfoFor(selfID)
-			if err != nil || info == nil || info.Nickname == "" || !info.Matches(selfID) {
-				continue
-			}
-			return info.Nickname
-		}
-	}
-	if len(cfg.Workspaces) == 0 {
-		return cfg.BotNickname
-	}
-	return ""
+// Name 返回展示名（昵称）。
+func (w *Workspace) Name() string {
+	w.nameMu.RLock()
+	defer w.nameMu.RUnlock()
+	return w.name
 }
 
-// List 返回全部工作空间（顺序与配置一致）。
-func (m *Manager) List() []*Workspace { return m.list }
-
-// Default 返回默认工作空间：优先 ID=default，否则第一个。
-// debug 接口与只支持单工作空间的旧调用方用它。
-func (m *Manager) Default() *Workspace {
-	for _, ws := range m.list {
-		if ws.ID == "default" {
-			return ws
-		}
-	}
-	if len(m.list) > 0 {
-		return m.list[0]
-	}
-	return nil
+func (w *Workspace) setName(name string) {
+	w.nameMu.Lock()
+	w.name = name
+	w.nameMu.Unlock()
 }
 
-// ByID 按 ID 查找工作空间。
-func (m *Manager) ByID(id string) (*Workspace, bool) {
-	for _, ws := range m.list {
-		if ws.ID == id {
-			return ws, true
-		}
+// Nickname 返回当前生效的昵称（与 Name 相同，保留给既有调用方）。
+func (w *Workspace) Nickname() string { return w.Name() }
+
+// LearnIdentity 记住本群可比较的机器人 user_id（QQ 官方是群作用域 openid）。
+// 值没变化时不写库：这个函数每条消息都会调用。
+func (w *Workspace) LearnIdentity(groupID, selfUserID string) {
+	if groupID == "" || selfUserID == "" {
+		return
 	}
-	return nil, false
+	w.identityMu.Lock()
+	if w.identities[groupID] == selfUserID {
+		w.identityMu.Unlock()
+		return
+	}
+	w.identities[groupID] = selfUserID
+	w.identityMu.Unlock()
+	w.State.SaveIdentity(groupID, selfUserID)
 }
 
-// Resolve 解析事件所属工作空间。
-//
-// 顺序：platform_id（AstrBot 平台实例，恒定唯一）→ self_id 别名 → 单工作空间兜底。
-// 多工作空间下解析不到时返回 nil：宁可这条消息不接管，也不能让错误的账号回复。
-func (m *Manager) Resolve(event onebot.Event) *Workspace {
-	if event.PlatformID != "" {
-		if ws := m.byPlatform[event.PlatformID]; ws != nil {
-			telemetry.WorkspaceResolveTotal.WithLabelValues("platform").Inc()
-			return ws
-		}
-	}
-	if selfID := event.BotID(); selfID != "" {
-		if ws := m.bySelfID[selfID]; ws != nil {
-			telemetry.WorkspaceResolveTotal.WithLabelValues("self_id").Inc()
-			return ws
-		}
-	}
-	if m.single != nil {
-		telemetry.WorkspaceResolveTotal.WithLabelValues("single").Inc()
-		return m.single
-	}
-	telemetry.WorkspaceResolveTotal.WithLabelValues("unresolved").Inc()
-	return nil
+// DisplayNameFor 返回某群里某个用户的显示名（用于把 mention 渲染成 @昵称(ID)）。
+// 未知成员返回空串并触发一次异步查询；渲染层会回退成「用户」。
+func (w *Workspace) DisplayNameFor(groupID string) func(userID string) string {
+	return func(userID string) string { return w.members.name(groupID, userID) }
 }
 
-// BindEvent 用工作空间已知身份补齐事件字段。
-//
-// 入站事件可能是占位 self_id（拿不到 mention 元数据），而出站动作代理要靠
-// self_id 选平台实例；不补齐的话回复会被第一个适配器接走，多账号下就是回错账号。
-func (w *Workspace) BindEvent(event onebot.Event) onebot.Event {
-	if onebot.IsSelfIDPlaceholder(event.SelfID) && len(w.SelfIDs) > 0 {
-		event.SelfID = w.SelfIDs[0]
-	}
-	if event.PlatformID == "" {
-		event.PlatformID = w.PlatformID
-	}
-	return event
-}
-
-// AllowsGroup 判断群是否在该工作空间的白名单内（未覆盖时继承全局）。
+// AllowsGroup 判断群是否在白名单内。
 func (w *Workspace) AllowsGroup(groupID string) bool {
-	cfg := w.Snapshot()()
-	for _, g := range cfg.AllowGroups {
+	for _, g := range w.Snapshot()().AllowGroups {
 		if g == "*" || g == groupID {
 			return true
 		}
@@ -278,7 +400,7 @@ func (w *Workspace) AllowsGroup(groupID string) bool {
 	return false
 }
 
-// AllowsAllGroups 判断该工作空间是否放行全部群。
+// AllowsAllGroups 判断是否放行全部群。
 func (w *Workspace) AllowsAllGroups() bool {
 	for _, g := range w.Snapshot()().AllowGroups {
 		if g == "*" {
@@ -288,55 +410,61 @@ func (w *Workspace) AllowsAllGroups() bool {
 	return false
 }
 
-// Nickname 返回当前生效的昵称。
-func (w *Workspace) Nickname() string { return w.Snapshot()().BotNickname }
+// snapshot 复制一份工作空间列表：自动开通会并发 append，读者不能直接遍历底层切片。
+func (m *Manager) snapshot() []*Workspace {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]*Workspace(nil), m.list...)
+}
 
-// Nil 表示该昵称唯一属于一个工作空间；只有这时才能用 "@昵称" 做归属兜底。
+// List 返回全部工作空间（按 ID 排序的副本）。
+func (m *Manager) List() []*Workspace { return m.snapshot() }
+
+// Default 只在一个工作空间时返回它。多工作空间下不猜账号：调用方必须给 workspace_id。
+func (m *Manager) Default() *Workspace {
+	list := m.snapshot()
+	if len(list) == 1 {
+		return list[0]
+	}
+	return nil
+}
+
+// ByID 按 ID 查找工作空间。
+func (m *Manager) ByID(id string) (*Workspace, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ws, ok := m.byID[id]
+	return ws, ok
+}
+
+// NicknameUnique 判断该昵称是否唯一属于一个工作空间。
+// 只有唯一时才能用 "@昵称" 做归属兜底：同名账号下无法判断 @ 的是谁。
 func (m *Manager) NicknameUnique(nickname string) bool {
 	if nickname == "" {
 		return false
 	}
-	return m.byNickname[nickname] != nil
-}
-
-// IsManagedAccount 判断 user_id 是否是任一工作空间的机器人账号。
-// 用于把"另一个账号自己发的消息"挡在上下文之外。
-func (m *Manager) IsManagedAccount(userID string) bool {
-	if userID == "" {
-		return false
-	}
-	for _, ws := range m.list {
-		for _, id := range ws.SelfIDs {
-			if id == userID {
-				return true
-			}
+	hits := 0
+	for _, ws := range m.snapshot() {
+		if ws.Name() == nickname {
+			hits++
 		}
 	}
-	return false
+	return hits == 1
 }
 
 // Views 返回面板用的工作空间视图。
 func (m *Manager) Views() []View {
-	views := make([]View, 0, len(m.list))
-	for _, ws := range m.list {
-		conf := ws.Snapshot()()
-		groups := append([]string(nil), conf.AllowGroups...)
-		selfIDs := ws.SelfIDs
-		if declared, ok := conf.WorkspaceByID(ws.ID); ok {
-			if len(declared.AllowGroups) > 0 {
-				groups = declared.AllowGroups
-			}
-			if len(declared.SelfIDs) > 0 {
-				selfIDs = declared.SelfIDs
-			}
-		}
+	list := m.snapshot()
+	views := make([]View, 0, len(list))
+	for _, ws := range list {
 		views = append(views, View{
-			ID:         ws.ID,
-			Name:       displayName(ws.ID, conf, ws.nickname, ws.PlatformID),
-			PlatformID: ws.PlatformID,
-			SelfIDs:    append([]string(nil), selfIDs...),
-			Groups:     groups,
-			Store:      ws.Cache,
+			ID:       ws.ID,
+			Name:     displayName(ws),
+			Platform: ws.Platform,
+			Account:  ws.Account,
+			Groups:   append([]string(nil), ws.Snapshot()().AllowGroups...),
+			Store:    ws.Cache,
+			HasState: ws.State != nil,
 		})
 	}
 	return views
@@ -352,52 +480,28 @@ func (m *Manager) ViewByID(id string) (View, bool) {
 	return View{}, false
 }
 
-func displayName(id string, cfg *config.Config, nickname, platformID string) string {
-	if conf, ok := cfg.WorkspaceByID(id); ok {
-		if conf.Name != "" {
-			return conf.Name
-		}
-		if conf.Nickname != "" {
-			return conf.Nickname
-		}
+func displayName(ws *Workspace) string {
+	if name := ws.Name(); name != "" {
+		return name
 	}
-	if nickname != "" {
-		return nickname
-	}
-	if platformID != "" {
-		return platformID
-	}
-	return id
+	return ws.ID
 }
 
-// PromptPaths 返回全部工作空间需要监听的提示词文件。
-func (m *Manager) PromptPaths() []string {
-	paths := make([]string, 0, len(m.list)*2)
-	for _, ws := range m.list {
-		paths = append(paths, ws.PromptSystemPath(), ws.PromptCustomPath())
-	}
-	return paths
-}
-
-// PromptSystemPath 返回该工作空间实际使用的系统提示词文件。
-func (w *Workspace) PromptSystemPath() string { return w.systemPath }
-
-// PromptCustomPath 返回该工作空间的自定义提示词文件。
-func (w *Workspace) PromptCustomPath() string { return w.customPath }
-
-// ReloadPrompts 重读全部工作空间提示词并重建各自路由表。
+// ReloadPrompts 重读共享提示词并重建每个工作空间的路由表。
+// 数据只有一份，但要逐个重建 Router：路由表里存着按人格展开的指令。
 func (m *Manager) ReloadPrompts() {
-	for _, ws := range m.list {
-		ws.Prompt.Reload()
+	m.prompt.Reload()
+	list := m.snapshot()
+	for _, ws := range list {
 		ws.Router.Rebuild()
 	}
-	logutil.Info("提示词已热更新并重建路由表", "工作空间数", len(m.list))
+	logutil.Info("提示词已热更新并重建路由表", "工作空间数", len(list))
 }
 
 // Wait 等待全部工作空间的异步任务退出。
 func (m *Manager) Wait() error {
 	var firstErr error
-	for _, ws := range m.list {
+	for _, ws := range m.snapshot() {
 		if err := ws.Router.Wait(); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -405,22 +509,118 @@ func (m *Manager) Wait() error {
 	return firstErr
 }
 
+// Close 关闭共享的 state.db。必须在 Wait 之后调用。
+func (m *Manager) Close() {
+	if err := m.stateStore.Close(); err != nil {
+		logutil.Warn("关闭 state.db 失败", "err", err)
+	}
+}
+
 // ResetAll 清空全部工作空间缓存（仅测试/调试）。
 func (m *Manager) ResetAll() {
-	for _, ws := range m.list {
+	for _, ws := range m.snapshot() {
 		ws.Cache.ResetAll()
 	}
 }
 
-// LogSummary 打启动摘要：每个工作空间一行，方便核对 platform_id 是否配错。
+// LogSummary 打启动摘要。
 func (m *Manager) LogSummary() {
-	for _, ws := range m.list {
+	for _, ws := range m.snapshot() {
 		logutil.Info("工作空间已加载",
 			"id", ws.ID,
-			"platform_id", ws.PlatformID,
-			"self_ids", strings.Join(ws.SelfIDs, ","),
-			"nickname", ws.Nickname(),
-			"prompt_dir", ws.PromptDir,
+			"platform", ws.Platform,
+			"account", ws.Account,
+			"nickname", ws.Name(),
+			"persistent", ws.State != nil,
 			"groups", strings.Join(ws.Snapshot()().AllowGroups, ","))
 	}
+}
+
+// directory 群成员显示名目录：内存优先，未命中时异步查 get_group_member_info。
+type directory struct {
+	mu      sync.RWMutex
+	names   map[string]map[string]string
+	pending map[string]map[string]struct{}
+	ob      *onebot.Client
+	state   *state.Scope
+}
+
+func newDirectory(ob *onebot.Client, st *state.Scope) *directory {
+	return &directory{
+		names:   make(map[string]map[string]string),
+		pending: make(map[string]map[string]struct{}),
+		ob:      ob,
+		state:   st,
+	}
+}
+
+func (d *directory) seed(all map[string]map[string]string) {
+	if len(all) == 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for group, members := range all {
+		if d.names[group] == nil {
+			d.names[group] = make(map[string]string, len(members))
+		}
+		for userID, name := range members {
+			d.names[group][userID] = name
+		}
+	}
+}
+
+func (d *directory) name(groupID, userID string) string {
+	if userID == "" {
+		return ""
+	}
+	d.mu.RLock()
+	name := d.names[groupID][userID]
+	d.mu.RUnlock()
+	if name != "" {
+		return name
+	}
+	d.fetchAsync(groupID, userID)
+	return ""
+}
+
+func (d *directory) fetchAsync(groupID, userID string) {
+	if d.ob == nil || d.ob.Base() == "" {
+		return
+	}
+	d.mu.Lock()
+	if d.pending[groupID] == nil {
+		d.pending[groupID] = make(map[string]struct{})
+	}
+	if _, ok := d.pending[groupID][userID]; ok {
+		d.mu.Unlock()
+		return
+	}
+	d.pending[groupID][userID] = struct{}{}
+	d.mu.Unlock()
+
+	go func() {
+		defer func() {
+			d.mu.Lock()
+			delete(d.pending[groupID], userID)
+			d.mu.Unlock()
+		}()
+		info, err := d.ob.GetGroupMemberInfo(groupID, userID)
+		if err != nil {
+			return
+		}
+		name := info.DisplayName()
+		if name == "" {
+			return
+		}
+		d.mu.Lock()
+		if d.names[groupID] == nil {
+			d.names[groupID] = make(map[string]string)
+		}
+		d.names[groupID][userID] = name
+		d.mu.Unlock()
+		if d.state != nil {
+			d.state.SaveMember(groupID, userID, info.UserName, info.UserDisplayName)
+		}
+	}()
 }

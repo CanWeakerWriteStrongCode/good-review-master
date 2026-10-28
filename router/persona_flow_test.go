@@ -65,21 +65,21 @@ rules:
 		},
 	}
 	fakeLLM := testutil.NewFakeLLM()
-	obClient := onebot.NewClient("http://127.0.0.1:1", "") // 死地址，调用失败仅日志
+	obClient := onebot.NewClient(nil, "") // 无出站地址，调用失败仅日志
 	router := NewRouter(staticSnapshot(cfg), promptCfg, fakeLLM, obClient, nil, context.Background())
 
 	// 3. 种入缓存消息，触发 锐评下
 	cache.GetGroupCache("10001", cfg.MaxCacheMsg).Add(cache.Message{
-		MessageID: 1, GroupID: "10001", UserID: "1", Nickname: "张三", Content: "今天好累",
+		MessageID: "1", GroupID: "10001", UserID: "1", Nickname: "张三", Content: "今天好累",
 	})
-	router.RouteMessage(context.Background(), "[CQ:at,qq=123456] 锐评下", onebot.Event{
-		PostType:    "message",
-		MessageType: "group",
-		GroupID:     "10001",
-		UserID:      "1",
-		Sender:      onebot.Sender{Nickname: "李四"},
-		RawMessage:  "[CQ:at,qq=123456] 锐评下",
-		MessageID:   2,
+	router.RouteMessage(context.Background(), "@bot(123456) 锐评下", onebot.Event{
+		Type:       "message",
+		DetailType: "group",
+		GroupID:    "10001",
+		UserID:     "1",
+		Self:       onebot.Self{Platform: "qq", UserID: "123456"},
+		Message:    []onebot.Segment{onebot.TextSegment("锐评下")},
+		MessageID:  "2",
 	}, "10001")
 
 	// 4. 等待异步 handler 完成 LLM 调用
