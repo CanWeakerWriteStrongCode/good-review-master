@@ -54,3 +54,24 @@ func TestMarshalRequestForLog无工具时省略(t *testing.T) {
 		t.Fatalf("没有工具时不应输出 tools 字段：%s", raw)
 	}
 }
+
+// TestMarshalRequestForLog不转义HTML 发给模型的请求日志要能直接读 @ 标记。
+func TestMarshalRequestForLog不转义HTML(t *testing.T) {
+	raw, err := marshalRequestForLog(openai.ChatCompletionRequest{
+		Model: "m",
+		Messages: []openai.ChatCompletionMessage{{
+			Role:    openai.ChatMessageRoleUser,
+			Content: `<@openid> 你好`,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	body := string(raw)
+	if !strings.Contains(body, `<@openid>`) {
+		t.Fatalf("应保留可读的 @ 标记：%s", body)
+	}
+	if strings.Contains(body, `\u003c`) || strings.Contains(body, `\u003e`) {
+		t.Fatalf("不应输出 HTML 转义：%s", body)
+	}
+}

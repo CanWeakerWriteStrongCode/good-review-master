@@ -207,11 +207,15 @@ func readableEventJSON(raw []byte) []byte {
 	if err := decoder.Decode(&value); err != nil {
 		return raw
 	}
-	normalized, err := json.Marshal(value)
-	if err != nil {
+	// 不能用 json.Marshal：它默认转义 HTML，会把 @ 标记的 <@openid> 写成
+	// \u003c@openid\u003e，日志没法读。Encoder 关掉 HTML 转义后原样输出。
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		return raw
 	}
-	return normalized
+	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
 // ignoreReason 返回该事件为何不进入业务链路；空串表示应当消费。

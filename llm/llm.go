@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -181,7 +182,7 @@ func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []M
 
 	// Debug 级把模型返回的完整原始 JSON 整段打出，与上面的请求 JSON 对照：
 	// 能直接看到 finish_reason 是 stop 还是 tool_calls、message.tool_calls 里有没有函数名。
-	if raw, err := json.Marshal(resp); err == nil {
+	if raw, err := marshalForLog(resp); err == nil {
 		logutil.Debug("大模型原始返回JSON", "body", string(raw))
 	} else {
 		logutil.Debug("大模型原始返回JSON序列化失败", "err", err)
@@ -217,7 +218,26 @@ func marshalRequestForLog(req openai.ChatCompletionRequest) ([]byte, error) {
 		Tools []openai.Tool `json:"tools,omitempty"`
 		openai.ChatCompletionRequest
 	}{Tools: req.Tools, ChatCompletionRequest: req}
-	return json.Marshal(ordered)
+	return marshalForLog(ordered)
+}
+
+// marshalForLog 只用于调试日志：把 JSON 里的 HTML 转义还原成可读字符。
+//
+// 不能用 json.Marshal：它默认把 @ 标记的 <@openid> 写成 \u003c@openid\u003e。
+// 只关 SetEscapeHTML 也不够——go-openai 的消息结构自带 MarshalJSON，内部仍会转义，
+// 所以最后再把这三个转义序列换回来（纯日志用途，不影响实际请求）。
+func marshalForLog(value any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	out := bytes.TrimRight(buf.Bytes(), "\n")
+	out = bytes.ReplaceAll(out, []byte(`\u003c`), []byte("<"))
+	out = bytes.ReplaceAll(out, []byte(`\u003e`), []byte(">"))
+	out = bytes.ReplaceAll(out, []byte(`\u0026`), []byte("&"))
+	return out, nil
 }
 
 // toOpenAIMessages 把中立消息列表转成 go-openai 的消息结构

@@ -193,3 +193,16 @@ func TestServerQueueFull返回503(t *testing.T) {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
+
+// TestReadableEventJSON不转义HTML 日志里的 @ 标记要能直接读：
+// <@openid> 不能变成 \u003c@openid\u003e。
+func TestReadableEventJSON不转义HTML(t *testing.T) {
+	raw := []byte(`{"alt_message":"\u003c@openid\u003e 你好","message":[{"type":"text","data":{"text":"\u003c@openid\u003e 你好"}}]}`)
+	out := string(readableEventJSON(raw))
+	if !strings.Contains(out, `<@openid> 你好`) {
+		t.Fatalf("应还原成可读的 @ 标记：%s", out)
+	}
+	if strings.Contains(out, `\u003c`) || strings.Contains(out, `\u003e`) {
+		t.Fatalf("不应再输出 HTML 转义：%s", out)
+	}
+}
