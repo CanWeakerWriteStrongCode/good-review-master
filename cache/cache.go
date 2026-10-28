@@ -147,18 +147,22 @@ func (gc *GroupMsgCache) Len() int {
 // UserID 是发言者的稳定标识（QQ 官方机器人是 openid，aiocqhttp 是数字 QQ），
 // 昵称会变，它不会；为空时省略。MsgID 为 0 时省略。
 type chatLine struct {
-	MsgID   int64  `json:"msg_id,omitempty"`
-	User    string `json:"user"`
-	UserID  string `json:"user_id,omitempty"`
-	Content string `json:"content"`
-	QuoteID int64  `json:"quote_id,omitempty"`
+	MessageID int64  `json:"message_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+	Nickname  string `json:"nickname"`
+	Message   string `json:"message"`
+	ReplyID   int64  `json:"reply_id,omitempty"`
 }
 
 // BuildChatLog 将消息列表组装为发给大模型的群聊上下文：每条消息一行 JSON 对象，如
 //
-//	{"msg_id":1001,"user":"张三","user_id":"3319D767...","content":"今天好累"}
-//	{"msg_id":1002,"user":"李四","user_id":"79EBED44...","content":"你也好"}
+//	{"message_id":1001,"user_id":"3319D767...","nickname":"张三","message":"今天好累"}
+//	{"message_id":1002,"user_id":"79EBED44...","nickname":"李四","message":"你也好","reply_id":1001}
 //
+// 字段名对齐 OneBot 11 群消息事件：message_id / user_id / message，nickname 对应
+// sender.nickname。刻意不搬 sender 嵌套、group_id、post_type 这些每行都重复的传输字段：
+// 它们只增加 token，模型用不上。reply_id 是 reply 段的 data.id（被引用消息的
+// message_id），OneBot 没有等价的顶层字段，保留为本项目扩展。
 // user_id 用字符串保留 openid / 数字 QQ 原值：昵称会变，稳定 ID 不会。
 // 用 json.Marshal 保证昵称/内容里的引号、换行等被正确转义。空内容消息跳过。
 func BuildChatLog(msgs []Message) string {
@@ -168,11 +172,11 @@ func BuildChatLog(msgs []Message) string {
 			continue
 		}
 		line, err := json.Marshal(chatLine{
-			MsgID:   msg.MsgID,
-			User:    msg.Nick,
-			UserID:  msg.UserID,
-			Content: msg.Content,
-			QuoteID: msg.QuoteID,
+			MessageID: msg.MsgID,
+			UserID:    msg.UserID,
+			Nickname:  msg.Nick,
+			Message:   msg.Content,
+			ReplyID:   msg.QuoteID,
 		})
 		if err != nil {
 			continue

@@ -657,7 +657,7 @@ func (m *Manager) rebuildSnapshot() {
 				serverName: s.cfg.Name,
 				rawName:    t.Name,
 				exposed:    exposed,
-				desc:       strings.TrimSpace(t.Description),
+				desc:       sanitizeToolDescription(t.Description),
 				params:     marshalInputSchema(t.InputSchema),
 				bind:       &binding{server: s, tool: t.Name},
 			})

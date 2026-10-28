@@ -62,7 +62,7 @@ cases:
       category: chat_review           # prompt_system.yaml 里的类别
       keyword: "猫娘"                  # 该类别下的关键字
     input: |                          # 群聊记录，格式与发给大模型的一致（每行一条 JSON）
-      {"msg_id":1001,"user":"张三","user_id":123456,"content":"今天好累"}
+      {"message_id":1001,"user_id":123456,"nickname":"张三","message":"今天好累"}
     checks:
       - kind: max_runes
         value: 400

@@ -154,6 +154,107 @@ func sortTools(tools []llm.Tool) {
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 }
 
+// maxToolDescriptionRune 是单个工具描述下发给大模型的上限（按 rune 计）。
+// MCP 服务端常把 Python docstring 原样暴露：Args 段落重复了 inputSchema 已经表达的信息，
+// ctx 之类的内部参数对模型没有意义，却会按 token 计费并挤占系统提示的空间。
+const maxToolDescriptionRune = 400
+
+// sanitizeToolDescription 把 MCP 工具描述收敛成给模型看的样子：
+//   - 截掉 Args:/Arguments:/Parameters: 之后的参数说明；
+//   - 丢掉提到 MCP context / ctx 的内部行；
+//   - 压缩空白，按整段拼接；整段放不下就停，不留半句话；
+//   - 以 Note: 开头的安全提示始终保留，不占上限。
+//
+// 规则必须是确定性的：同样的输入永远得到同样的输出，否则 tools 字段抖动会击穿 prefix cache。
+func sanitizeToolDescription(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return ""
+	}
+
+	var paragraphs []string
+	var current []string
+	flush := func() {
+		if len(current) > 0 {
+			paragraphs = append(paragraphs, strings.Join(current, " "))
+			current = nil
+		}
+	}
+
+collect:
+	for _, line := range strings.Split(desc, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			flush()
+			continue
+		}
+		lower := strings.ToLower(line)
+		switch {
+		case strings.HasPrefix(lower, "args:"),
+			strings.HasPrefix(lower, "arguments:"),
+			strings.HasPrefix(lower, "parameters:"):
+			break collect
+		case strings.HasPrefix(lower, "ctx:"), strings.Contains(lower, "mcp context"):
+			continue
+		}
+		current = append(current, line)
+	}
+	flush()
+
+	out := make([]string, 0, len(paragraphs))
+	used := 0
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(paragraph), "note:") {
+			out = append(out, paragraph)
+			used += len([]rune(paragraph))
+			continue
+		}
+		if used >= maxToolDescriptionRune {
+			continue
+		}
+		size := len([]rune(paragraph))
+		if used+size > maxToolDescriptionRune {
+			// 首段就超长时按句子边界截一段；后面的段落整段放不下就丢掉。
+			if used > 0 {
+				continue
+			}
+			paragraph = truncateDescription(paragraph, maxToolDescriptionRune)
+			if paragraph == "" {
+				continue
+			}
+			size = len([]rune(paragraph))
+		}
+		out = append(out, paragraph)
+		used += size
+	}
+	return strings.Join(out, " ")
+}
+
+// truncateDescription 按句子边界把描述截到 limit 个 rune；找不到句末标点就退到词边界。
+func truncateDescription(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	cut := runes[:limit]
+	for i := len(cut) - 1; i > 0; i-- {
+		switch cut[i] {
+		case '.', '。', '!', '！', '?', '？', ';', '；':
+			return strings.TrimSpace(string(cut[:i+1]))
+		}
+	}
+	for i := len(cut) - 1; i > 0; i-- {
+		if cut[i] == ' ' || cut[i] == ',' || cut[i] == '，' {
+			return strings.TrimSpace(string(cut[:i]))
+		}
+	}
+	return strings.TrimSpace(string(cut))
+}
+
 // flattenContent 把 MCP 返回的多段 Content 拍平成纯文本，并回报服务端是否标记了 isError。
 // 非文本内容（图片/音频/资源链接）转成一行占位说明，避免把二进制塞进大模型上下文。
 func flattenContent(res *mcp.CallToolResult) (string, bool) {

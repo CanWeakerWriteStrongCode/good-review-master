@@ -278,8 +278,9 @@ func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock string) string 
 		identity += "。"
 	}
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
-		"%s【聊天记录】每行一条群消息，user_id 是发言者的稳定ID；@昵称(ID) 表示 @ 了该用户，昵称可能变化，以括号里的 ID 为准。"+
-		"quote_id 表示该消息引用了哪条 msg_id。"+
+		"%s【聊天记录】每行一条群消息，message_id 是消息ID，user_id 是发言者的稳定ID，nickname 是昵称，message 是正文；"+
+		"@昵称(ID) 表示 @ 了该用户，昵称可能变化，以括号里的 ID 为准。"+
+		"reply_id 表示该消息引用了哪条 message_id。"+
 		"【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。",
 		cfg.LLMConfig.ModelName, identity)
 	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）

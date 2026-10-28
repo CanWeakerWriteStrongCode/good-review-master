@@ -16,9 +16,9 @@ cases:
       category: chat_review
       keyword: "猫娘"
     input: |
-      {"msg_id":1001,"user":"张三","user_id":123456,"content":"今天又加班到十点，累死了"}
-      {"msg_id":1002,"user":"李四","user_id":234567,"content":"辛苦了，明天请你喝奶茶"}
-      {"msg_id":1003,"user":"王五","user_id":345678,"content":"我也要！带我一个"}
+      {"message_id":1001,"nickname":"张三","user_id":123456,"message":"今天又加班到十点，累死了"}
+      {"message_id":1002,"nickname":"李四","user_id":234567,"message":"辛苦了，明天请你喝奶茶"}
+      {"message_id":1003,"nickname":"王五","user_id":345678,"message":"我也要！带我一个"}
     checks:
       - kind: min_runes
         value: 10
@@ -36,26 +36,26 @@ cases:
       category: chat_review
       keyword: "猫娘"
     input: |
-      {"msg_id":2001,"user":"张三","user_id":123456,"content":"早上好，今天天气不错"}
-      {"msg_id":2002,"user":"李四","user_id":234567,"content":"是啊，适合出去走走"}
-      {"msg_id":2003,"user":"王五","user_id":345678,"content":"我要上班，羡慕你们"}
-      {"msg_id":2004,"user":"张三","user_id":123456,"content":"上什么班，摸鱼不好吗"}
-      {"msg_id":2005,"user":"王五","user_id":345678,"content":"老板在我后面，别说了"}
-      {"msg_id":2006,"user":"李四","user_id":234567,"content":"哈哈哈哈哈"}
-      {"msg_id":2007,"user":"张三","user_id":123456,"content":"中午吃什么"}
-      {"msg_id":2008,"user":"李四","user_id":234567,"content":"楼下新开了家面馆"}
-      {"msg_id":2009,"user":"王五","user_id":345678,"content":"那家我知道，牛肉面不错"}
-      {"msg_id":2010,"user":"张三","user_id":123456,"content":"走走走，十二点楼下集合"}
-      {"msg_id":2011,"user":"李四","user_id":234567,"content":"带上我"}
-      {"msg_id":2012,"user":"王五","user_id":345678,"content":"我先把手头的活干完"}
-      {"msg_id":2013,"user":"张三","user_id":123456,"content":"那你快点啊"}
-      {"msg_id":2014,"user":"李四","user_id":234567,"content":"我先下去了占座"}
-      {"msg_id":2015,"user":"王五","user_id":345678,"content":"马上马上"}
-      {"msg_id":2016,"user":"张三","user_id":123456,"content":"面好咸"}
-      {"msg_id":2017,"user":"李四","user_id":234567,"content":"还行啊，我觉得正好"}
-      {"msg_id":2018,"user":"王五","user_id":345678,"content":"明天换一家吧"}
-      {"msg_id":2019,"user":"张三","user_id":123456,"content":"同意，明天去楼上那家盖饭"}
-      {"msg_id":2020,"user":"李四","user_id":234567,"content":"好，说定了"}
+      {"message_id":2001,"nickname":"张三","user_id":123456,"message":"早上好，今天天气不错"}
+      {"message_id":2002,"nickname":"李四","user_id":234567,"message":"是啊，适合出去走走"}
+      {"message_id":2003,"nickname":"王五","user_id":345678,"message":"我要上班，羡慕你们"}
+      {"message_id":2004,"nickname":"张三","user_id":123456,"message":"上什么班，摸鱼不好吗"}
+      {"message_id":2005,"nickname":"王五","user_id":345678,"message":"老板在我后面，别说了"}
+      {"message_id":2006,"nickname":"李四","user_id":234567,"message":"哈哈哈哈哈"}
+      {"message_id":2007,"nickname":"张三","user_id":123456,"message":"中午吃什么"}
+      {"message_id":2008,"nickname":"李四","user_id":234567,"message":"楼下新开了家面馆"}
+      {"message_id":2009,"nickname":"王五","user_id":345678,"message":"那家我知道，牛肉面不错"}
+      {"message_id":2010,"nickname":"张三","user_id":123456,"message":"走走走，十二点楼下集合"}
+      {"message_id":2011,"nickname":"李四","user_id":234567,"message":"带上我"}
+      {"message_id":2012,"nickname":"王五","user_id":345678,"message":"我先把手头的活干完"}
+      {"message_id":2013,"nickname":"张三","user_id":123456,"message":"那你快点啊"}
+      {"message_id":2014,"nickname":"李四","user_id":234567,"message":"我先下去了占座"}
+      {"message_id":2015,"nickname":"王五","user_id":345678,"message":"马上马上"}
+      {"message_id":2016,"nickname":"张三","user_id":123456,"message":"面好咸"}
+      {"message_id":2017,"nickname":"李四","user_id":234567,"message":"还行啊，我觉得正好"}
+      {"message_id":2018,"nickname":"王五","user_id":345678,"message":"明天换一家吧"}
+      {"message_id":2019,"nickname":"张三","user_id":123456,"message":"同意，明天去楼上那家盖饭"}
+      {"message_id":2020,"nickname":"李四","user_id":234567,"message":"好，说定了"}
     checks:
       - kind: min_runes
         value: 10

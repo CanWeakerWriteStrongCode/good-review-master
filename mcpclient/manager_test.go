@@ -175,6 +175,25 @@ func TestRebuildSnapshot_工具定义转换(t *testing.T) {
 	}
 }
 
+// 快照里的描述必须经过清洗，否则服务端的 docstring 会原样进 prompt。
+func TestRebuildSnapshot_工具描述清洗(t *testing.T) {
+	setupTestLogger(t)
+	m := newTestManager()
+	attachStubServer(m, "web", nil, &mcp.Tool{
+		Name:        "fetch_content",
+		Description: "Fetch a page.\n\n    Args:\n        url: The URL.\n        ctx: MCP context for logging.",
+	})
+	m.rebuildSnapshot()
+
+	tools := m.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("期望 1 个工具，得到 %d", len(tools))
+	}
+	if tools[0].Description != "Fetch a page." {
+		t.Fatalf("描述未清洗: %q", tools[0].Description)
+	}
+}
+
 // MCP 未启用时管理器空转：工具清单恒空、调用直接报错，且 Start/Close 都不能炸
 func TestNew_未启用时空转(t *testing.T) {
 	setupTestLogger(t)
