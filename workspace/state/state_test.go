@@ -1,6 +1,7 @@
 package state
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -255,6 +256,59 @@ func Test旧结构迁移(t *testing.T) {
 	}
 }
 
+// Test群档案读写 群名可以为空；空名不能覆盖已记录的名字。
+func Test群档案读写(t *testing.T) {
+	_, scope := openTemp(t)
+	scope.SaveGroup("g1", "")
+	scope.SaveGroup("g1", "测试群")
+	scope.SaveGroup("g1", "")
+
+	groups, err := scope.LoadGroups()
+	if err != nil {
+		t.Fatalf("LoadGroups: %v", err)
+	}
+	if groups["g1"] != "测试群" {
+		t.Fatalf("群名应保留非空值，得到 %q", groups["g1"])
+	}
+}
+
+// Testv2升级保留消息 v2→v3 只补 groups 表，不能重建已有表把消息清掉。
+func TestV2升级保留消息(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	scope := st.Scope("qq_a")
+	scope.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", Content: "旧消息", Time: 1})
+	waitQueue(t, st)
+
+	// 手动退回 v2：没有 groups 表。
+	if _, err := st.db.Exec(`DROP TABLE groups`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+	scope = st.Scope("qq_a")
+	msgs, err := scope.LoadRecent(10)
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "旧消息" {
+		t.Fatalf("升级不能丢消息：%+v, %v", msgs, err)
+	}
+	scope.SaveGroup("g1", "升级后的群")
+	groups, err := scope.LoadGroups()
+	if err != nil || groups["g1"] != "升级后的群" {
+		t.Fatalf("升级后 groups 应可读写：%+v, %v", groups, err)
+	}
+}
+
 func TestWorkspaces返回平台与账号(t *testing.T) {
 	st, scope := openTemp(t)
 	scope.SetMeta("platform", "qq")
@@ -276,5 +330,66 @@ func TestWorkspaces返回平台与账号(t *testing.T) {
 	}
 	if got := byID["qq_test"]; got.Platform != "qq" || got.Account != "1906" {
 		t.Fatalf("qq_test meta = %+v", got)
+	}
+}
+
+// Test引用索引反查 被引消息存下自己的 ref_idx，新消息用 ref_msg_idx 反查 message_id。
+func Test引用索引反查(t *testing.T) {
+	st, scope := openTemp(t)
+	scope.SaveMessage(cache.Message{
+		MessageID: "ROBOT1.0_ABC", GroupID: "g1", UserID: "u1",
+		Content: "✅ 已切换人格", RefIdx: "REFIDX_Q", Time: 1,
+	})
+	waitQueue(t, st)
+
+	if got := scope.ResolveMessageID("g1", "REFIDX_Q"); got != "ROBOT1.0_ABC" {
+		t.Fatalf("反查 = %q, want ROBOT1.0_ABC", got)
+	}
+	if got := scope.ResolveMessageID("g1", "REFIDX_UNKNOWN"); got != "" {
+		t.Fatalf("未知索引应为空，got %q", got)
+	}
+	if got := scope.ResolveMessageID("other", "REFIDX_Q"); got != "" {
+		t.Fatalf("别的群不能命中，got %q", got)
+	}
+}
+
+// TestV3升级补引用索引 v3 老库没有 ref_idx 列，升级只补列，消息不能丢。
+func TestV3升级补引用索引(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE messages (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			user_id TEXT NOT NULL, content TEXT NOT NULL, images TEXT NOT NULL DEFAULT '[]',
+			reply_to TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id, message_id))`,
+		`INSERT INTO messages (workspace_id, group_id, message_id, user_id, content, ts)
+			VALUES ('qq_a', 'g1', 'm1', 'u1', '旧消息', 1)`,
+		`PRAGMA user_version = 3`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("造 v3 库失败：%v", err)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+	scope := st.Scope("qq_a")
+	msgs, err := scope.LoadRecent(10)
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "旧消息" {
+		t.Fatalf("升级不能丢消息：%+v, %v", msgs, err)
+	}
+	scope.SaveMessage(cache.Message{MessageID: "m2", GroupID: "g1", Content: "新消息", RefIdx: "REFIDX_N", Time: 2})
+	waitQueue(t, st)
+	if got := scope.ResolveMessageID("g1", "REFIDX_N"); got != "m2" {
+		t.Fatalf("补列后应可写 ref_idx：%q", got)
 	}
 }

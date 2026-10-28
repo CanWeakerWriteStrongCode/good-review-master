@@ -44,6 +44,10 @@ type Event struct {
 	// 只在 self.user_id 为哨兵时才采信；授权后走标准 mention 比较。
 	QQAtMe bool `json:"qq.at_me"`
 
+	// QQMsgIdx 是平台扩展（qq.msg_idx）：本条消息自己的引用索引（QQ 官方 REFIDX）。
+	// 群消息的引用只给被引消息的这个索引，不给 message_id，所以要用它反查。
+	QQMsgIdx string `json:"qq.msg_idx"`
+
 	Account string `json:"-"`
 }
 
@@ -111,6 +115,19 @@ func (e Event) QuotedMessageID() string {
 	for _, seg := range e.Message {
 		if seg.Type == SegmentReply {
 			return seg.String("message_id")
+		}
+	}
+	return ""
+}
+
+// QuotedRefIdx 返回引用段里的平台引用索引（qq.ref_msg_idx）。
+//
+// QQ 官方群消息的引用不提供被引消息的 message_id，只提供它的 REFIDX；
+// 调用方用这个索引在本群已存消息里反查真正的 message_id。
+func (e Event) QuotedRefIdx() string {
+	for _, seg := range e.Message {
+		if seg.Type == SegmentReply {
+			return seg.String("qq.ref_msg_idx")
 		}
 	}
 	return ""

@@ -306,3 +306,56 @@ func Test多账号共用一个档案库(t *testing.T) {
 		}
 	}
 }
+
+// Test群档案与成员随消息入库 EnsureGroup/ObserveMember 的写入要跨重启保留：
+// 面板靠它们展示群名与“已收录成员数”。
+func Test群档案与成员随消息入库(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_a"},
+		MaxCacheMsg:       10,
+	}
+	newManager := func() *Manager {
+		m, err := New(func() *config.Config { return cfg }, system,
+			filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		return m
+	}
+
+	m := newManager()
+	ws, err := m.ResolveOrCreate("qq", "a")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
+	}
+	ws.EnsureGroup("g1")
+	ws.ObserveMember("g1", "u1")
+	ws.ObserveMember("g1", "u1") // 同一个人重复出现不能重复计数
+	if got := ws.MemberCount("g1"); got != 1 {
+		t.Fatalf("MemberCount = %d, want 1", got)
+	}
+	m.Close()
+
+	m2 := newManager()
+	defer m2.Close()
+	if got := m2.MemberCount("qq_a", "g1"); got != 1 {
+		t.Fatalf("重启后已收录成员数 = %d, want 1", got)
+	}
+	if got := m2.GroupName("qq_a", "g1"); got != "" {
+		t.Fatalf("没有群名时应为空串，得到 %q", got)
+	}
+	ws2, ok := m2.ByID("qq_a")
+	if !ok || ws2 == nil {
+		t.Fatal("工作空间应从档案恢复")
+	}
+	groups, err := ws2.State.LoadGroups()
+	if err != nil || groups["g1"] != "" {
+		t.Fatalf("群档案应从库里恢复：%+v, %v", groups, err)
+	}
+}

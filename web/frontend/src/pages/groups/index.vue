@@ -66,6 +66,10 @@
               <text class="stat-value">{{ group.message_count }}</text>
             </view>
             <view class="group-stat">
+              <text class="stat-label">已收录成员</text>
+              <text class="stat-value">{{ group.member_count }}</text>
+            </view>
+            <view class="group-stat">
               <text class="stat-label">最近活动</text>
               <text class="stat-value stat-time">{{ group.last_activity || '-' }}</text>
             </view>

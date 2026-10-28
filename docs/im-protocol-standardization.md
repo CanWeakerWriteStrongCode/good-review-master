@@ -200,6 +200,25 @@ self.user_id == unknown_selfid:
 所以多账号同名时必须禁用（现有 `allowNicknameFallback` 就是这个判断）；有可比较的
 `mention` 段时以段为准，兜底只在没有段命中时生效。
 
+### 3.5 引用与平台索引（qq.msg_idx / qq.ref_msg_idx）
+
+OB12 的 `reply` 段用 `message_id` 表示被引消息。QQ 官方**群消息**不提供被引消息的
+message_id，只在 `message_scene.ext` 里给 REFIDX（引用索引）；频道消息走
+`message_reference.message_id`，所以只有群里需要扩展：
+
+| 扩展 | 位置 | 含义 |
+|---|---|---|
+| `qq.msg_idx` | 事件顶层 | 本条消息自己的 REFIDX |
+| `qq.ref_msg_idx` | `reply.data` | 被引消息的 REFIDX |
+
+处理顺序：Go 把每条消息的 `qq.msg_idx` 存进 `messages.ref_idx`；收到带
+`qq.ref_msg_idx` 的引用时，如果 reply 段没有 message_id，就用
+`(workspace_id, group_id, ref_idx)` 在本群已存消息里反查，命中后补成真正的
+`reply_to`。查不到（被引消息早于本库或从未收到）时 `reply_to` 仍为空，消息照常入库。
+
+REFIDX 不能替代 message_id：QQ 被动回复窗口用的是 `msg_id`（入站 `message.id`），
+两套标识不互通；`message_id` 继续做消息主键，REFIDX 只参与引用解析。
+
 ## 4. 适配器
 
 ### 4.1 AstrBot 插件（OB12 实现端）
@@ -228,6 +247,9 @@ self.user_id == unknown_selfid:
    后的文本），AstrBot 只能填占位 At；补上权限后（22:03:31 实测）@ 事件恢复
    `mentions[].is_you`，`self.user_id` 可直接比较。`qq.at_me` 只在权限仍然缺失时兜底。
 10. 无论是否被 @ 都上报；是否回复由 Go 判断。`notice` / `request` 等事件可以不上报（v1 只消费消息）。
+11. **引用索引**：QQ 官方群消息只给 REFIDX。每条事件顶层带 `qq.msg_idx`（本条消息自己的
+   索引），引用的消息在 `reply.data` 里带 `qq.ref_msg_idx`；Go 存 `ref_idx` 并据此反查
+   `reply_to`（见 3.5）。
 
 插件同时提供 OB12 动作服务（`POST /`）：
 

@@ -111,20 +111,26 @@ func (s *Server) collectDetails(groupIDs []string, account string, store *cache.
 		seenGroup[groupID] = struct{}{}
 
 		info := GroupDetail{GroupID: groupID, WorkspaceID: wsID, WorkspaceName: wsName}
-		// 获取群名称（优先用缓存，否则向实现端查询）
+		// 群名优先用 state.db 里记录过的值，再退到进程缓存和实现端查询。
+		if s.workspaces != nil {
+			info.GroupName = s.workspaces.GroupName(wsID, groupID)
+			info.MemberCount = s.workspaces.MemberCount(wsID, groupID)
+		}
 		s.groupNamesMu.RLock()
 		name, ok := s.groupNames[groupID]
 		s.groupNamesMu.RUnlock()
-		if !ok && s.obClient != nil {
+		if info.GroupName == "" {
+			info.GroupName = name
+		}
+		if !ok && info.GroupName == "" && s.obClient != nil {
 			gi, err := s.obClient.For(wsID).GetGroupInfo(groupID)
 			if err == nil && gi.GroupName != "" {
-				name = gi.GroupName
+				info.GroupName = gi.GroupName
 				s.groupNamesMu.Lock()
-				s.groupNames[groupID] = name
+				s.groupNames[groupID] = gi.GroupName
 				s.groupNamesMu.Unlock()
 			}
 		}
-		info.GroupName = name
 
 		if _, ok := cachedSet[groupID]; ok {
 			if gc := store.GetCache(groupID); gc != nil {

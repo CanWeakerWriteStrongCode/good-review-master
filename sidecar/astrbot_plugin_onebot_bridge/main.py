@@ -48,7 +48,7 @@ DEFAULT_LISTEN_PORT = 6199
 
 ONEBOT_VERSION = "12"
 IMPL_NAME = "astrbot-plugin-onebot-bridge"
-PLUGIN_VERSION = "1.7.4"
+PLUGIN_VERSION = "1.7.5"
 
 # AstrBot 适配器类型 → OB12 平台名。OB12 平台名不允许下划线，
 # 所以 qq_official 这类适配器名必须显式映射；其它（wecom/lark/telegram…）
@@ -95,7 +95,7 @@ CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
     PLUGIN_NAME,
     "good-review",
     "把 AstrBot 事件以 OneBot 12 转发给外部 Go 服务，并实现 OneBot 12 动作服务",
-    "1.7.4",
+    "1.7.5",
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -233,8 +233,21 @@ class OneBotBridge(Star):
         if self._placeholder_at_me(msg):
             payload["qq.at_me"] = True
 
+        # 平台侧引用索引（QQ 官方 REFIDX）：
+        # - qq.msg_idx 是这条消息自己的索引，Go 存下来供以后被引用时反查；
+        # - qq.ref_msg_idx 是它引用的那条消息的索引（群消息不给被引 message_id）。
+        own_ref_idx = self._extract_ref_idx(msg)
+        if own_ref_idx:
+            payload["qq.msg_idx"] = own_ref_idx
+        quoted_ref_idx = self._quoted_ref_idx(msg)
+        if quoted_ref_idx:
+            for seg in segments:
+                if seg.get("type") == "reply":
+                    seg.setdefault("data", {})["qq.ref_msg_idx"] = quoted_ref_idx
+                    break
+
         # Go 回复时会把 message_id 原样带回，这里顺手记下 REFIDX 供可见引用使用。
-        self._remember_ref(raw_message_id, message_id, self._extract_ref_idx(msg))
+        self._remember_ref(raw_message_id, message_id, own_ref_idx)
 
         if not self._cfg_bool("forward_self_messages", False):
             raw = getattr(msg, "raw_message", None)
@@ -512,6 +525,26 @@ class OneBotBridge(Star):
             text = str(item)
             if text.startswith("msg_idx="):
                 return text[len("msg_idx="):].strip()
+        return ""
+
+    @staticmethod
+    def _quoted_ref_idx(msg) -> str:
+        """取本条消息引用的那条消息的 REFIDX（message_scene.ext 里的 ref_msg_idx）。
+
+        QQ 官方群消息的引用不提供被引消息的 message_id，只给这个索引；
+        Go 用它在本群已存消息里反查真正的 message_id。
+        """
+        raw = getattr(msg, "raw_message", None)
+        data = getattr(raw, "raw_data", None)
+        if not isinstance(data, dict):
+            return ""
+        scene = data.get("message_scene")
+        if not isinstance(scene, dict):
+            return ""
+        for item in scene.get("ext") or []:
+            text = str(item)
+            if text.startswith("ref_msg_idx="):
+                return text[len("ref_msg_idx="):].strip()
         return ""
 
     def _remember_ref(self, original_id, hashed_id, ref_idx: str) -> None:

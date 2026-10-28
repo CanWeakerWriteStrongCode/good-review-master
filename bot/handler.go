@@ -54,10 +54,26 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 		return
 	}
 
+	// 群档案与成员目录跟着消息一起积累：群只写一次，成员首次出现时写一行。
+	ws.EnsureGroup(groupID)
+	ws.ObserveMember(groupID, event.UserID)
+	for _, seg := range event.Message {
+		if seg.Type == onebot.SegmentMention {
+			ws.ObserveMember(groupID, seg.String("user_id"))
+		}
+	}
+
 	nameOf := ws.DisplayNameFor(groupID)
 	content := truncate(event.RenderText(nameOf), cfg.MaxMsgRune)
 	if content == "" {
 		return
+	}
+
+	// QQ 官方群消息的引用只给被引消息的 REFIDX（qq.ref_msg_idx），不给 message_id；
+	// 用已经存下的 ref_idx 反查一次，把 reply_to 补成真正的 message_id。
+	replyTo := event.QuotedMessageID()
+	if replyTo == "" {
+		replyTo = ws.State.ResolveMessageID(groupID, event.QuotedRefIdx())
 	}
 
 	msg := cache.Message{
@@ -68,7 +84,8 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 		Nickname:  nameOf(event.UserID),
 		Content:   content,
 		Images:    event.Images(),
-		ReplyToID: event.QuotedMessageID(),
+		ReplyToID: replyTo,
+		RefIdx:    event.QQMsgIdx,
 		Time:      eventTime(event),
 	}
 	gc := ws.Cache.GetGroupCache(groupID, cfg.MaxCacheMsg)

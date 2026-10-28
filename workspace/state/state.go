@@ -31,8 +31,10 @@ const FileName = "state.db"
 
 const (
 	// schemaVersion 当前表结构版本。v1 是"每工作空间一个库"的旧结构，
-	// v2 起所有表都带 workspace_id；遇到更旧的版本会重建本包自己的表。
-	schemaVersion = 2
+	// v2 起所有表都带 workspace_id；v3 增加 groups（群档案）；
+	// v4 给 messages 增加 ref_idx（平台引用索引，QQ 官方是 REFIDX）。
+	// 只有 v1 会重建表，v2 之后一律增量升级，已有消息不丢。
+	schemaVersion = 4
 
 	// writeQueueSize 异步写队列容量。群聊消息量很低，这个值足够吸收一次突发；
 	// 满了丢 DB 写（内存缓存仍有），入站路径绝不能被磁盘拖住。
@@ -135,16 +137,19 @@ func migrate(db *sql.DB, path string) error {
 	// v1 是"每工作空间一个库"的结构：表里没有 workspace_id，而且同一个库
 	// 只会属于一个工作空间，无法推断归属。这里是全新文件（version=0）或
 	// 未发布的旧结构，重建本包自己的表即可，不动其它数据。
-	if version > 0 {
+	// v2 起结构兼容，只补新表：升级不能把用户已经攒下的消息清掉。
+	if version > 0 && version < 2 {
 		logutil.Warn("state.db 是旧版结构（无 workspace_id），重建档案表", "path", path, "version", version)
 	}
-	for _, table := range []string{"messages", "anchors", "identities", "members", "group_personas", "meta"} {
-		if _, err := db.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
-			return fmt.Errorf("重建 state.db 失败：%w", err)
+	if version < 2 {
+		for _, table := range []string{"messages", "anchors", "identities", "members", "group_personas", "meta", "groups"} {
+			if _, err := db.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
+				return fmt.Errorf("重建 state.db 失败：%w", err)
+			}
 		}
 	}
 	statements := []string{
-		`CREATE TABLE messages (
+		`CREATE TABLE IF NOT EXISTS messages (
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			message_id   TEXT NOT NULL,
@@ -152,11 +157,12 @@ func migrate(db *sql.DB, path string) error {
 			content      TEXT NOT NULL,
 			images       TEXT NOT NULL DEFAULT '[]',
 			reply_to     TEXT NOT NULL DEFAULT '',
+			ref_idx      TEXT NOT NULL DEFAULT '',
 			ts           INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id, message_id)
 		)`,
-		`CREATE INDEX idx_messages_ts ON messages(workspace_id, group_id, ts)`,
-		`CREATE TABLE anchors (
+		`CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(workspace_id, group_id, ts)`,
+		`CREATE TABLE IF NOT EXISTS anchors (
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			start_id     TEXT NOT NULL DEFAULT '',
@@ -164,14 +170,14 @@ func migrate(db *sql.DB, path string) error {
 			updated_at   INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
-		`CREATE TABLE identities (
+		`CREATE TABLE IF NOT EXISTS identities (
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			self_user_id TEXT NOT NULL,
 			learned_at   INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
-		`CREATE TABLE members (
+		`CREATE TABLE IF NOT EXISTS members (
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			user_id      TEXT NOT NULL,
@@ -180,24 +186,56 @@ func migrate(db *sql.DB, path string) error {
 			updated_at   INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id, user_id)
 		)`,
-		`CREATE TABLE group_personas (
+		`CREATE TABLE IF NOT EXISTS group_personas (
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			keyword      TEXT NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
-		`CREATE TABLE meta (
+		`CREATE TABLE IF NOT EXISTS meta (
 			workspace_id TEXT NOT NULL,
 			key          TEXT NOT NULL,
 			value        TEXT NOT NULL,
 			PRIMARY KEY (workspace_id, key)
 		)`,
-		`PRAGMA user_version = 2`,
+		// groups 是群档案：QQ 官方通常拿不到群名，name 留空也是有效记录。
+		`CREATE TABLE IF NOT EXISTS groups (
+			workspace_id TEXT NOT NULL,
+			group_id     TEXT NOT NULL,
+			name         TEXT NOT NULL DEFAULT '',
+			updated_at   INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id)
+		)`,
+		`PRAGMA user_version = 4`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			return fmt.Errorf("初始化 state.db 失败：%w", err)
 		}
+	}
+	// 索引必须在补列之后才能建；v3 的老库先补列，再补索引。
+	if version < 4 {
+		if err := ensureColumn(db, "messages", "ref_idx", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_ref ON messages(workspace_id, group_id, ref_idx)`); err != nil {
+			return fmt.Errorf("创建消息引用索引失败：%w", err)
+		}
+	}
+	return nil
+}
+
+// ensureColumn 给老库补列（SQLite 的 ADD COLUMN 不支持 IF NOT EXISTS）。
+func ensureColumn(db *sql.DB, table, column, ddl string) error {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count); err != nil {
+		return fmt.Errorf("读取 %s 表结构失败：%w", table, err)
+	}
+	if count > 0 {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl); err != nil {
+		return fmt.Errorf("给 %s 补列 %s 失败：%w", table, column, err)
 	}
 	return nil
 }
@@ -225,8 +263,8 @@ func (s *Scope) SaveMessage(msg cache.Message) {
 func (s *Store) writeLoop() {
 	defer s.wg.Done()
 	const insert = `INSERT OR REPLACE INTO messages
-		(workspace_id, group_id, message_id, user_id, content, images, reply_to, ts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		(workspace_id, group_id, message_id, user_id, content, images, reply_to, ref_idx, ts)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	for item := range s.queue {
 		msg := item.msg
 		images, err := json.Marshal(msg.Images)
@@ -234,7 +272,7 @@ func (s *Store) writeLoop() {
 			images = []byte("[]")
 		}
 		if _, err := s.db.Exec(insert, item.workspaceID, msg.GroupID, msg.MessageID, msg.UserID,
-			msg.Content, string(images), msg.ReplyToID, msg.Time); err != nil {
+			msg.Content, string(images), msg.ReplyToID, msg.RefIdx, msg.Time); err != nil {
 			s.noteFailure("写入消息", err)
 		}
 	}
@@ -252,7 +290,7 @@ func (s *Scope) LoadRecent(limit int) ([]cache.Message, error) {
 		return nil, nil
 	}
 	rows, err := s.store.db.Query(`
-		SELECT group_id, message_id, user_id, content, images, reply_to, ts FROM (
+		SELECT group_id, message_id, user_id, content, images, reply_to, ref_idx, ts FROM (
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY ts DESC) AS rn
 			FROM messages WHERE workspace_id = ?
 		) WHERE rn <= ? ORDER BY group_id, ts`, s.workspaceID, limit)
@@ -266,7 +304,7 @@ func (s *Scope) LoadRecent(limit int) ([]cache.Message, error) {
 		var msg cache.Message
 		var images string
 		if err := rows.Scan(&msg.GroupID, &msg.MessageID, &msg.UserID, &msg.Content,
-			&images, &msg.ReplyToID, &msg.Time); err != nil {
+			&images, &msg.ReplyToID, &msg.RefIdx, &msg.Time); err != nil {
 			return nil, err
 		}
 		if images != "" {
@@ -275,6 +313,27 @@ func (s *Scope) LoadRecent(limit int) ([]cache.Message, error) {
 		out = append(out, msg)
 	}
 	return out, rows.Err()
+}
+
+// ResolveMessageID 用平台引用索引反查本群被引消息的 message_id。
+//
+// QQ 官方群消息的引用只给 REFIDX（被引消息自己的 msg_idx），不给 message_id；
+// 收到新消息时用它把 reply_to 补成真正的 message_id。
+func (s *Scope) ResolveMessageID(groupID, refIdx string) string {
+	if s == nil || s.store == nil || groupID == "" || refIdx == "" {
+		return ""
+	}
+	var id string
+	err := s.store.db.QueryRow(`SELECT message_id FROM messages
+		WHERE workspace_id = ? AND group_id = ? AND ref_idx = ? AND ref_idx <> ''
+		ORDER BY ts DESC LIMIT 1`, s.workspaceID, groupID, refIdx).Scan(&id)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			s.store.noteFailure("反查引用消息", err)
+		}
+		return ""
+	}
+	return id
 }
 
 // LoadAnchors 返回本工作空间全部群的选窗锚点。
@@ -353,8 +412,13 @@ func (s *Scope) SaveMember(groupID, userID, name, displayName string) {
 	if s == nil || s.store == nil || userID == "" || s.store.closed.Load() {
 		return
 	}
-	_, err := s.store.db.Exec(`INSERT OR REPLACE INTO members
-		(workspace_id, group_id, user_id, name, display_name, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+	// 只“看到过”的成员也会存一行（name 为空）；空值不能覆盖已经拿到的名字。
+	_, err := s.store.db.Exec(`INSERT INTO members
+		(workspace_id, group_id, user_id, name, display_name, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace_id, group_id, user_id) DO UPDATE SET
+			name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE members.name END,
+			display_name = CASE WHEN excluded.display_name <> '' THEN excluded.display_name ELSE members.display_name END,
+			updated_at = excluded.updated_at`,
 		s.workspaceID, groupID, userID, name, displayName, time.Now().Unix())
 	if err != nil {
 		s.store.noteFailure("保存成员名", err)
@@ -385,6 +449,44 @@ func (s *Scope) LoadMembers() (map[string]map[string]string, error) {
 			display = name
 		}
 		out[group][userID] = display
+	}
+	return out, rows.Err()
+}
+
+// SaveGroup 记录群档案。name 为空是常态（QQ 官方群机器人不提供群名）：
+// 空名不能覆盖已经拿到的名字，所以用 CASE 只接受非空更新。
+func (s *Scope) SaveGroup(groupID, name string) {
+	if s == nil || s.store == nil || groupID == "" || s.store.closed.Load() {
+		return
+	}
+	_, err := s.store.db.Exec(`INSERT INTO groups (workspace_id, group_id, name, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+			name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE groups.name END,
+			updated_at = excluded.updated_at`,
+		s.workspaceID, groupID, name, time.Now().Unix())
+	if err != nil {
+		s.store.noteFailure("保存群档案", err)
+	}
+}
+
+// LoadGroups 返回 group_id → 群名（没有名字的群值为空串）。
+func (s *Scope) LoadGroups() (map[string]string, error) {
+	if s == nil || s.store == nil {
+		return nil, nil
+	}
+	rows, err := s.store.db.Query(`SELECT group_id, name FROM groups WHERE workspace_id = ?`, s.workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var groupID, name string
+		if err := rows.Scan(&groupID, &name); err != nil {
+			return nil, err
+		}
+		out[groupID] = name
 	}
 	return out, rows.Err()
 }

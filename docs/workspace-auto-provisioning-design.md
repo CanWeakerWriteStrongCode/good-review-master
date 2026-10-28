@@ -142,10 +142,12 @@ CREATE TABLE messages (
   content      TEXT NOT NULL,    -- 由消息段渲染出的文本
   images       TEXT NOT NULL,    -- JSON 数组
   reply_to     TEXT NOT NULL DEFAULT '',
+  ref_idx      TEXT NOT NULL DEFAULT '',  -- 平台引用索引（QQ 官方 REFIDX）
   ts           INTEGER NOT NULL,
   PRIMARY KEY (workspace_id, group_id, message_id)
 );
 CREATE INDEX idx_messages_ts ON messages(workspace_id, group_id, ts);
+CREATE INDEX idx_messages_ref ON messages(workspace_id, group_id, ref_idx);
 
 CREATE TABLE anchors (
   workspace_id TEXT NOT NULL,
@@ -164,14 +166,22 @@ CREATE TABLE identities (          -- 本群学到的机器人 user_id
   PRIMARY KEY (workspace_id, group_id)
 );
 
-CREATE TABLE members (
+CREATE TABLE members (             -- 出现过的群友：说过话或被 @ 过
   workspace_id TEXT NOT NULL,
   group_id     TEXT NOT NULL,
   user_id      TEXT NOT NULL,
-  name         TEXT NOT NULL DEFAULT '',
+  name         TEXT NOT NULL DEFAULT '',  -- QQ 官方通常只有 openid，名字可能为空
   display_name TEXT NOT NULL DEFAULT '',
   updated_at   INTEGER NOT NULL,
   PRIMARY KEY (workspace_id, group_id, user_id)
+);
+
+CREATE TABLE groups (              -- 群档案：QQ 官方不提供群名，name 可空
+  workspace_id TEXT NOT NULL,
+  group_id     TEXT NOT NULL,
+  name         TEXT NOT NULL DEFAULT '',
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (workspace_id, group_id)
 );
 
 CREATE TABLE group_personas (
@@ -188,6 +198,10 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
   PRIMARY KEY (workspace_id, key)
 );
 ```
+
+版本演进：`PRAGMA user_version` 当前是 4。v1（每工作空间一库、无 `workspace_id`）会重建本包
+自己的表；**v2→v3 只补 `groups`，v3→v4 只给 `messages` 补 `ref_idx`**，不重建其它表，
+已经攒下的消息与成员不会丢。
 
 每个工作空间通过 `Store.Scope(workspaceID)` 拿到一个视图，所有读写自动带上
 `workspace_id`；同一个群、同一个 `message_id` 在不同账号下互不冲突。

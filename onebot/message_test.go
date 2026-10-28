@@ -113,3 +113,21 @@ func TestAdapterAtMe只在哨兵时采信(t *testing.T) {
 		t.Fatal("没有 qq.at_me 扩展时哨兵仍不可比较")
 	}
 }
+
+// TestQuotedRefIdx QQ 官方群引用只有 REFIDX：reply 段 message_id 为空时靠它反查。
+func TestQuotedRefIdx(t *testing.T) {
+	event := Event{Message: []Segment{
+		{Type: SegmentReply, Data: map[string]any{"message_id": "", "qq.ref_msg_idx": "REFIDX_Q"}},
+		MentionSegment("bot"),
+		TextSegment("你好啊"),
+	}}
+	if got := event.QuotedMessageID(); got != "" {
+		t.Fatalf("群里没有 message_id，got %q", got)
+	}
+	if got := event.QuotedRefIdx(); got != "REFIDX_Q" {
+		t.Fatalf("QuotedRefIdx = %q", got)
+	}
+	if got := (Event{}).QuotedRefIdx(); got != "" {
+		t.Fatalf("没有引用时为空，got %q", got)
+	}
+}

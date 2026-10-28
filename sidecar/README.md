@@ -138,6 +138,9 @@ runtime:
 - `alt_message` 把 @ 渲染成 `@昵称(openid)`：昵称会变、也可能重名，括号里的 ID 才是
   模型判断「同一个人」的依据；成员名来自入站消息与 `mentions`，查不到时回落成 `@用户(ID)`。
 - 引用是标准 `reply` 段，`data.message_id` 与入站 `message_id` 相同（字符串）。
+  QQ 官方**群消息**引用时只给 REFIDX，所以 `reply.data.message_id` 可能为空，
+  改由 `reply.data["qq.ref_msg_idx"]` 带被引消息的索引；每条事件顶层还有
+  `qq.msg_idx`（这条消息自己的索引），Go 存 `ref_idx` 用于反查真正的 `reply_to`。
 - 图片 / 语音 / 视频 / 文件：QQ 官方只给 URL，按扩展规则放在 `qq.url`（文件另带 `qq.name`）。
 - 平台本身拿不到的：数字 QQ 号、数字群号、群名片、官方群成员昵称。
 

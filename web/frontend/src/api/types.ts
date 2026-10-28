@@ -9,6 +9,8 @@ export interface GroupInfo {
   /** 账号昵称；解析不到时为空 */
   account_name: string
   message_count: number
+  /** 已收录成员数（说过话或被 @ 过的人） */
+  member_count: number
   last_activity: string
   cached: boolean
 }

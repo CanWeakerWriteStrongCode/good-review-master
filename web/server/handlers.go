@@ -29,6 +29,7 @@ type GroupDetail struct {
 	SelfID        string `json:"self_id"`      // 接收该群的机器人账号；空=无法归属
 	AccountName   string `json:"account_name"` // 账号昵称；解析不到时为空
 	MessageCount  int    `json:"message_count"`
+	MemberCount   int    `json:"member_count"` // 已收录成员数（说过话或被 @ 过）
 	LastActivity  string `json:"last_activity"`
 	Cached        bool   `json:"cached"`
 }

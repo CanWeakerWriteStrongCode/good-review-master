@@ -483,6 +483,13 @@ filled from the inbound path and is not serialized. `Segment{Type, Data}` covers
 text/mention/mention_all/reply/image/voice/video/file; QQ official media URLs use the `qq.url`
 extension.
 
+QQ official **group** messages never carry the quoted message's `message_id`; the quote only
+exposes a REFIDX. The bridge therefore adds top-level `qq.msg_idx` (this message's own REFIDX)
+and `reply.data["qq.ref_msg_idx"]` (the quoted message's REFIDX). Go stores the former in
+`messages.ref_idx` and, when a reply segment has no `message_id`, resolves `reply_to` by looking
+up `(workspace_id, group_id, ref_idx)`. REFIDX never replaces `message_id`: the passive-reply
+window is keyed by the platform `msg_id`.
+
 ## Web Management Panel (`web/server/` + `web/frontend/`)
 
 Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go:embed`.

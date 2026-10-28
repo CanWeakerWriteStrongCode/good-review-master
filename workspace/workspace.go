@@ -86,6 +86,9 @@ type Workspace struct {
 
 	identityMu sync.RWMutex
 	identities map[string]string // group_id -> 本群学到的 self.user_id（避免每条消息都写库）
+
+	groupMu sync.RWMutex
+	groups  map[string]string // group_id -> 群名；空串表示已建档但平台没给名字
 }
 
 // View 是面板用的只读视图（不含 Router/Prompt 等运行时对象）。
@@ -246,6 +249,7 @@ func (m *Manager) load(id, platform, account string) (*Workspace, error) {
 		State:      st,
 		ob:         m.obClient.For(id),
 		identities: make(map[string]string),
+		groups:     make(map[string]string),
 	}
 	ws.members = newDirectory(ws.ob, st)
 	ws.appCfg = func() *config.Config { return ws.snapshot(m.appCfg()) }
@@ -303,6 +307,15 @@ func (w *Workspace) restore(cfg *config.Config) {
 		logutil.Warn("读取成员名失败", "workspace", w.ID, "err", err)
 	} else {
 		w.members.seed(members)
+	}
+	if groups, err := w.State.LoadGroups(); err != nil {
+		logutil.Warn("读取群档案失败", "workspace", w.ID, "err", err)
+	} else {
+		w.groupMu.Lock()
+		for groupID, name := range groups {
+			w.groups[groupID] = name
+		}
+		w.groupMu.Unlock()
 	}
 	if personas, err := w.State.LoadGroupPersonas(); err != nil {
 		logutil.Warn("读取群人格失败", "workspace", w.ID, "err", err)
@@ -390,6 +403,78 @@ func (w *Workspace) DisplayNameFor(groupID string) func(userID string) string {
 	return func(userID string) string { return w.members.name(groupID, userID) }
 }
 
+// EnsureGroup 保证这个群在 state.db 里有档案；每个群只写一次。
+//
+// 群名在 QQ 官方通常拿不到，所以先落一条空名记录，再异步向实现端补；
+// 补到后更新同一行。失败不影响消息处理。
+func (w *Workspace) EnsureGroup(groupID string) {
+	if groupID == "" {
+		return
+	}
+	w.groupMu.Lock()
+	if _, known := w.groups[groupID]; known {
+		w.groupMu.Unlock()
+		return
+	}
+	w.groups[groupID] = ""
+	w.groupMu.Unlock()
+
+	if w.State != nil {
+		w.State.SaveGroup(groupID, "")
+	}
+	w.lookupGroupName(groupID)
+}
+
+func (w *Workspace) lookupGroupName(groupID string) {
+	if w.ob == nil || w.ob.Base() == "" {
+		return
+	}
+	go func() {
+		info, err := w.ob.GetGroupInfo(groupID)
+		if err != nil {
+			logutil.Debug("查询群信息失败（群名暂缺）", "workspace", w.ID, "group", groupID, "err", err)
+			return
+		}
+		name := strings.TrimSpace(info.GroupName)
+		// 实现端拿不到名字时会把 group_id 原样返回，那不是群名。
+		if name == "" || name == groupID {
+			return
+		}
+		w.groupMu.Lock()
+		w.groups[groupID] = name
+		w.groupMu.Unlock()
+		if w.State != nil {
+			w.State.SaveGroup(groupID, name)
+		}
+	}()
+}
+
+// GroupName 返回已记录的群名；没有名字（或还没查到）返回空串。
+func (w *Workspace) GroupName(groupID string) string {
+	w.groupMu.RLock()
+	defer w.groupMu.RUnlock()
+	return w.groups[groupID]
+}
+
+// ObserveMember 记录消息里出现过的成员（发送者或 @ 对象）。
+//
+// QQ 官方只给 openid、不给昵称，行里的 name 可能一直为空；但它仍然是
+// “已收录的人”，不能因为没有名字就丢掉。
+func (w *Workspace) ObserveMember(groupID, userID string) {
+	if !w.members.observe(groupID, userID) {
+		return
+	}
+	if w.State != nil {
+		w.State.SaveMember(groupID, userID, "", "")
+	}
+}
+
+// MemberCount 返回已收录的群成员数（说过话或被 @ 过的人）。
+// QQ 官方没有成员列表接口，所以这是观察到的数量，不是群真实人数。
+func (w *Workspace) MemberCount(groupID string) int {
+	return w.members.count(groupID)
+}
+
 // AllowsGroup 判断群是否在白名单内。
 func (w *Workspace) AllowsGroup(groupID string) bool {
 	for _, g := range w.Snapshot()().AllowGroups {
@@ -470,6 +555,30 @@ func (m *Manager) Views() []View {
 	return views
 }
 
+// GroupName 返回某个工作空间下已记录的群名（空串表示平台没给）。
+func (m *Manager) GroupName(workspaceID, groupID string) string {
+	ws := m.get(workspaceID)
+	if ws == nil {
+		return ""
+	}
+	return ws.GroupName(groupID)
+}
+
+// MemberCount 返回某个工作空间下已收录的群成员数。
+func (m *Manager) MemberCount(workspaceID, groupID string) int {
+	ws := m.get(workspaceID)
+	if ws == nil {
+		return 0
+	}
+	return ws.MemberCount(groupID)
+}
+
+func (m *Manager) get(workspaceID string) *Workspace {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.byID[workspaceID]
+}
+
 // ViewByID 返回单个工作空间视图。
 func (m *Manager) ViewByID(id string) (View, bool) {
 	for _, view := range m.Views() {
@@ -538,8 +647,11 @@ func (m *Manager) LogSummary() {
 
 // directory 群成员显示名目录：内存优先，未命中时异步查 get_group_member_info。
 type directory struct {
-	mu      sync.RWMutex
-	names   map[string]map[string]string
+	mu    sync.RWMutex
+	names map[string]map[string]string
+	// seen 记录“出现过”的成员（有名字或只有 ID），用于统计已收录人数；
+	// names 只负责展示名，两者不能混用。
+	seen    map[string]map[string]struct{}
 	pending map[string]map[string]struct{}
 	ob      *onebot.Client
 	state   *state.Scope
@@ -548,6 +660,7 @@ type directory struct {
 func newDirectory(ob *onebot.Client, st *state.Scope) *directory {
 	return &directory{
 		names:   make(map[string]map[string]string),
+		seen:    make(map[string]map[string]struct{}),
 		pending: make(map[string]map[string]struct{}),
 		ob:      ob,
 		state:   st,
@@ -564,10 +677,38 @@ func (d *directory) seed(all map[string]map[string]string) {
 		if d.names[group] == nil {
 			d.names[group] = make(map[string]string, len(members))
 		}
+		if d.seen[group] == nil {
+			d.seen[group] = make(map[string]struct{}, len(members))
+		}
 		for userID, name := range members {
 			d.names[group][userID] = name
+			d.seen[group][userID] = struct{}{}
 		}
 	}
+}
+
+// observe 记录一个出现过的成员，返回是否首次见到。
+func (d *directory) observe(groupID, userID string) bool {
+	if groupID == "" || userID == "" {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen[groupID] == nil {
+		d.seen[groupID] = make(map[string]struct{})
+	}
+	if _, ok := d.seen[groupID][userID]; ok {
+		return false
+	}
+	d.seen[groupID][userID] = struct{}{}
+	return true
+}
+
+// count 返回该群已收录的成员数（说过话或被 @ 过的人，不要求有名字）。
+func (d *directory) count(groupID string) int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return len(d.seen[groupID])
 }
 
 func (d *directory) name(groupID, userID string) string {
@@ -617,7 +758,11 @@ func (d *directory) fetchAsync(groupID, userID string) {
 		if d.names[groupID] == nil {
 			d.names[groupID] = make(map[string]string)
 		}
+		if d.seen[groupID] == nil {
+			d.seen[groupID] = make(map[string]struct{})
+		}
 		d.names[groupID][userID] = name
+		d.seen[groupID][userID] = struct{}{}
 		d.mu.Unlock()
 		if d.state != nil {
 			d.state.SaveMember(groupID, userID, info.UserName, info.UserDisplayName)

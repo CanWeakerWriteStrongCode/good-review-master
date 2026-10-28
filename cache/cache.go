@@ -20,6 +20,7 @@ type Message struct {
 	Content   string   `json:"content"`
 	Images    []string `json:"images,omitempty"`   // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
 	ReplyToID string   `json:"quote_id,omitempty"` // 本条引用的消息 message_id；空=没有引用
+	RefIdx    string   `json:"ref_idx,omitempty"`  // 平台侧引用索引（QQ 官方 REFIDX），用于反查被引消息
 	Time      int64    `json:"time"`
 }
 
