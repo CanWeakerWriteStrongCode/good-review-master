@@ -1,0 +1,42 @@
+{
+  "go_event_url": {
+    "description": "Go 侧 IM 事件入口地址（对应 runtime.im_listen_addr）",
+    "type": "string",
+    "default": "http://127.0.0.1:18090/im/event"
+  },
+  "token": {
+    "description": "与 Go 侧共享的 Bearer token（填 config.yaml/secret.yaml 里的 napcat.access_token）",
+    "type": "string",
+    "default": ""
+  },
+  "platform_label": {
+    "description": "写入事件 platform 字段的标签；留空则用 AstrBot 的平台名（qq_official / aiocqhttp）",
+    "type": "string",
+    "default": ""
+  },
+  "action_listen_host": {
+    "description": "动作代理监听地址；非回环地址必须配 token",
+    "type": "string",
+    "default": "127.0.0.1"
+  },
+  "action_listen_port": {
+    "description": "动作代理监听端口；Go 的 napcat.http_api 指向这里",
+    "type": "int",
+    "default": 6199
+  },
+  "forward_self_messages": {
+    "description": "是否把机器人自己发的消息也推给 Go（一般关闭，避免自问自答）",
+    "type": "bool",
+    "default": false
+  },
+  "action_timeout_sec": {
+    "description": "单个 OneBot 动作的超时（秒）",
+    "type": "int",
+    "default": 10
+  },
+  "event_retry": {
+    "description": "事件推送失败时的重试次数",
+    "type": "int",
+    "default": 3
+  }
+}

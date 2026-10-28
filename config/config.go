@@ -22,7 +22,9 @@ type Config struct {
 	LLMSendCount      int // 每次发送 LLM 的消息条数（重置窗口）
 	LLMTimeout        time.Duration
 	MaxMsgRune        int
-	PollInterval      time.Duration
+	PollInterval      time.Duration // 旧轮询间隔（保留兼容，sidecar 推送模型不再使用）
+	IMListenAddr      string        // AstrBot sidecar 推送事件的监听地址
+	BackfillOnStart   bool          // 启动时是否回填最近历史（QQ 官方机器人无历史接口，应关）
 	WebPort           int           // Web 管理面板端口，<=0 禁用
 	WebUsername       string        // Web 管理面板登录账号
 	WebPassword       string        // Web 管理面板登录密码

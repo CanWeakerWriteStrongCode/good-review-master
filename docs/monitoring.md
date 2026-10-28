@@ -31,9 +31,9 @@ curl -s http://127.0.0.1:9100/metrics | grep '^good\|^llm\|^http\|^poll\|^mcp\|^
 | 缓存窗口 | `llm_window_mode_total{mode}` | `extend`（吃缓存命中）/ `reset`，本项目最核心的业务指标 |
 | | `llm_cache_hit_total` | 累计命中的前缀 token |
 | | `cache_messages{group}` | 各群环形缓存条数（只在白名单群上产生时间线，基数有界） |
-| 轮询 | `poll_cycle_duration_seconds` | 一轮拉取全部群的耗时 |
-| | `poll_lag_seconds` | 最新消息从发出到被处理的延迟 |
-| | `poll_fetch_errors_total{group}` | 拉取失败 |
+| IM 入站 | `im_events_total{result}` | 事件去向：accepted / ignored / unauthorized / bad_request / queue_full |
+| | `poll_lag_seconds` | 消息从平台发出到被 Go 消费的延迟 |
+| | `poll_fetch_errors_total{group}` | 启动历史回填失败（sidecar 模式下 `poll_cycle_duration_seconds` 不再更新） |
 | MCP | `mcp_tool_calls_total{server,tool,result}` | 工具调用 |
 | | `mcp_sessions_up{server}` | 会话在线（1/0） |
 | 协程池 | `pool_tasks_running` / `pool_queue_len` / `pool_submit_rejected_total` | 被拒绝 = 有锐评没能发出去 |
@@ -89,7 +89,7 @@ POST /api/debug/trigger        （HTTP 入口；span 名在路由匹配完成后
         └── mcp.tools/call     （工具调用，带 server / tool）
 ```
 
-轮询触发的链路没有 `http.request` 这一层，从 `router.route` 起头。
+IM 推送触发的链路从 `router.route` 起头：事件先入队、由消费循环异步处理，入站 HTTP 请求的 span 不会自动带到后面的链路。
 
 ### 关闭时也有收益：日志关联
 

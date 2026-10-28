@@ -6,7 +6,7 @@
 
 <h1 align="center">Not Good Review Master</h1>
 
-<p align="center">A QQ group chatbot powered by NapCatQQ + LLM — @mention the bot to get AI-generated sharp reviews of group chat, ask questions, or dynamically add custom commands.</p>
+<p align="center">A QQ group chatbot powered by AstrBot (NapCat / official QQ bot) + LLM — @mention the bot to get AI-generated sharp reviews of group chat, ask questions, or dynamically add custom commands.</p>
 
 ## Features
 
@@ -15,7 +15,7 @@
 - **Pluggable commands**: Add new keyword variants in `prompt_system.yaml` — no code changes needed
 - **In-chat dynamic commands**: Add or delete custom keywords directly from the group chat via internal commands
 - **Whitelist**: Only responds in configured group IDs
-- **Local network only**: Go backend polls NapCatQQ's local HTTP API — no public IP required
+- **Local network only**: the AstrBot bridge pushes events to Go over local HTTP — no public IP required
 - **Single binary deployment**: Compile to one executable, drop it on a server, and run
 - **Persona system**: each command can carry a 5-dimension persona (identity/personality/relationship/emotion/system prompt) — replies have character but stay bounded
 - **Direct Q&A on unknown commands**: when @mentioned but no keyword matches, the message is sent straight to the LLM for a plain reply (no persona)
@@ -24,13 +24,13 @@
 ## Architecture
 
 ```
-QQ ←→ NapCatQQ (local HTTP API) ←→ Go Bot (polling) ←→ LLM API (OpenAI-compatible)
+QQ ←→ NapCatQQ ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go Bot ←→ LLM API
 ```
 
 ```
-┌──────────┐     HTTP      ┌────────────┐     HTTP      ┌──────────┐
-│ QQ Group │ ←──────────→ │  NapCatQQ   │ ←──────────→ │  Go Bot  │
-└──────────┘               └────────────┘               └─────┬────┘
+┌──────────┐  OneBot 11  ┌────────────────┐  events/actions  ┌──────────────────┐
+│ QQ Group │ ←─────────→ │ AstrBot + bridge│ ←──────────────→ │  Go Bot          │
+└──────────┘   (WS/HTTP)  └────────────────┘                  └────────┬─────────┘
                                                               │
                                                               │ OpenAI API
                                                               ▼
@@ -43,8 +43,8 @@ QQ ←→ NapCatQQ (local HTTP API) ←→ Go Bot (polling) ←→ LLM API (Open
 ### Message Flow
 
 ```
-Polling loop (bot/polling.go)
-  → Fetch history from NapCat (onebot, resty)
+IM ingress (im/server.go) → queue (bot/ingest.go)
+  → Backfill history through the bridge at startup (onebot, resty)
   → Dedup via O(1) msgID set
   → ProcessMessage (bot/handler.go)
      → Whitelist check
@@ -59,7 +59,8 @@ Polling loop (bot/polling.go)
 
 ### Prerequisites
 
-- [NapCatQQ](https://github.com/NapNeko/NapCatQQ) installed and logged in (HTTP service enabled)
+- Either NapCatQQ (OneBot 11) logged in, or an official QQ bot (AppID / AppSecret)
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) with this repo's bridge plugin, `aiocqhttp` or `qq_official` adapter connected
 - An OpenAI-compatible LLM API key (DeepSeek, Doubao, Tongyi Qianwen, etc.)
 
 ### Run from source
@@ -114,10 +115,10 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 
 | Key | Description | Example |
 |-----|-------------|---------|
-| `napcat.http_api` | NapCatQQ HTTP API URL | `http://127.0.0.1:3000` |
-| `napcat.access_token` | NapCatQQ access token (set in WebUI) | `""` |
+| `napcat.http_api` | OneBot action proxy URL (bridge plugin, default 6199) | `http://127.0.0.1:6199` |
+| `napcat.access_token` | Shared token with the bridge plugin | `""` |
 | `bot.qq` | Bot's QQ number | `123456` |
-| `bot.allow_groups` | Allowed group IDs (comma-separated) | `123456,789012` |
+| `bot.allow_groups` | Allowed groups (QQ group IDs for NapCat, `group_openid` for the official bot) | `123456,789012` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |
 | `llm.api_key` | LLM API key (**move to `secret.yaml`**) | `sk-xxx` |
 | `llm.api_base` | LLM API base URL | `https://api.deepseek.com` |
@@ -131,7 +132,9 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `runtime.max_cache_msg` | Max ring-buffer messages (≈31×llm_send_count) | `6200` |
 | `runtime.llm_timeout_sec` | LLM timeout (seconds) | `20` |
 | `runtime.max_msg_rune` | Max characters per message | `500` |
-| `runtime.poll_interval_sec` | Poll interval (seconds) | `3` |
+| `runtime.poll_interval_sec` | Legacy poll interval (unused in sidecar mode) | `3` |
+| `runtime.im_listen_addr` | Ingress address for AstrBot-pushed events | `127.0.0.1:18090` |
+| `runtime.backfill_on_start` | Backfill recent history at startup; set `false` for the official QQ bot (no history API) | `true` |
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
 | `runtime.web_password` | Web panel login password (required; **move to `secret.yaml`**) | `"123456"` |
@@ -316,11 +319,13 @@ good-review-master/
 ├── logutil/
 │   └── logger.go             # Logging (zap + lumberjack, 20MB rotation, 30-day retention)
 ├── onebot/
-│   ├── client.go             # NapCatQQ HTTP API client (resty, auto-marshal + retry)
+│   ├── client.go             # OneBot action client (resty, points at the AstrBot bridge)
 │   ├── cqimage.go            # CQ-code parsing (image extraction, [图片] placeholder, truncation)
 │   └── types.go              # API data types
+├── im/
+│   └── server.go             # AstrBot event ingress (auth, decode, enqueue)
 ├── bot/
-│   ├── polling.go            # HTTP poll loop + history fetching (context-aware)
+│   ├── ingest.go             # Event consumer + startup history backfill (context-aware)
 │   └── handler.go            # Message processing: whitelist → @detection → routing
 ├── router/                   # Command system: prefix-trie matching + dispatch (was cmd/, package renamed)
 │   ├── command.go            # Router + prefix trie matching + unmatched fallback + safe goroutine

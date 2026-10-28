@@ -6,7 +6,7 @@
 
 <h1 id="中文" align="center">🔪 不是好评大师</h1>
 
-<p align="center">QQ 群聊锐评机器人 —— 基于 NapCatQQ + 大模型，@一下即可锐评群友、问答互动</p>
+<p align="center">QQ 群聊锐评机器人 —— 基于 AstrBot 桥接（NapCat / QQ 官方机器人）+ 大模型，@一下即可锐评群友、问答互动</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go" alt="Go version">
@@ -34,7 +34,7 @@
 - **插件式指令扩展**：在 `prompt_system.yaml` 里加配置即可新增同类型指令变体，无需改代码
 - **群内动态添加指令**：在群里 @机器人即可动态增删自定义指令，无需重启
 - **白名单机制**：只响应指定群号，安全可控
-- **纯内网通信**：Go 后端通过 HTTP 轮询 NapCatQQ 本地 API，无需公网 IP
+- **纯内网通信**：AstrBot 桥接插件通过本地 HTTP 推送事件，无需公网 IP
 - **单二进制部署**：编译为单个可执行文件，丢到服务器上就能跑
 - **人格系统**：每条指令可配 5 维人格（身份/性格/关系/情绪/系统指令），回复有性格但有边界
 - **@机器人直接问答**：@机器人但没匹配到指令时，直接把消息发给大模型回答（不带人格）
@@ -43,27 +43,33 @@
 ## 🏗 架构
 
 ```
-QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (OpenAI 兼容)
+QQ ←→ NapCatQQ ←→ AstrBot（sidecar，只做 IM 网关）←→ Go Bot ←→ LLM API
 ```
 
 ```
-┌──────────┐     HTTP      ┌────────────┐     HTTP      ┌──────────┐
-│   QQ 群   │ ←──────────→ │  NapCatQQ   │ ←──────────→ │  Go Bot  │
-└──────────┘               └────────────┘               └─────┬────┘
-                                                              │
-                                                              │ OpenAI API
-                                                              ▼
-                                                      ┌──────────────┐
-                                                      │  LLM 大模型   │
-                                                      │ (DeepSeek等)  │
-                                                      └──────────────┘
+┌──────────┐  OneBot 11  ┌───────────┐  OneBot 11   ┌──────────────────┐
+│   QQ 群   │ ←─────────→ │ AstrBot   │ ←──────────→ │  Go Bot          │
+└──────────┘    (WS/HTTP) │ + 桥接插件 │  事件/动作    │ (router/LLM/缓存) │
+                          └───────────┘              └────────┬─────────┘
+                                                             │ OpenAI API
+                                                             ▼
+                                                     ┌──────────────┐
+                                                     │  LLM 大模型   │
+                                                     │ (DeepSeek等)  │
+                                                     └──────────────┘
 ```
+
+AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 11 事件推给 Go；Go 的
+`send_group_msg` / `get_group_msg_history` 等动作再由插件透传回平台。部署方式见
+[sidecar/README.md](sidecar/README.md)。
 
 ## 🚀 快速开始
 
 ### 前置条件
 
-- [NapCatQQ](https://github.com/NapNeko/NapCatQQ) 已安装并登录（HTTP 服务已开启）
+- 二选一：NapCatQQ（OneBot 11）已登录；或 QQ 官方机器人（AppID / AppSecret）
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) 已安装，并装有本仓库的
+  [桥接插件](sidecar/astrbot_plugin_onebot_bridge)（`aiocqhttp` 或 `qq_official` 适配器已连上平台）
 - 一个 OpenAI 兼容的大模型 API Key（DeepSeek、豆包、通义千问等均可）
 
 ### 代码启动
@@ -111,10 +117,10 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 
 | 配置项                         | 说明                              | 示例值                        |
 |-----------------------------|---------------------------------|----------------------------|
-| `napcat.http_api`           | NapCatQQ HTTP API 地址            | `http://127.0.0.1:3000`    |
-| `napcat.access_token`       | NapCatQQ 访问令牌（WebUI 中设置）        | `""`                       |
+| `napcat.http_api`           | OneBot 动作代理地址（AstrBot 插件默认 6199） | `http://127.0.0.1:6199`    |
+| `napcat.access_token`       | 与 AstrBot 插件共享的 token            | `""`                       |
 | `bot.qq`                    | 机器人 QQ 号                        | `123456`                   |
-| `bot.allow_groups`          | 允许响应的群号（逗号分隔）                   | `123456,789012`            |
+| `bot.allow_groups`          | 允许响应的群（NapCat 填群号；官方机器人填 group_openid） | `123456,789012`            |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |
 | `llm.api_key`               | 大模型 API Key（**建议移到 `secret.yaml`**） | `sk-xxx`                   |
 | `llm.api_base`              | 大模型接口地址                         | `https://api.deepseek.com` |
@@ -128,7 +134,9 @@ QQ ←→ NapCatQQ (本地 HTTP API) ←→ Go Bot (轮询) ←→ LLM API (Open
 | `runtime.max_cache_msg`     | 环形缓冲条数上限（建议 ≈31×llm_send_count） | `6200`                     |
 | `runtime.llm_timeout_sec`   | 大模型超时（秒）                        | `20`                       |
 | `runtime.max_msg_rune`      | 单条消息最大字符数                       | `500`                      |
-| `runtime.poll_interval_sec` | 轮询间隔（秒）                         | `3`                        |
+| `runtime.poll_interval_sec` | 旧轮询间隔（sidecar 模式已不使用，保留兼容）      | `3`                        |
+| `runtime.im_listen_addr`    | AstrBot 推送事件的监听地址               | `127.0.0.1:18090`           |
+| `runtime.backfill_on_start` | 启动时回填历史；QQ 官方机器人无历史接口时设 `false` | `true`                     |
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）              | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                     | `admin`                    |
 | `runtime.web_password`      | Web 面板登录密码（必填；**建议移到 `secret.yaml`**） | `"123456"`                 |
@@ -235,11 +243,13 @@ good-review-master/
 ├── logutil/
 │   └── logger.go             # 日志（zap + lumberjack，20MB 切割，30 天保留）
 ├── onebot/
-│   ├── client.go             # NapCatQQ HTTP API 客户端（resty，自动序列化+重试）
+│   ├── client.go             # OneBot 动作客户端（resty，指向 AstrBot 桥接代理）
 │   ├── cqimage.go            # CQ 码解析（图片提取、[图片]占位、入库截断）
 │   └── types.go              # API 数据类型定义
+├── im/
+│   └── server.go             # AstrBot 事件入口（鉴权、解码、入队）
 ├── bot/
-│   ├── polling.go            # 轮询拉取消息 + 去重（context 支持优雅退出）
+│   ├── ingest.go             # 事件消费循环 + 启动历史回填（context 支持优雅退出）
 │   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
 ├── router/                   # 指令系统：前缀树匹配 + 分发（原 cmd/，包名改为 router）
 │   ├── command.go            # Router + 前缀树(trie)路由匹配 + 未匹配兜底 + 安全 goroutine
@@ -282,8 +292,8 @@ version → (无内部依赖)
 ### 消息处理流程
 
 ```
-Polling loop (bot/polling.go)
-  → 从 NapCat 拉取历史消息 (onebot, resty)
+IM ingress (im/server.go) → 队列 (bot/ingest.go)
+  → 启动时经桥接回填历史消息 (onebot, resty)
   → 去重：O(1) msgID 集合
   → ProcessMessage (bot/handler.go)
      → 白名单检查
@@ -378,14 +388,15 @@ cd tests/e2e && pnpm test
 
 - **协程池**（`pool/`）：固定 worker（默认 `runtime.NumCPU()*2`）+ 有界任务队列；`Submit` 非阻塞，队列满返回 `false` 由上层处理背压；`Shutdown` 优雅排空。纯标准库，无内部依赖。
 - **安全 goroutine 管理器**（`async/`）：`async.Group` 封装协程池，**context 自动继承**（Ctrl+C 可取消进行中的 LLM 调用）、**panic recover** 防止单任务 panic 拖垮进程；`Wait()` 先取消再排空。
-- **单写者架构**：轮询是唯一写缓存的 goroutine，配合 `RWMutex`，写侧几乎无竞争。
+- **单写者架构**：事件消费循环是唯一写缓存的 goroutine，配合 `RWMutex`，写侧几乎无竞争。
 
 ### 优雅停机
 
 `app.New` 用 `signal.NotifyContext` 捕获 SIGINT/SIGTERM，三层消费同一个生命周期 ctx（`app.App.ctx`）：
 
 ```
-信号 → ctx 取消 → 轮询循环 select ctx.Done() 正常退出
+信号 → ctx 取消 → 事件消费循环 select ctx.Done() 正常退出
+                → IM 入口 Shutdown（停止接收新事件）
                 → webSrv.Shutdown(ctx)（10s 超时排空请求）
                 → router.Wait() 等所有 in-flight goroutine（LLM 调用可被取消）
 ```

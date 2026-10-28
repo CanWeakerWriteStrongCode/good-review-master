@@ -7,6 +7,7 @@ import (
 	"good-review-master/bot"
 	"good-review-master/config"
 	"good-review-master/config/store"
+	"good-review-master/im"
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/mcpclient"
@@ -87,10 +88,19 @@ func providePromptConfig(paths promptPaths) (*config.PromptConfig, error) {
 	return config.LoadPromptConfig(paths.System, paths.Custom)
 }
 
-// provideOneBot 建 NapCat HTTP 客户端。
+// provideOneBot 建 OneBot 客户端。
+// sidecar 模式下它指向 AstrBot 桥接插件的动作代理（仍然是 OneBot 11 语义），
+// 收消息走 im 包，发消息/查历史仍然走这里。
 // onebot.NewClient 收两个 string，Wire 分不清哪个是地址哪个是 token，所以包一层。
 func provideOneBot(loaded loadedConfig) *onebot.Client {
 	return onebot.NewClient(loaded.NapCatHTTPAPI, loaded.NapCatAccessToken)
+}
+
+// provideIMServer 建 AstrBot sidecar 的入站入口。
+// 监听地址与 token 在启动时固化（与 Web 端口一致），配置热更新不会换端口。
+func provideIMServer(cfg config.Snapshot, consumer im.EventConsumer) *im.Server {
+	current := cfg()
+	return im.NewServer(current.IMListenAddr, current.NapCatAccessToken, consumer)
 }
 
 // provideBotNickname 取机器人昵称。
@@ -228,6 +238,7 @@ func provideApp(
 	builtinMCP *mcpserver.Server,
 	messageRouter *router.Router,
 	messageBot *bot.Bot,
+	imServer *im.Server,
 	web *webserver.Server,
 	metrics *telemetry.MetricsServer,
 	configInformer *store.Informer[config.Config],
@@ -242,6 +253,7 @@ func provideApp(
 		BuiltinMCP:     builtinMCP,
 		Router:         messageRouter,
 		Bot:            messageBot,
+		IM:             imServer,
 		Web:            web,
 		Metrics:        metrics,
 		configInformer: configInformer,

@@ -15,7 +15,14 @@ type Event struct {
 	Card        string          `json:"card"`
 	Message     json.RawMessage `json:"message"`
 	RawMessage  string          `json:"raw_message"`
-	MessageID   int64
+	MessageID   int64           `json:"message_id"`
+	Time        int64           `json:"time"`
+	SelfID      string          `json:"self_id"`
+	Platform    string          `json:"platform"`
+	// Mentioned 由桥接层给出"这条消息是否在叫机器人"的判断。
+	// QQ 官方机器人的 @ 语义和 OneBot 的 CQ 码不同（group_openid/mentions），
+	// 让适配器把判断结果带进来，业务层就不必认识各平台的 @ 表示。
+	Mentioned bool `json:"mentioned"`
 }
 
 // HistoryMsg 群消息历史中的单条消息

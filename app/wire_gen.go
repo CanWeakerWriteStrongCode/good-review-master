@@ -58,6 +58,7 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 	manager := mcpclient.New(mcpConf, context)
 	routerRouter := router.NewRouter(snapshot, promptConfig, llmClient, client, manager, context)
 	botBot := bot.NewBot(snapshot, client, routerRouter)
+	imServer := provideIMServer(snapshot, botBot)
 	serverServer := provideWebServer(snapshot, client)
 	string2 := config.MetricsAddr
 	registry := telemetry.NewRegistry()
@@ -65,6 +66,6 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 	sources := inputs.Sources
 	informer := provideConfigInformer(sources, store, appBotNickname, appBuiltinImageAddr)
 	observer := providePromptObserver(appPromptPaths, promptConfig, routerRouter)
-	app := provideApp(snapshot, promptConfig, llmClient, client, manager, server, routerRouter, botBot, serverServer, metricsServer, informer, observer)
+	app := provideApp(snapshot, promptConfig, llmClient, client, manager, server, routerRouter, botBot, imServer, serverServer, metricsServer, informer, observer)
 	return app, nil
 }

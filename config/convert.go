@@ -36,6 +36,8 @@ func assemble(sections *sections) *Config {
 		LLMTimeout:        time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
 		MaxMsgRune:        sections.Runtime.MaxMsgRune,
 		PollInterval:      time.Duration(sections.Runtime.PollIntervalSec) * time.Second,
+		IMListenAddr:      sections.Runtime.IMListenAddr,
+		BackfillOnStart:   sections.Runtime.BackfillOnStart == nil || *sections.Runtime.BackfillOnStart,
 		WebPort:           sections.Runtime.WebPort,
 		WebUsername:       sections.Runtime.WebUsername,
 		WebPassword:       webPassword,

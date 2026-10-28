@@ -12,6 +12,7 @@ import (
 	"good-review-master/bot"
 	"good-review-master/config"
 	"good-review-master/config/store"
+	"good-review-master/im"
 	"good-review-master/internal/testutil"
 	"good-review-master/llm"
 	"good-review-master/logutil"
@@ -35,6 +36,7 @@ type App struct {
 	BuiltinMCP *mcpserver.Server // 未启用看图（image_max<=0）或启动失败时为 nil
 	Router     *router.Router
 	Bot        *bot.Bot
+	IM         *im.Server               // AstrBot sidecar 的事件入口
 	Web        *webserver.Server        // web_port<=0 时为 nil
 	Metrics    *telemetry.MetricsServer // metrics_addr=off 时为 nil
 
@@ -58,10 +60,20 @@ type App struct {
 // Ctx 返回应用生命周期 context。
 func (a *App) Ctx() context.Context { return a.ctx }
 
-// Start 启动消息轮询、Web 管理面板与配置监听，不阻塞。
+// Start 启动消息消费、IM 事件入口、Web 管理面板与配置监听，不阻塞。
 // MCP 建连已在 New 中完成（内嵌看图的地址必须参与装配），故这里不再启动它。
 func (a *App) Start() {
-	go a.Bot.RunPollingLoop(a.ctx)
+	// 消费循环先起：它会做历史回填，回填期间到达的事件在队列里等着，
+	// 保证缓存里的消息顺序仍是"先旧后新"。
+	go a.Bot.Run(a.ctx)
+
+	// IM 入口与消费循环同时起：AstrBot 可能在回填期间就推事件，
+	// 此时 Bot 的入站队列负责缓冲，不丢消息。
+	go func() {
+		if err := a.IM.Start(); err != nil {
+			logutil.Error("IM 事件入口异常退出", "err", err)
+		}
+	}()
 
 	// 配置监听的 goroutine 必须挂在这个 ctx 上：它不退出就会拖住优雅关闭
 	go func() {
@@ -112,10 +124,10 @@ func (a *App) Run() {
 }
 
 // Shutdown 按序优雅关闭，幂等（重复调用只执行一次）。
-// 顺序与信号触发时一致：取消 ctx → Web → 路由 goroutine → MCP → 内嵌看图 MCP。
+// 顺序与信号触发时一致：取消 ctx → Web → 指标 → IM 入口 → 路由 goroutine → MCP → 内嵌看图 MCP。
 func (a *App) Shutdown(ctx context.Context) {
 	a.closeOnce.Do(func() {
-		// 先取消 ctx：停轮询、取消在途 LLM 调用，并释放信号监听
+		// 先取消 ctx：停消费循环、取消在途 LLM 调用，并释放信号监听
 		a.stop()
 
 		if a.Web != nil {
@@ -128,6 +140,12 @@ func (a *App) Shutdown(ctx context.Context) {
 			if err := a.Metrics.Shutdown(ctx); err != nil {
 				logutil.Warn("指标端点关闭失败", "err", err)
 			}
+		}
+
+		// IM 入口在等待路由 goroutine 之前关：先停止接收新事件，
+		// 再等在途的锐评跑完，关闭语义才完整。
+		if err := a.IM.Shutdown(ctx); err != nil {
+			logutil.Warn("IM 事件入口关闭失败", "err", err)
 		}
 
 		if err := a.Router.Wait(); err != nil {

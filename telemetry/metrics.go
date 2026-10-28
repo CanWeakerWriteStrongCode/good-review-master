@@ -31,6 +31,16 @@ const (
 	ReasonCircuitOpen = "circuit_open"
 )
 
+// IM 入站事件的 result 取值。与上面的 Result* 分开命名：
+// 那组描述"出站调用成功与否"，这组描述"这条事件去了哪里"。
+const (
+	IMEventAccepted     = "accepted"
+	IMEventIgnored      = "ignored"
+	IMEventUnauthorized = "unauthorized"
+	IMEventBadRequest   = "bad_request"
+	IMEventQueueFull    = "queue_full"
+)
+
 var (
 	// ---------------- HTTP ----------------
 
@@ -139,6 +149,14 @@ var (
 		Help: "拉取群消息失败次数，按 group 分组",
 	}, []string{"group"})
 
+	// IMEventsTotal AstrBot sidecar 推送到 IM 入口的事件数，按去向分组。
+	// accepted 与 ignored 的差值能直接看出"桥接层推了不该推的东西"，
+	// queue_full 持续增长说明下游处理不过来（或 Go 侧处理被阻塞）。
+	IMEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "im_events_total",
+		Help: "IM 入站事件数，按 result(accepted/ignored/unauthorized/bad_request/queue_full) 分组",
+	}, []string{"result"})
+
 	// ---------------- MCP ----------------
 
 	// MCPToolCallsTotal MCP 工具调用次数。
@@ -220,6 +238,8 @@ func allCollectors() []prometheus.Collector {
 		PollCycleDurationSeconds,
 		PollLagSeconds,
 		PollFetchErrorsTotal,
+
+		IMEventsTotal,
 
 		MCPToolCallsTotal,
 		MCPSessionsUp,

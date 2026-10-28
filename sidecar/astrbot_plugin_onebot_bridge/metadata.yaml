@@ -1,0 +1,6 @@
+name: astrbot_plugin_onebot_bridge
+display_name: OneBot 11 桥接
+desc: 把 AstrBot 收到的消息以 OneBot 11 事件推送到外部 Go 服务，并把 OneBot 动作请求代理回平台
+version: v1.1.0
+author: good-review
+astrbot_version: ">=4.0,<5"

@@ -6,6 +6,7 @@ package app
 import (
 	"good-review-master/bot"
 	"good-review-master/config"
+	"good-review-master/im"
 	"good-review-master/mcpclient"
 	"good-review-master/router"
 	"good-review-master/telemetry"
@@ -62,6 +63,9 @@ func initializeApp(inputs injectorInputs) (*App, error) {
 		wire.Bind(new(router.MCPProvider), new(*mcpclient.Manager)),
 		router.NewRouter,
 		bot.NewBot,
+		// IM 入站服务只依赖一个"能接收事件"的窄接口，唯一的实现是 *bot.Bot。
+		wire.Bind(new(im.EventConsumer), new(*bot.Bot)),
+		provideIMServer,
 		provideWebServer,
 
 		telemetry.NewRegistry,

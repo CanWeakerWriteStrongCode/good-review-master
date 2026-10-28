@@ -45,7 +45,7 @@ Playwright 作为纯 API 测试运行器（`request` fixture，不启动浏览�
 cd tests/e2e && pnpm test
 ```
 
-- 测试模式：`GOOD_REVIEW_TEST=1` 启动真实二进制 → 用 `FakeLLM` 替代真实大模型、NapCat 指向死地址（`internal/testutil/`），并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger，仅测试模式可达；生产模式下这些路径只会被 SPA fallback 回成页面 HTML）。
+- 测试模式：`GOOD_REVIEW_TEST=1` 启动真实二进制 → 用 `FakeLLM` 替代真实大模型、OneBot 桥接指向死地址（`internal/testutil/`），并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger，仅测试模式可达；生产模式下这些路径只会被 SPA fallback 回成页面 HTML）。
 - 用例覆盖：登录鉴权、群/消息数据、bot 全流程、缓存命中成本（扩展 vs 重置窗口）。
 - 详情见 `docs/testing.md`。
 
@@ -90,7 +90,7 @@ generates no diff at all, so `git status` after generating remains the only dete
 | Library | Purpose |
 | --- | --- |
 | `github.com/sashabaranov/go-openai` | OpenAI-compatible LLM client (typed structs, connection pooling, error propagation) |
-| `github.com/go-resty/resty/v2` | HTTP client for NapCat API (auto-marshal, retry, auth auto-attach) |
+| `github.com/go-resty/resty/v2` | HTTP client for the OneBot action API (AstrBot bridge) (auto-marshal, retry, auth auto-attach) |
 | `github.com/gin-gonic/gin` | HTTP framework for web management panel (routing, middleware, JSON binding) |
 | `github.com/golang-jwt/jwt/v5` | JWT token signing (HS256) and validation for web auth |
 | `go.uber.org/zap` | Structured logging |
@@ -104,16 +104,17 @@ generates no diff at all, so `git status` after generating remains the only dete
 ## Architecture
 
 ```
-QQ ←→ NapCatQQ (local HTTP API) ←→ Go bot (polling) ←→ LLM API (OpenAI-compatible)
-Browser / MiniProgram ←→ Gin web server (:web_port) ←→ OneBot + Cache (read-only)
+QQ ←→ NapCatQQ ←→ AstrBot sidecar (OneBot 11 IM gateway) ←→ Go bot ←→ LLM API (OpenAI-compatible)
+Browser / MiniProgram ←→ Gin web server (:web_port) ←→ IM ingress + Cache (read-only)
 ```
 
 ### Package graph
 
 ```
 main → app, config, logutil, apppath, version
-app → config, config/store, llm, onebot, router, bot, web/server, mcpclient, mcpserver, telemetry, logutil, internal/testutil
+app → config, config/store, llm, onebot, im, router, bot, web/server, mcpclient, mcpserver, telemetry, logutil, internal/testutil
 bot → config, cache, onebot, router, telemetry
+im → logutil, onebot, telemetry
 router → config, cache, llm, onebot, async, telemetry
 web/server → config, logutil, onebot, cache, version, telemetry
 async → logutil, pool
@@ -128,7 +129,7 @@ telemetry → (仅 prometheus / otel，无任何内部依赖)
 apppath → (no internal deps)
 ```
 
-`app` is the composition root (see below); `bot` is the runtime poller; `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the NapCat HTTP client (resty-based) **plus CQ-code parsing** (`cqimage.go`); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK) wrapped in an outbound rate-limit/circuit-breaker decorator; `telemetry` owns every metric and trace; `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`app` is the composition root (see below); `im` is the HTTP ingress for AstrBot-pushed OneBot 11 events; `bot` is the event consumer (queue + dedup + backfill); `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the OneBot 11 **action** client (resty-based, pointed at the AstrBot bridge) **plus CQ-code parsing** (`cqimage.go`); `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK) wrapped in an outbound rate-limit/circuit-breaker decorator; `telemetry` owns every metric and trace; `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
 
 **`telemetry` is a deliberate hole in the "no cross-package imports" rule.** It is a leaf
 (only prometheus + otel), and low-level packages (`pool`, `cache`, `llm`, …) import it directly
@@ -137,12 +138,12 @@ process-wide singletons by nature, and threading an interface through a dozen co
 reach what is effectively `telemetry.PoolQueueLen.Inc()` buys no real decoupling. The trade-off
 is recorded here so it is a decision rather than an accident — and so the next person knows that
 `cache → (no internal deps)` still holds **because** the cache gauge is updated from
-`bot/polling.go` (per group, per cycle), not from inside `cache.Add`, which must stay zero-alloc.
+`bot/ingest.go` (per group, per batch), not from inside `cache.Add`, which must stay zero-alloc.
 
 Two structural conventions behind that layout:
 
 - **`main.go` lives in `cmd/good-review/`, not at the repo root.** The root is not a main package; every build/run command targets `./cmd/good-review`. `cmd/` is the conventional Go location for binaries, and it keeps the root readable as a package list.
-- **CQ-code parsing lives in `onebot/`, not `cache/`.** `[CQ:image,...]` is part of the OneBot protocol, so parsing it belongs with the protocol client; `cache/` is storage and must not know about wire formats. Callers are `bot/handler.go` and `bot/polling.go` (both already import `onebot`).
+- **CQ-code parsing lives in `onebot/`, not `cache/`.** `[CQ:image,...]` is part of the OneBot protocol, so parsing it belongs with the protocol client; `cache/` is storage and must not know about wire formats. Callers are `bot/handler.go` and `bot/ingest.go` (both already import `onebot`).
 
 ### Key design: explicit dependency injection, composition root, no init() side effects
 
@@ -174,7 +175,7 @@ Known remaining global state (deliberately kept for now): `cache` package-level 
 
 **Wire's real cost, paid honestly.** Wire resolves by *type*, so two values of the same type are indistinguishable. That is why `loadedConfig`, `botNickname`, `builtinImageAddr` and `promptPaths` exist as distinct types, and why `onebot.NewClient` / `config.LoadPromptConfig` / `provideWebServer` / `provideMetricsServer` are wrappers rather than raw constructors:
 
-- **two stages of the same data** — `loadedConfig` (read from disk) vs `*config.Config` (after `deriveConfig`). They must be different nodes: `deriveConfig` needs the nickname, and the nickname comes from this same config's NapCat address, so one node would be a cycle.
+- **two stages of the same data** — `loadedConfig` (read from disk) vs `*config.Config` (after `deriveConfig`). They must be different nodes: `deriveConfig` needs the nickname, and the nickname comes from this same config's OneBot bridge address, so one node would be a cycle.
 - **two strings** — `onebot.NewClient(httpAPI, accessToken)`.
 - **conditionals** — Wire has no "pick one at runtime", so `web_port<=0` and `metrics_addr: off` are expressed as "the provider returns nil" (`provideWebServer`, `provideMetricsServer`).
 - **multi-return** — Wire accepts a second return value only if it is `error` or `func()`, which is why `provideBuiltinImageMCP` and `provideBuiltinImageAddr` are two providers.
@@ -211,7 +212,7 @@ see the section above); `app/build.go` only does the parts Wire cannot express. 
    → startup banner → `Web.EnableDebug(...)` in test mode.
 5. `Start()` launches both watchers. The prompt observer calls `Prompt.Reload()` then `Router.Rebuild()`.
 
-**`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches the polling goroutine, the config informer, and the web server (all non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code. The informer exits on the same cancelled ctx — if it didn't, it would hold up graceful shutdown.
+**`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches the bot consumer, the IM ingress, the config informer, and the web server (all non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → metrics → `im.Shutdown` → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code. The informer exits on the same cancelled ctx — if it didn't, it would hold up graceful shutdown.
 
 **Readiness during shutdown (invariant):** `webserver.Server.Shutdown` sets the `draining` flag **first**, then optionally waits `shutdown_delay_sec`, and only then stops the listener. The order is essential and was empirically verified: `http.Server.Shutdown` closes the listener *immediately*, so setting the flag and calling it back-to-back leaves `/readyz` no observable window — a probe cannot even open a connection (it gets an RST). The wait is what lets a load balancer notice the 503 and drain. With the default `shutdown_delay_sec: 0` there is no observable, which is correct for a directly-reached panel.
 
@@ -248,7 +249,7 @@ The config layer follows the *shape* of K8s' API machinery (external/internal sp
 
 Why the internal shape is frozen: `mcpclient`, `router` and `web/server` tests construct `config.Config{...}` / `config.MCPConf{...}` literals directly. Consumers still write `cfg.BotQQ`.
 
-**Ordering is load-bearing.** `SetDefaults` must run *before* `Validate`, because a field that is legitimately omitted must be defaulted and then validated — not rejected. Note that several numeric checks are only meaningful post-default, and they are not decoration: `poll_interval_sec` feeds `time.NewTicker` (**panics** if ≤ 0, inside a goroutine, taking the process down), `llm_timeout_sec` feeds `context.WithTimeout` (= 0 means every LLM call fails instantly), `max_cache_msg` feeds `make([]Message, n)` and is then indexed.
+**Ordering is load-bearing.** `SetDefaults` must run *before* `Validate`, because a field that is legitimately omitted must be defaulted and then validated — not rejected. Note that several numeric checks are only meaningful post-default, and they are not decoration: `poll_interval_sec` is a legacy field kept for config compatibility (the sidecar push model no longer uses it), `llm_timeout_sec` feeds `context.WithTimeout` (= 0 means every LLM call fails instantly), `max_cache_msg` feeds `make([]Message, n)` and is then indexed.
 
 **`Load` must stay side-effect free and idempotent.** Scheduled work will call it repeatedly (config reload + resync), so `InitDefaultFiles` (which creates files) must never be called from it. `config/loader_test.go` asserts both properties.
 
@@ -285,8 +286,8 @@ cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X througho
 | Changed | Takes effect |
 | --- | --- |
 | `prompt_system.yaml` / `prompt_custom.yaml` | within ~2s (`PromptConfig.Reload()` **and** `Router.Rebuild()`) |
-| `allow_groups`, thresholds, cost params, model name, `max_msg_rune`, poll interval | on the next read (next tick / next request) |
-| `web_port`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
+| `allow_groups`, thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
+| `web_port`, `im_listen_addr`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
 
 The limiter and breaker are **stateful** (a token bucket, a consecutive-failure counter), so
 re-reading their numbers mid-flight would silently change what the counters mean. That's why
@@ -304,7 +305,7 @@ The restart-required list is not arbitrary: those values are consumed at constru
 
 **On a failed re-read the old snapshot is kept.** Users edit config halfway all the time; continuing with the last working config beats being pushed into a "no config" state. There is a test for this.
 
-**`app.derive` is not optional on the reload path.** The nickname (from NapCat) and the built-in `builtin_image` MCP address are not in any file, so a config re-read from disk *cannot* contain them. Both the initial snapshot and the informer's `list` go through `derive`; skipping it would silently drop them on the next reload (visible only as "@-detection stopped working" or "view_image disappeared"). `app/derive_test.go` pins this, including the copy-before-append so the new snapshot never shares a backing array with the published old one.
+**`app.derive` is not optional on the reload path.** The nickname (from the OneBot bridge) and the built-in `builtin_image` MCP address are not in any file, so a config re-read from disk *cannot* contain them. Both the initial snapshot and the informer's `list` go through `derive`; skipping it would silently drop them on the next reload (visible only as "@-detection stopped working" or "view_image disappeared"). `app/derive_test.go` pins this, including the copy-before-append so the new snapshot never shares a backing array with the published old one.
 
 The initial snapshot is built **after** the nickname is fetched and the built-in MCP is started — that ordering is what makes "snapshots are immutable" true from the very first one, replacing the two runtime mutations the old code did (`cfg.BotNickname = ...` and injecting into `cfg.MCPConfig`).
 
@@ -378,15 +379,20 @@ func trieMatch(root *trieNode, text string) *Route   // O(k), k = len(text)
 ### Message flow
 
 ```
-polling (bot/polling.go) → fetch history (onebot.Client)
-                         → dedup via cache.HasMsgID (O(1) map)
-                         → ProcessMessage (bot/handler.go)
-                            → whitelist check (Config.HasGroup)
-                            → truncate to MaxMsgRune
-                            → add to ring cache (zero-copy)
-                            → @bot detection (QQ number + nickname)
-                            → router.RouteMessage → handler
+im HTTP ingress (im/server.go) → AcceptEvent → bot queue (bot/ingest.go)
+                                 → dedup via cache.HasMsgID (O(1) map)
+                                 → ProcessMessage (bot/handler.go)
+                                    → whitelist check (Config.HasGroup)
+                                    → truncate to MaxMsgRune
+                                    → add to ring cache (zero-copy)
+                                    → @bot detection (QQ number + nickname)
+                                    → router.RouteMessage → handler
 ```
+
+At startup, before consuming the queue, `BackfillHistory` pulls the last 30 messages per
+allow-listed group through the same OneBot action proxy. Ordering matters: backfill first, then
+drain the queue, otherwise old messages would be appended after new ones and the LLM context
+would be out of order.
 
 ## Adding a new command type
 
@@ -422,6 +428,10 @@ type Client interface {
 `OpenAIAdapter` implements `Client` using the `go-openai` SDK. Benefits over previous custom HTTP: shared `http.Client` (connection pooling), typed request/response structs (no `map[string]any`), proper error propagation (no discarded marshal errors), HTTP status code checking, retry support built into the SDK. The `Client` interface is preserved — callers unchanged.
 
 ## OneBot client (`onebot/`)
+
+In the sidecar topology this client points at the AstrBot bridge plugin
+(`sidecar/astrbot_plugin_onebot_bridge`), **not** directly at NapCat. The plugin proxies each
+action to the underlying platform, so the wire contract is still OneBot 11.
 
 ```go
 type Client struct { /* unexported: httpAPI, accessToken, restyClient */ }
@@ -465,14 +475,14 @@ Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go
 | GET | `/readyz` | **No** | Readiness: 503 while draining (see `shutdown_delay_sec`) |
 | GET | `/api/debug/pprof/*` | JWT | Only when `runtime.enable_pprof: true` |
 
-Key details: Gin runs in ReleaseMode; `web_password` is required (no password-less mode — the bot exits at startup if web is enabled without a password); `groupNames` map caches GetGroupInfo results to avoid repeated NapCat calls.
+Key details: Gin runs in ReleaseMode; `web_password` is required (no password-less mode — the bot exits at startup if web is enabled without a password); `groupNames` map caches GetGroupInfo results to avoid repeated bridge calls.
 
 **Security posture** (all changed together — keep them consistent if you touch auth):
 
 - **Login rate limit** — per-IP token bucket, 5 consecutive failures then 429 (`Retry-After: 60`). Only *failures* consume tokens, so a successful login never throttles a legitimate user. `engine.SetTrustedProxies(nil)` is set deliberately: gin trusts `X-Forwarded-For` by default, which would make `c.ClientIP()` attacker-controlled and the limit trivially bypassable. If you ever put this behind a reverse proxy, change it to `SetTrustedProxies([]string{"<proxy-ip>"})` — never re-open it to all.
 - **CORS** — default is same-origin only (no CORS headers at all). `runtime.cors_origins` adds an allowlist; `*` re-opens it to everything. The dev Vite server uses a proxy, so nothing needs configuring.
 - **JWT** — signs and verifies HS256 only. `jwt_secret` is separate from `web_password`; if unset it falls back to the password with a WARN (note: jwt/v5 already rejects `alg=none` and RS256 key-confusion via its keyfunc, so `WithValidMethods` is defense-in-depth, not a fix for a live hole).
-- **Probes leak nothing** — `/healthz` and `/readyz` are unauthenticated, so their bodies contain status strings only: never config values, group IDs or upstream addresses. They also deliberately **do not** check NapCat reachability: that is degradation, not unreadiness, and an unauthenticated endpoint must not trigger outbound calls.
+- **Probes leak nothing** — `/healthz` and `/readyz` are unauthenticated, so their bodies contain status strings only: never config values, group IDs or upstream addresses. They also deliberately **do not** check upstream reachability: that is degradation, not unreadiness, and an unauthenticated endpoint must not trigger outbound calls.
 - **Diagnostics are JWT-gated** — `/api/diagnostics` and `/api/debug/pprof/*` both sit behind `AuthMiddleware`. pprof can dump heap contents and call stacks (including config values), so it is never a public endpoint.
 
 ### Diagnostics page (`pages/diagnostics/index.vue`)
@@ -524,13 +534,13 @@ type GroupMsgCache struct {
 
 `Add()`: writes at `writeAt`, overwrites oldest if full, advances pointer — never copies the buffer. `GetAll()`: reorders `[writeAt, end)` + `[0, writeAt)` into time-ordered copy. `HasMsgID()`: O(1) map lookup. For n≈20 messages, the two-segment copy in GetAll is negligible.
 
-Single-writer architecture (only the polling goroutine calls `Add`) — no lock contention in practice.
+Single-writer architecture (only the bot's consumer goroutine calls `Add`) — no lock contention in practice.
 
 **`Add` must stay allocation-free, and `cache/bench_test.go` enforces it.** `BenchmarkAdd`'s
 `allocs/op` is 0 — that number *is* the "zero-copy" claim made executable. Anything that escapes
 to the heap on that path (a metrics call, a log field, a closure) turns it into 1 and the
-benchmark says so. The `cache_messages` gauge is therefore updated from `bot/polling.go`
-(per group, per cycle), never from inside `Add`.
+benchmark says so. The `cache_messages` gauge is therefore updated from `bot/ingest.go`
+(per group, per batch), never from inside `Add`.
 
 **Global functions used by the web API:**
 

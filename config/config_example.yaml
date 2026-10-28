@@ -3,18 +3,21 @@
 # 下面标了【密钥】的字段是为兼容旧配置保留的：留着仍能工作，但会打一条迁移告警。
 # 优先级：环境变量 > secret.yaml > 本文件。
 
-# ===== NapCat 连接配置 =====
+# ===== OneBot 11 接入配置 =====
+# sidecar 模式下不直连 NapCat，而是指向 AstrBot 桥接插件的动作代理
+# （sidecar/astrbot_plugin_onebot_bridge，默认监听 127.0.0.1:6199）。
 napcat:
-  # NapCat HTTP API 地址（WebUI → 网络配置 → HTTP服务 → 端口，默认 3000）
-  http_api: "http://127.0.0.1:3000"
-  # NapCat 访问令牌（WebUI → 网络配置 → HTTP服务端 → 创建HTTP服务端的时候自己设置的Access Token，未设置则留空）
+  # OneBot 动作代理地址（AstrBot 插件默认 6199；不再是 NapCat 的 3000）
+  http_api: "http://127.0.0.1:6199"
+  # 与 AstrBot 插件里配置的 token 保持同一个值；未设置则留空
   access_token: ""          # 【密钥】→ secret.yaml 的 napcat_access_token
 
 # ===== 机器人配置 =====
 bot:
-  # 机器人QQ号
+  # 机器人QQ号（QQ 官方机器人场景下仅用于提示词展示，@ 触发由桥接层的 mentioned 决定）
   qq: "123456"
-  # 允许响应的群号（白名单，逗号分隔）
+  # 允许响应的群白名单（逗号分隔）。
+  # NapCat/aiocqhttp 填 QQ 群号；QQ 官方机器人填 group_openid（长字符串）。
   allow_groups: "123456,789012"
 
 # ===== 运行时参数 =====
@@ -27,8 +30,13 @@ runtime:
   max_msg_rune: 500
   # 环形缓冲条数上限（手动配，建议 ≈31×llm_send_count；几百 KB/群不会爆内存）
   max_cache_msg: 3100
-  # HTTP 轮询间隔（秒）
+  # 旧轮询模型的间隔（秒）。sidecar 推送模型下不再使用，保留以兼容存量配置。
   poll_interval_sec: 3
+  # AstrBot 桥接插件推送事件的监听地址（与插件 go_event_url 对应）
+  im_listen_addr: "127.0.0.1:18090"
+  # 启动时是否经 OneBot 动作代理回填最近历史。
+  # NapCat/aiocqhttp 可以开着；QQ 官方机器人没有群历史接口，必须设为 false。
+  backfill_on_start: true
   # Web 管理面板端口（<=0 禁用）
   web_port: 7090
   # Web 管理面板登录账号、密码（必填，无免密模式）

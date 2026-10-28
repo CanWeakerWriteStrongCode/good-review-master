@@ -1,0 +1,10 @@
+{
+  "id": "qq_official",
+  "type": "qq_official",
+  "enable": true,
+  "appid": "<你的 QQ 机器人 AppID>",
+  "secret": "<你的 QQ 机器人 AppSecret>",
+  "enable_group_c2c": true,
+  "enable_guild_direct_message": false,
+  "use_markdown": false
+}

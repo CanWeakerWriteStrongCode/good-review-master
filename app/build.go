@@ -62,7 +62,7 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 
-	// 生命周期 context：MCP 会话、路由 goroutine、消息轮询、配置监听都挂在它下面。
+	// 生命周期 context：MCP 会话、路由 goroutine、消息消费、配置监听都挂在它下面。
 	// 它属于 App 的"状态"而不是"依赖"，所以不进依赖图，构造完再赋值。
 	lifecycleCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
@@ -160,7 +160,12 @@ func logStartup(application *App) {
 	logutil.Info("🚀 【不是好评大师】机器人启动成功")
 	logutil.Info("机器人QQ：" + cfg.BotQQ)
 	logutil.Info("允许响应群：" + cfg.AllowGroupsStr())
-	logutil.Info("NapCat HTTP API：" + cfg.NapCatHTTPAPI)
+	logutil.Info("OneBot 桥接 API：" + cfg.NapCatHTTPAPI)
+	logutil.Info("IM 事件入口：" + cfg.IMListenAddr)
+	if cfg.NapCatHTTPAPI == "http://127.0.0.1:3000" {
+		logutil.Warn("napcat.http_api 仍指向 NapCat 默认端口 3000；sidecar 模式下应指向 " +
+			"AstrBot 桥接插件的动作代理（默认 http://127.0.0.1:6199）")
+	}
 }
 
 // reloadPrompts 提示词文件变化后的动作：重读并重建路由表。
@@ -199,6 +204,10 @@ func warnRestartOnlyChanges(previous, next *config.Config) {
 	if previous.MetricsAddr != next.MetricsAddr {
 		logutil.Warn("metrics_addr 已变化，但需要重启才能生效（监听器在启动时已绑定）",
 			"原值", previous.MetricsAddr, "新值", next.MetricsAddr)
+	}
+	if previous.IMListenAddr != next.IMListenAddr {
+		logutil.Warn("runtime.im_listen_addr 已变化，但需要重启才能生效（IM 入口在启动时已绑定）",
+			"原值", previous.IMListenAddr, "新值", next.IMListenAddr)
 	}
 	if previous.OTLPEndpoint != next.OTLPEndpoint {
 		logutil.Warn("otlp_endpoint 已变化，但需要重启才能生效（追踪导出器在启动时已构造）",

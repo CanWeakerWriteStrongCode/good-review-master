@@ -10,10 +10,14 @@ import (
 
 // runtimeSection 运行时参数与 Web 面板配置（config.yaml 的 runtime 段）
 type runtimeSection struct {
-	LLMSendCount     int    `yaml:"llm_send_count"`
-	LLMTimeoutSec    int    `yaml:"llm_timeout_sec"`
-	MaxMsgRune       int    `yaml:"max_msg_rune"`
-	PollIntervalSec  int    `yaml:"poll_interval_sec"`
+	LLMSendCount    int    `yaml:"llm_send_count"`
+	LLMTimeoutSec   int    `yaml:"llm_timeout_sec"`
+	MaxMsgRune      int    `yaml:"max_msg_rune"`
+	PollIntervalSec int    `yaml:"poll_interval_sec"` // 仅保留兼容：sidecar 推送模型不再轮询
+	IMListenAddr    string `yaml:"im_listen_addr"`
+	// BackfillOnStart 启动时是否经 OneBot 动作代理回填最近历史。
+	// QQ 官方机器人没有群历史接口，这种情况应设为 false，否则每次启动都会打一轮失败日志。
+	BackfillOnStart  *bool  `yaml:"backfill_on_start"`
 	WebPort          int    `yaml:"web_port"`
 	WebUsername      string `yaml:"web_username"`
 	WebPassword      string `yaml:"web_password"` // 兼容旧位置；新配置放 secret.yaml
@@ -35,6 +39,10 @@ const defaultLLMSendCount = 20
 // 默认**开着**且只绑本机：指标关掉等于没有——没人会为了一个自己没配过的东西去开配置。
 // 绑 127.0.0.1 是安全底线（Prometheus 抓取要到得了才行，需要时改成 :9100 显式放开）。
 const defaultMetricsAddr = "127.0.0.1:9100"
+
+// defaultIMListenAddr 是 AstrBot sidecar 推送事件的缺省监听地址。
+// 只绑回环：事件里带着群号和聊天内容，不该默认对局域网可见。
+const defaultIMListenAddr = "127.0.0.1:18090"
 
 // MetricsAddrOff 是关闭指标端点的取值。
 // 需要一个哨兵值，是因为"留空"已经被用来表示"用缺省地址"了。
@@ -75,6 +83,15 @@ func (s *runtimeSection) SetDefaults() {
 		s.MetricsAddr = MetricsAddrOff
 	}
 	s.OTLPEndpoint = strings.TrimSpace(s.OTLPEndpoint)
+
+	s.IMListenAddr = strings.TrimSpace(s.IMListenAddr)
+	if s.IMListenAddr == "" {
+		s.IMListenAddr = defaultIMListenAddr
+	}
+	if s.BackfillOnStart == nil {
+		enabled := true
+		s.BackfillOnStart = &enabled
+	}
 }
 
 // Validate 判定本域是否"能工作"。
@@ -82,8 +99,8 @@ func (s *runtimeSection) SetDefaults() {
 // 这些数字检查全部跑在 SetDefaults **之后**，所以像 llm_send_count 这种已经补过缺省值的
 // 一定通过——它们不是重复劳动，而是把下游代码赖以成立的前提写成可执行的断言：
 //
-//   - PollInterval 进 time.NewTicker，<=0 会 **panic**，且是在轮询 goroutine 里 panic，
-//     直接掀翻整个进程（这是改造前真实存在的隐患：漏写 poll_interval_sec 就会中招）
+//   - PollInterval 是旧轮询模型的间隔。sidecar 推送模型下已不再使用，
+//     但保留字段与校验：存量配置里写着它，删掉会让老配置文件失去意义。
 //   - LLMTimeout 进 context.WithTimeout，=0 得到一个立刻过期的 ctx，
 //     表现为每一次大模型调用都失败在 "context deadline exceeded"
 //   - MaxCacheMsg 进 make([]Message, n) 并随后被 buf[writeAt] 索引，=0 会 index out of range
@@ -92,7 +109,7 @@ func (s *runtimeSection) SetDefaults() {
 func (s *runtimeSection) Validate() error {
 	if s.PollIntervalSec <= 0 {
 		return positiveInt("runtime.poll_interval_sec", s.PollIntervalSec,
-			"它直接进 time.NewTicker，为 0 会让轮询 goroutine panic 并拖垮整个进程")
+			"该字段已不驱动轮询（sidecar 推送模型），但为兼容存量配置仍要求为正数；不确定就写 3")
 	}
 	if s.LLMTimeoutSec <= 0 {
 		return positiveInt("runtime.llm_timeout_sec", s.LLMTimeoutSec,
@@ -125,6 +142,10 @@ func (s *runtimeSection) Validate() error {
 		if err := validateEndpoint("runtime.otlp_endpoint", s.OTLPEndpoint); err != nil {
 			return err
 		}
+	}
+	if _, _, err := net.SplitHostPort(s.IMListenAddr); err != nil {
+		return fmt.Errorf("runtime.im_listen_addr 不是合法的 host:port（当前 %q）：%v；"+
+			"例如 127.0.0.1:18090", s.IMListenAddr, err)
 	}
 	return nil
 }

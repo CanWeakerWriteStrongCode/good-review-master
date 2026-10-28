@@ -11,7 +11,9 @@ runtime:
   llm_timeout_sec: 20
   max_msg_rune: 500
   max_cache_msg: 6200
-  poll_interval_sec: 3600   # 轮询静默，避免干扰注入
+  poll_interval_sec: 3600   # 旧轮询模型残留字段，e2e 不依赖它
+  im_listen_addr: "127.0.0.1:18090"   # 避开 Windows 保留端口段（8059-8158）
+  backfill_on_start: false   # 测试配置的 napcat 地址是死的，回填只会白等重试
   web_port: 9090
   web_username: "admin"
   # web_password 已挪到 fixtures/secret.yaml，用来覆盖密钥文件那条新路径。
