@@ -1,11 +1,33 @@
 package router
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"good-review-master/config"
+	"good-review-master/logutil"
+	"good-review-master/onebot"
 )
+
+// TestMain 初始化日志并切到临时目录：发送路径会打日志，未初始化会 nil panic。
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "router-test-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		panic(err)
+	}
+	logutil.SetupLogger()
+	code := m.Run()
+	logutil.Close()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 func TestComposeSystemPrompt包含稳定身份与at约定(t *testing.T) {
 	cfg := &config.Config{BotNickname: "不是好评大师", LLMConfig: config.LLMConf{ModelName: "m"}}
@@ -45,5 +67,50 @@ func TestStripCQPrefix剥离各种at写法(t *testing.T) {
 				t.Fatalf("stripCQPrefix() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestReply引用触发消息 回复要引用“别人 @ 我的那条”，而不是他引用的那条。
+func TestReply引用触发消息(t *testing.T) {
+	var segments []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Action string         `json:"action"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		if body.Action != "send_message" {
+			t.Errorf("action = %q", body.Action)
+			return
+		}
+		list, _ := body.Params["message"].([]any)
+		for _, item := range list {
+			segments = append(segments, item.(map[string]any))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "retcode": 0, "data": map[string]any{}})
+	}))
+	defer server.Close()
+
+	router := &Router{obClient: onebot.NewClient(server.URL, nil, "").For("qq_test")}
+	event := onebot.Event{
+		MessageID: "ROBOT_NEW",
+		UserID:    "u1",
+		Message:   []onebot.Segment{onebot.ReplySegment("ROBOT_OLD")},
+	}
+	router.reply(event, "g1", "收到")
+
+	if len(segments) != 3 {
+		t.Fatalf("应有 reply+mention+text 三段，实际 %+v", segments)
+	}
+	if segments[0]["type"] != "reply" {
+		t.Fatalf("第一段应是 reply：%+v", segments[0])
+	}
+	data, _ := segments[0]["data"].(map[string]any)
+	if data["message_id"] != "ROBOT_NEW" {
+		t.Fatalf("引用目标应是触发消息，实际 %v", data["message_id"])
 	}
 }

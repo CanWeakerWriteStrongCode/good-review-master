@@ -293,10 +293,12 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, r.nameOf(groupID, event.UserID), extra)
 }
 
-// reply 回复触发消息：引用原消息并 @ 发送者。
-// QQ 官方机器人用 message_reference + at 段；拿不到引用 ID 时退化为纯文本。
+// reply 回复触发消息：引用这条触发消息本身，并 @ 发送者。
+// 引用的是 event.MessageID（别人 @ 我的那条），不是 event.QuotedMessageID()
+// （那条是发送者自己引用的消息）。QQ 官方用 message_reference + at 段；
+// 拿不到该消息的 REFIDX 时插件会退化成只 @ 不引用。
 func (r *Router) reply(event onebot.Event, groupID, text string) {
-	r.obClient.SendGroupReply(groupID, event.QuotedMessageID(), event.UserID, text)
+	r.obClient.SendGroupReply(groupID, event.MessageID, event.UserID, text)
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
