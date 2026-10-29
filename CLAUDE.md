@@ -425,7 +425,7 @@ Routes are auto-generated. No trie changes needed.
 
 Defined purely in Go (no YAML). Registered in `registerInternalCommands()` called from `NewRouter()`. Currently seven: add persona (prompt via LLM), delete persona, add rule, delete rule, switch persona, cancel persona, help listing.
 
-`添加人格` format: `添加人格(人格名)指令(指令类型)大模型想提示词(要点)` — the LLM generates the prompt and persona from the requirements. Writing goes to `prompt_custom.yaml`.
+`添加人格` format: `添加人格(人格名)指令类型(指令类型)大模型想提示词(要点)` — the LLM generates the prompt and persona from the requirements. Writing goes to `prompt_custom.yaml`.
 
 `删除人格` format: `删除人格(人格名)`. Both refuse to touch names that exist in `prompt_system.yaml` or in the registry.
 
@@ -477,8 +477,9 @@ pipeline instead of being ignored:
    occasionally joining in banter is allowed, and implicit "someone react to this" cues (a joke, a
    self-deprecating remark, a complaint clearly fishing for responses) count as a reason to reply —
    but consecutive low-value replies are not, and the code gates below enforce frequency
-   independently. Output is a strict `{reply, reason}` schema,
-   downgrading `json_schema → json_object → none` per adapter capability. Any error or unparsable
+   independently. Output is a strict `{reply, focus, reason}` schema (`focus` = 整体上下文 /
+   最后一条消息, passed to generation as the focus hint), downgrading
+   `json_schema → json_object → none` per adapter capability. Any error or unparsable
    answer means **no reply** (fail closed).
 3. **Generation**: only on `reply=true` — persona prompt + recent window via `chatReplyNow`, and
    the reply is sent as a quote of the triggering message with no @mention.

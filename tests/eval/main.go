@@ -285,7 +285,7 @@ func resolvePrompt(promptCfg *config.PromptConfig, cfg *config.Config, one check
 		if entry.Persona != nil {
 			personaBlock = router.RenderPersona(*entry.Persona, data.SharedRules[one.Prompt.Category], promptCfg.PersonaDirective())
 		}
-		return router.ComposeSystemPrompt(cfg, "", personaBlock, promptCfg.ReplyRequirement()), entry.Prompt, nil
+		return router.ComposeSystemPrompt(cfg, "", personaBlock, promptCfg.ReplyRequirement(), promptCfg.FocusPrompt(true)), entry.Prompt, nil
 	}
 	keywords := make([]string, 0, len(entries))
 	for _, entry := range entries {

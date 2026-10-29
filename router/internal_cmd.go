@@ -3,14 +3,15 @@ package router
 import (
 	"context"
 	"fmt"
-	"good-review-master/logutil"
 	"regexp"
+	"sort"
 	"strings"
 
+	"good-review-master/logutil"
 	"good-review-master/onebot"
 )
 
-var addCmdRe = regexp.MustCompile(`添加人格\((.+?)\)指令\((\w+)\)大模型想提示词\((.+)\)`)
+var addCmdRe = regexp.MustCompile(`添加人格\((.+?)\)指令类型\((\w+)\)大模型想提示词\((.+)\)`)
 var delCmdRe = regexp.MustCompile(`删除人格\((.+)\)`)
 var addRuleRe = regexp.MustCompile(`添加指令规则\((.+?)\)规则要点\((.+)\)`)
 var delRuleRe = regexp.MustCompile(`删除指令规则\((.+)\)`)
@@ -18,7 +19,7 @@ var delRuleRe = regexp.MustCompile(`删除指令规则\((.+)\)`)
 const ruleGenSystem = `你是一个提示词工程师。根据用户描述的规则要点，生成简洁、清晰的规则文本。每行一条，直接输出规则，不要多余解释。`
 
 const (
-	fmtAddCmd  = "添加人格(人格名)指令(指令类型)大模型想提示词(要点)"
+	fmtAddCmd  = "添加人格(人格名)指令类型(指令类型)大模型想提示词(要点)"
 	helpAddCmd = "格式：" + fmtAddCmd + "\n可用指令类型: chat_review"
 
 	fmtDelCmd  = "删除人格(人格名)"
@@ -60,6 +61,13 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 	keyword := matches[1]
 	category := matches[2]
 	requirements := matches[3]
+
+	// 类别必须是已注册的 handler：写进未知类别只会得到一条永远建不出路由的配置，
+	// 表现为"添加成功"但 #切换人格/#帮助 都找不到，所以在这里直接拒绝。
+	if r.handlerMap[category] == nil {
+		r.reply(event, groupID, "❌ 不支持的指令类型: "+category+"\n可用指令类型: "+r.availableCategories())
+		return
+	}
 
 	if r.promptCfg.KeywordInSystemCmd(keyword) || r.isInternalKeyword(keyword) {
 		r.reply(event, groupID, "❌ 该人格名与系统/内部指令冲突，禁止覆盖")
@@ -197,6 +205,16 @@ func (r *Router) handleListCommands(_ context.Context, event onebot.Event, group
 		buf.WriteString("  " + cmd.Keyword + " [" + cmd.Category + "]\n")
 	}
 	r.reply(event, groupID, buf.String())
+}
+
+// availableCategories 列出已注册的指令类型（handlerMap 的键），供报错提示。
+func (r *Router) availableCategories() string {
+	names := make([]string, 0, len(r.handlerMap))
+	for name := range r.handlerMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, "、")
 }
 
 // handleSwitchPersona #切换人格 <人格名>：在路由表里找"自带人格"的关键字，

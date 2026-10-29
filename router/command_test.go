@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 func TestComposeSystemPrompt包含稳定身份与at约定(t *testing.T) {
 	cfg := &config.Config{BotNickname: "不是好评大师", LLMConfig: config.LLMConf{ModelName: "m"}}
 
-	prompt := ComposeSystemPrompt(cfg, "0C2F9A2A", "", "【要求】测试")
+	prompt := ComposeSystemPrompt(cfg, "0C2F9A2A", "", "【要求】测试", "")
 	if !strings.Contains(prompt, "你的昵称是【不是好评大师】，用户ID是【0C2F9A2A】") {
 		t.Fatalf("提示词应同时给出昵称与稳定 ID：%s", prompt)
 	}

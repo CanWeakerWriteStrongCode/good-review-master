@@ -197,13 +197,14 @@ rules:
 
 Add a new variant by adding an entry under the same list — no code changes needed. If a `persona` block is present, all 5 fields are required; it is rendered at the tail of the user message sent to the LLM (see [Core Mechanisms](#core-mechanisms)).
 
-`internal` holds the built-in features' own prompts. Edit them directly in `prompt_system.yaml`; hot reload picks them up. The first three are listed in the order they are assembled into the reply system prompt; the last two are standalone calls:
+`internal` holds the built-in features' own prompts. Edit them directly in `prompt_system.yaml`; hot reload picks them up. The first four are listed in the order they are assembled into the reply system prompt; the last two are standalone calls:
 
 1. `internal.reply_requirement`: the 【要求】 line in the system prompt for @ replies
 2. `internal.proactive_requirement`: the 【要求】 line used instead when replying proactively
 3. `internal.persona_directive`: when a persona is present, the directive appended to the persona block (reason over emotion dimensions before replying)
-4. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message
-5. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
+4. `internal.focus_context` / `internal.focus_last`: the focus hint appended at the end of the system prompt; direct @ replies always use `focus_last`, proactive replies pick one via the judge's `focus`
+5. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message
+6. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
 
 ## Command System
 
@@ -227,7 +228,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 Add a new persona directly from the group — the LLM generates the prompt and a 5-field persona:
 
 ```
-@bot #添加人格(meanie-review)指令(chat_review)大模型想提示词(foul-mouthed, roasts everyone, calls them old)
+@bot #添加人格(meanie-review)指令类型(chat_review)大模型想提示词(foul-mouthed, roasts everyone, calls them old)
 ```
 
 Delete a persona:

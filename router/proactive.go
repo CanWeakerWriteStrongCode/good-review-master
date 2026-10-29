@@ -34,25 +34,37 @@ import (
 // proactiveSilenceReset 群静默超过这个时长视为新话题，连续发言计数清零。
 const proactiveSilenceReset = 5 * time.Minute
 
+// 裁判 focus 字段的两种取值（与 schema 的 enum、裁判提示词里的说明保持一致）。
+const (
+	proactiveFocusContext = "整体上下文"
+	proactiveFocusLast    = "最后一条消息"
+)
+
 // proactiveVerdictSchema 裁判输出的 JSON Schema（strict 模式的硬要求：
 // 所有属性都进 required、additionalProperties 必须是 false）。
 var proactiveVerdictSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "reply":  {"type": "boolean", "description": "机器人是否应该主动回复最后一条消息"},
+    "focus":  {"type": "string", "enum": ["整体上下文", "最后一条消息"], "description": "回复焦点：看整体上下文，还是只聚焦最后一条消息"},
     "reason": {"type": "string",  "description": "不超过 20 字的理由"}
   },
-  "required": ["reply", "reason"],
+  "required": ["reply", "focus", "reason"],
   "additionalProperties": false
 }`)
 
 // judgeVerdict 裁判结论。Reply 用指针：区分"模型明确说 false"和"字段缺失"。
+// Focus 决定生成阶段按哪种口径组织回复；缺失或无法识别时按整体上下文处理。
 type judgeVerdict struct {
 	Reply  *bool  `json:"reply"`
+	Focus  string `json:"focus"`
 	Reason string `json:"reason"`
 }
 
 func (v judgeVerdict) shouldReply() bool { return v.Reply != nil && *v.Reply }
+
+// focusLast 裁判是否要求生成时聚焦最后一条消息。
+func (v judgeVerdict) focusLast() bool { return v.Focus == proactiveFocusLast }
 
 // judgeNo 构造一个明确的"不回"结论（本地兜底时用，理由进日志）。
 func judgeNo(reason string) judgeVerdict {
@@ -297,9 +309,9 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 		return
 	}
 	telemetry.ProactiveJudgeTotal.WithLabelValues(r.workspace, telemetry.ProactiveJudgeYes).Inc()
-	logutil.Info("主动判定：回复", "group", groupID, "reason", verdict.Reason)
+	logutil.Info("主动判定：回复", "group", groupID, "focus", verdict.Focus, "reason", verdict.Reason)
 
-	systemPrompt := r.proactiveSystemPrompt(cfg, cand.event, groupID)
+	systemPrompt := r.proactiveSystemPrompt(cfg, cand.event, groupID, verdict.focusLast())
 	reply, sent := r.chatReplyNow(ctx, cand.event, groupID, systemPrompt, "", false, images)
 	if sent {
 		r.proactive.recordReply(groupID, reply, time.Now())
@@ -308,13 +320,15 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 
 // proactiveSystemPrompt 主动插话的 system prompt：在普通问答基础上换成
 // "主动参与"的要求（原始提示词里那句"根据最后@你的群友"在这里不成立）。
-func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, groupID string) string {
+func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, groupID string, focusLast bool) string {
 	systemPrompt := ComposeProactiveSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ProactiveRequirement())
 	if b, ok := r.getGroupPersona(groupID); ok {
 		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules, r.promptCfg.PersonaDirective())
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
+	// 裁判判了回复焦点：把它作为最后一条关键提示词，决定按整段语境还是只盯最后一句组织回答。
+	systemPrompt += "\n" + r.promptCfg.FocusPrompt(focusLast)
 	return systemPrompt
 }
 

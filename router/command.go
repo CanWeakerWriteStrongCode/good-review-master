@@ -281,7 +281,8 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	route := trieMatch(r.table.Load().trie, text)
 	if route == nil {
 		// 未命中：走普通问答（replyDefault 会视群人格再补一段）
-		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement()))
+		// 焦点提示由 replyDefault 在人格块之后追加，保证它是最后一条指令。
+		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement(), ""))
 		return
 	}
 
@@ -292,7 +293,8 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	if route.Persona != nil {
 		persona = RenderPersona(*route.Persona, route.SharedRules, r.promptCfg.PersonaDirective())
 	}
-	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona, r.promptCfg.ReplyRequirement())
+	// 有人直接 @ 机器人说话：默认聚焦最后一条，避免把回复铺到更早的话题上。
+	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona, r.promptCfg.ReplyRequirement(), r.promptCfg.FocusPrompt(true))
 	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
 		attribute.String("router.category", route.Category))
 	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, r.nameOf(groupID, event.UserID), extra)
@@ -316,15 +318,21 @@ func (r *Router) replyQuoted(event onebot.Event, groupID, text string) {
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
-// 机器人身份（模型名 / 昵称 / 稳定 ID）+ 聊天记录约定 +（启用看图时的图片说明）+ 可选的人格块。
+// 机器人身份（模型名 / 昵称 / 稳定 ID）+ 聊天记录约定 +（启用看图时的图片说明）+ 可选的人格块
+// + 末尾的回复焦点提示。
 // botID 为空时省略 ID 行（例如离线评测或拿不到 bot 身份时）。
-// requirement 是【要求】句，@ 回复传 promptCfg.ReplyRequirement()。
+// requirement 是【要求】句，focus 是回复焦点提示（空串表示不追加），@ 回复分别传
+// promptCfg.ReplyRequirement() / promptCfg.FocusPrompt(true)。
 //
 // 导出是给 tests/eval 用的：离线评测必须拿到与线上**逐字相同**的提示词。
 // 评测集若自己再拼一份，防的就是"评测全绿但线上照样回归"这种最没用的结果——
 // 而 5 处字符串拼接正是最容易各改各的那种代码。
-func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement string) string {
-	return composeSystemPrompt(cfg, botID, personaBlock, requirement)
+func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement, focus string) string {
+	systemPrompt := composeSystemPrompt(cfg, botID, personaBlock, requirement)
+	if focus != "" {
+		systemPrompt += "\n" + focus
+	}
+	return systemPrompt
 }
 
 // ComposeProactiveSystemPrompt 主动插话变体：聊天记录约定、身份、人格块都与上面一致，
@@ -476,6 +484,7 @@ func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Eve
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
+	systemPrompt += "\n" + r.promptCfg.FocusPrompt(true)
 	r.chatReview(ctx, event, groupID, systemPrompt, "", r.nameOf(groupID, event.UserID), text)
 }
 

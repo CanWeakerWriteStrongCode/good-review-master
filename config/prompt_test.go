@@ -214,6 +214,37 @@ func TestPersonaDirective(t *testing.T) {
 	}
 }
 
+// TestFocusPrompt 验证焦点提示词二选一，且分别从 internal.focus_context / focus_last 读取。
+func TestFocusPrompt(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	customPath := filepath.Join(dir, "prompt_custom.yaml")
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc, err := LoadPromptConfig(systemPath, customPath)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := pc.FocusPrompt(false); got != defaultFocusContext {
+		t.Errorf("缺省应退回整体上下文兜底，实际 %q", got)
+	}
+	if got := pc.FocusPrompt(true); got != defaultFocusLast {
+		t.Errorf("缺省应退回最后一条兜底，实际 %q", got)
+	}
+
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  focus_context: \"看整体\"\n  focus_last: \"看最后\"\n"), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc.Reload()
+	if got := pc.FocusPrompt(false); got != "看整体" {
+		t.Errorf("应从 prompt_system.yaml 读取整体上下文提示，实际 %q", got)
+	}
+	if got := pc.FocusPrompt(true); got != "看最后" {
+		t.Errorf("应从 prompt_system.yaml 读取最后一条提示，实际 %q", got)
+	}
+}
+
 // TestReplyRequirement 验证 @ 回复的【要求】句从 prompt_system.yaml 的
 // internal.reply_requirement 读取；老配置没有这一段时退回内置默认值。
 func TestReplyRequirement(t *testing.T) {
@@ -273,7 +304,10 @@ func TestPromptSystem示例含内置提示词(t *testing.T) {
 	if err := yaml.Unmarshal(promptSystemExampleTemplate, &cfg); err != nil {
 		t.Fatalf("内嵌模板解析失败：%v", err)
 	}
-	for _, key := range []string{"reply_requirement", "persona_directive", "add_persona", "proactive_judge", "proactive_requirement"} {
+	for _, key := range []string{
+		"reply_requirement", "persona_directive", "add_persona", "proactive_judge",
+		"proactive_requirement", "focus_context", "focus_last",
+	} {
 		if strings.TrimSpace(cfg.Internal[key]) == "" {
 			t.Errorf("prompt_system_example.yaml 缺少 internal.%s", key)
 		}
