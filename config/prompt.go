@@ -14,6 +14,68 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// defaultAddPersonaPrompt 是 #添加人格 生成提示词+人格时用的系统提示词兜底：
+// 正常从 prompt_system.yaml 的 internal.add_persona 读取；老配置文件没有这一段时用这份，
+// 避免升级后生成功能直接失效。
+const defaultAddPersonaPrompt = `你是一个提示词工程师兼人格设计师。根据用户的要求，输出一个 JSON 对象，包含：
+{
+  "prompt": "指令的任务行为提示词（简洁有效）",
+  "persona": {
+    "identity": "身份背景（名字/年龄/职业/经历等，写具体可信的人物，不要堆砌标签）",
+    "personality": ["性格特质列表（行为化描述，不写抽象形容词）"],
+    "relationship": {"角色": "...", "对待方式": "..."},
+    "system_prompt": "人格专属系统指令（行为边界/输出要求）",
+    "emotion": {"维度名": "取值", "情绪反应性": "高/中/低", "...": "..."}
+  }
+}
+要求：persona 全部字段必须补全，不得缺省；只输出 JSON，不要多余解释。
+如果用户没有指定回复长度，在生成的 prompt 里限制回复在 50 字左右；查询资料或新闻时可以扩展到 300 字左右。`
+
+// defaultProactiveJudgePrompt 是主动插话裁判（判断"要不要回"）的系统提示词兜底：
+// 正常从 prompt_system.yaml 的 internal.proactive_judge 读取；老配置文件没有这一段时用这份。
+// 内容必须逐字节稳定：裁判调用很频繁，固定的 system 前缀才能持续命中缓存。
+const defaultProactiveJudgePrompt = `你是群聊机器人的发言决策器，只判断"要不要回"，不写回复内容。
+【默认克制】没有明确理由就不回；但不必每条都追求"有价值"——群里气氛合适时，偶尔凑个趣、接个梗让聊天更热闹也可以。宁可少说，不要连续刷存在感。
+
+可以回（满足任一）：
+1. 在跟机器人说话：叫昵称、接着机器人上一句追问；
+2. 向全群求助或提问，且机器人凭知识或工具能给出实质答案（在问某个具体群友、或明显在等别人回答的不算）；
+3. 与机器人职责相关：查新闻、锐评、解释规则、回顾群历史；
+4. 机器人正在参与且话题未结束，补充有明显价值；
+5. 图片是新闻截图、带文字截图或图表，且与上下文相关；
+6. 大家正轻松玩梗、开玩笑，能自然接一句让气氛更好（偶尔为之，别连续跟）；
+7. 群友话里有"求回应"的潜台词：分享趣事、自嘲、吐槽、抛梗，明显希望大家捧个场、
+   接一句或吐槽回去——这种就回一下，别让对方冷场。
+
+不要回（命中任一）：
+1. 两人私聊式对话：互相称呼、连续来回、只涉及彼此；
+2. 纯自言自语、公告、没有互动期待的陈述（不指望任何人接话）；
+3. 已经有人回答或正在回答；
+4. 刷屏、接龙、斗图、表情包刷屏、争吵起哄——连续玩梗不要跟；
+5. 机器人刚说完，没人继续追问；
+6. 回了也只能复读或说"不知道"；
+7. 个人隐私、敏感话题。
+
+只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "reason": "不超过 20 字的理由"}`
+
+// defaultPersonaDirective 是人格块末尾授权指令的兜底：要求 LLM 依据人格维度推演各维度变化后再回答。
+// 正常从 prompt_system.yaml 的 internal.persona_directive 读取。
+// 另含两条通用规则：①情绪缓和——用户情绪过于强烈（喜怒哀乐皆然）时情绪反应符合人格，
+// 但以缓解对方情绪为先、不升级冲突；②表达多样性——避免固定口头禅/收尾词导致的输出趋同。
+const defaultPersonaDirective = `这是你的人格（emotion 字段即你的情绪维度）。回复时：依据你各维度的情绪状态，结合用户的问题内容，推演每个维度应有的变化——例如被夸奖时，
+按你的情绪反应性升高愉悦相关维度、按外显度决定是否表露、按恢复速度自然回落；然后把各维度的变化体现到你的回答里，用符合这些维度的语气和方式回应用户。当用户情绪过于强烈（无论愤怒、悲伤，还是过度兴奋、狂喜）时，
+情绪反应要与人格特质相符，但以缓解对方情绪为先：不要升级冲突，不针锋相对、不火上浇油，用符合人格的方式安抚、缓和对方的情绪。每次回复都在当前维度状态的基础上继续，不要每次都从平静开始。回复要有变化与丰富性：在符合人格的前提下，避免反复使用同一句口头禅或同一个词收尾，表达应自然多样。`
+
+// defaultReplyRequirement 是 @ 回复时 system prompt 里"【要求】"句的兜底：
+// 正常从 prompt_system.yaml 的 internal.reply_requirement 读取，老配置文件没有这一段时用这份。
+const defaultReplyRequirement = "【要求】发给你的内容是聊天记录，根据最后的消息，继续聊天或者执行指令后回复。"
+
+// defaultProactiveRequirement 是主动插话（裁判判定要回后）生成回复时，
+// system prompt 里"【要求】"那句的兜底：正常从 prompt_system.yaml 的
+// internal.proactive_requirement 读取，老配置文件没有这一段时用这份。
+const defaultProactiveRequirement = "【要求】发给你的内容是聊天记录。你判断这条消息值得参与后才被唤起（主动参与群聊），" +
+	"请自然、简短地接话；不要复述别人说过的内容，也不要 @ 任何人。"
+
 // CmdConf 指令配置（keyword + prompt + 可选人格）
 type CmdConf struct {
 	Keyword string   `yaml:"keyword"`
@@ -84,6 +146,8 @@ type PromptConfig struct {
 type promptFile struct {
 	Cmd   map[string][]CmdConf `yaml:"cmd"`
 	Rules map[string]string    `yaml:"rules"`
+	// Internal 内置指令自己的提示词（如 add_persona），只从 prompt_system.yaml 读，不合并自定义文件
+	Internal map[string]string `yaml:"internal"`
 }
 
 // LoadPromptConfig 加载提示词配置（系统 + 自定义合并）
@@ -122,7 +186,7 @@ func (pc *PromptConfig) Reload() {
 // 任何一步失败都返回一份**可用的空数据**而不是 nil：PromptData 的 map 若为 nil，
 // 调用方 range 没问题但写入会 panic，而且 nil 会让"取快照"这件事变得需要判空。
 func (pc *PromptConfig) build() (*promptFile, *PromptData) {
-	system := &promptFile{Cmd: make(map[string][]CmdConf), Rules: make(map[string]string)}
+	system := &promptFile{Cmd: make(map[string][]CmdConf), Rules: make(map[string]string), Internal: make(map[string]string)}
 	data := &PromptData{CmdConfigs: make(map[string][]CmdConf), SharedRules: make(map[string]string)}
 
 	raw, err := os.ReadFile(pc.systemPath)
@@ -145,6 +209,9 @@ func (pc *PromptConfig) build() (*promptFile, *PromptData) {
 	}
 	if systemCfg.Rules == nil {
 		systemCfg.Rules = make(map[string]string)
+	}
+	if systemCfg.Internal == nil {
+		systemCfg.Internal = make(map[string]string)
 	}
 	// system 是"系统文件本身长什么样"，供 KeywordInSystemCmd / CategoryInSystemRule 判定；
 	// 它与下面 data 里的合并结果必须分开：守卫要问的是"这个词在系统文件里吗"，
@@ -187,6 +254,42 @@ func (pc *PromptConfig) build() (*promptFile, *PromptData) {
 // getSystemPrompt 返回 prompt_system.yaml 解析结果（随 Reload 整体替换，读侧无锁）
 func (pc *PromptConfig) getSystemPrompt() *promptFile {
 	return pc.system.Load()
+}
+
+// AddPersonaPrompt 返回 #添加人格 调用大模型时使用的系统提示词。
+func (pc *PromptConfig) AddPersonaPrompt() string {
+	return pc.internalPrompt("add_persona", defaultAddPersonaPrompt)
+}
+
+// ProactiveJudgePrompt 返回主动插话裁判（判断"要不要回"）的系统提示词。
+func (pc *PromptConfig) ProactiveJudgePrompt() string {
+	return pc.internalPrompt("proactive_judge", defaultProactiveJudgePrompt)
+}
+
+// PersonaDirective 返回人格块末尾的授权指令（依据情绪维度推演后再回答）。
+func (pc *PromptConfig) PersonaDirective() string {
+	return pc.internalPrompt("persona_directive", defaultPersonaDirective)
+}
+
+// ReplyRequirement 返回 @ 回复时 system prompt 里的【要求】句。
+func (pc *PromptConfig) ReplyRequirement() string {
+	return pc.internalPrompt("reply_requirement", defaultReplyRequirement)
+}
+
+// ProactiveRequirement 返回主动插话生成回复时 system prompt 里的【要求】句。
+func (pc *PromptConfig) ProactiveRequirement() string {
+	return pc.internalPrompt("proactive_requirement", defaultProactiveRequirement)
+}
+
+// internalPrompt 取 prompt_system.yaml 的 internal.<key>；缺失或为空时退回内置默认值，
+// 让升级前创建的 prompt_system.yaml 继续可用。
+func (pc *PromptConfig) internalPrompt(key, fallback string) string {
+	if cfg := pc.getSystemPrompt(); cfg != nil {
+		if p := strings.TrimSpace(cfg.Internal[key]); p != "" {
+			return p
+		}
+	}
+	return fallback
 }
 
 // KeywordInSystemCmd 检查 keyword 是否在 prompt_system.yaml 任意 category 中存在

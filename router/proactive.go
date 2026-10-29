@@ -34,32 +34,6 @@ import (
 // proactiveSilenceReset 群静默超过这个时长视为新话题，连续发言计数清零。
 const proactiveSilenceReset = 5 * time.Minute
 
-// proactiveJudgePrompt 裁判的系统提示词。
-//
-// **必须保持逐字节稳定**：裁判调用很频繁，固定的 system 前缀才能持续命中缓存。
-// 所有动态内容（昵称、聊天记录、机器人上次发言）都放在 user 消息里。
-const proactiveJudgePrompt = `你是群聊机器人的发言决策器，只判断"要不要回"，不写回复内容。
-【默认克制】没有明确理由就不回；但不必每条都追求"有价值"——群里气氛合适时，偶尔凑个趣、接个梗让聊天更热闹也可以。宁可少说，不要连续刷存在感。
-
-可以回（满足任一）：
-1. 在跟机器人说话：叫昵称、接着机器人上一句追问；
-2. 向全群求助或提问，且机器人凭知识或工具能给出实质答案；
-3. 与机器人职责相关：查新闻、锐评、解释规则、回顾群历史；
-4. 机器人正在参与且话题未结束，补充有明显价值；
-5. 图片是新闻截图、带文字截图或图表，且与上下文相关；
-6. 大家正轻松玩梗、开玩笑，能自然接一句让气氛更好（偶尔为之，别连续跟）。
-
-不要回（命中任一）：
-1. 两人私聊式对话：互相称呼、连续来回、只涉及彼此；
-2. 单人自言自语、公告、吐槽，没有向任何人提问；
-3. 已经有人回答或正在回答；
-4. 刷屏、接龙、斗图、表情包刷屏、争吵起哄——连续玩梗不要跟；
-5. 机器人刚说完，没人继续追问；
-6. 回了也只能复读或说"不知道"；
-7. 个人隐私、敏感话题。
-
-只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "reason": "不超过 20 字的理由"}`
-
 // proactiveVerdictSchema 裁判输出的 JSON Schema（strict 模式的硬要求：
 // 所有属性都进 required、additionalProperties 必须是 false）。
 var proactiveVerdictSchema = json.RawMessage(`{
@@ -335,9 +309,9 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 // proactiveSystemPrompt 主动插话的 system prompt：在普通问答基础上换成
 // "主动参与"的要求（原始提示词里那句"根据最后@你的群友"在这里不成立）。
 func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, groupID string) string {
-	systemPrompt := ComposeProactiveSystemPrompt(cfg, event.BotID(), "")
+	systemPrompt := ComposeProactiveSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ProactiveRequirement())
 	if b, ok := r.getGroupPersona(groupID); ok {
-		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
+		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules, r.promptCfg.PersonaDirective())
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
@@ -363,8 +337,10 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 		dataURLs = append(dataURLs, llm.DataURL(img.MIMEType, img.Data))
 	}
 	userText := buildJudgeText(window, cfg.BotNickname, r.proactive.lastTurn(groupID, time.Now()), len(dataURLs) > 0)
+	// 裁判提示词来自 prompt_system.yaml 的 internal.proactive_judge（缺失时用内置默认值）。
+	// 内容必须逐字节稳定才能持续命中 prompt 缓存；动态内容都在 user 消息里。
 	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: proactiveJudgePrompt},
+		{Role: llm.RoleSystem, Content: r.promptCfg.ProactiveJudgePrompt()},
 		{Role: llm.RoleUser, Content: userText, ImageDataURLs: dataURLs},
 	}
 

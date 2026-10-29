@@ -86,7 +86,7 @@ cmd:
 
 // TestRebuild保留内部指令 防一个容易犯的错：
 // 内部指令只注册一次，若重建时忘了带上它们，热更新一次之后
-// 「帮助」「添加关键字」这些就全没了。
+// 「帮助」「添加人格」这些就全没了。
 func TestRebuild保留内部指令(t *testing.T) {
 	t.Chdir(t.TempDir())
 	logutil.SetupLogger()

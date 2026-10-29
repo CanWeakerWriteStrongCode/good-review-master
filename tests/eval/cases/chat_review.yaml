@@ -4,17 +4,17 @@
 # 评测用的提示词就是从那里取出来的（不是这里再抄一份）。所以：
 #   - 换关键字就要改这里的 keyword；
 #   - 关键字在当前 prompt_system.yaml 里不存在时，runner 会直接把可选项列出来告诉你。
-# 本文件默认用 "猫娘"（config/prompt_system_example.yaml 里就有，从模板起步的配置直接能跑）。
+# 本文件默认用 "鲸鱼娘"（config/prompt_system_example.yaml 里就有，从模板起步的配置直接能跑）。
 #
 # checks 里的每一条都是**硬失败**（退出码非 0）。模型输出本身不比对，只报告与基线的差异，
 # 因为"同样的输入换个种子就换个说法"是常态，把输出当成断言只会得到永远红的测试。
 
 cases:
-  - id: catgirl-basic
+  - id: whale-basic
     note: 短对话；验证基础可用性与长度上限（规则里写了 300 字以内，这里给一点余量）
     prompt:
       category: chat_review
-      keyword: "猫娘"
+      keyword: "鲸鱼娘"
     input: |
       {"message_id":1001,"nickname":"张三","user_id":123456,"message":"今天又加班到十点，累死了"}
       {"message_id":1002,"nickname":"李四","user_id":234567,"message":"辛苦了，明天请你喝奶茶"}
@@ -30,11 +30,11 @@ cases:
         value: "作为一个人工智能"
         note: 不许出现助手腔
 
-  - id: catgirl-long-window
+  - id: whale-long-window
     note: 20 条消息的窗口；长度上限在长上下文下仍然要守住（正文越长越容易超）
     prompt:
       category: chat_review
-      keyword: "猫娘"
+      keyword: "鲸鱼娘"
     input: |
       {"message_id":2001,"nickname":"张三","user_id":123456,"message":"早上好，今天天气不错"}
       {"message_id":2002,"nickname":"李四","user_id":234567,"message":"是啊，适合出去走走"}

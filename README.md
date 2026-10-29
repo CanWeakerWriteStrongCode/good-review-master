@@ -197,22 +197,30 @@ rules:
 
 新增同类型变体只需在对应列表下加一项，无需改 Go 代码。`persona` 5 字段全必填，渲染在发给大模型的 user 消息末尾（详见[核心机制](#-核心机制)）。
 
+`internal` 下是内置指令自己的提示词，可直接在 `prompt_system.yaml` 里修改，热重载生效。前三条按拼进回复 system prompt 的先后排列，后两条是独立调用：
+
+1. `internal.reply_requirement`：@ 回复时 system prompt 里的【要求】句
+2. `internal.proactive_requirement`：主动接话时替代上一条的【要求】句
+3. `internal.persona_directive`：有人格时，人格块末尾追加的授权指令（依据情绪维度推演后再回答）
+4. `internal.proactive_judge`：没有被 @ 时，判断“这条消息要不要主动回复”的裁判提示词
+5. `internal.add_persona`：`#添加人格` 生成 prompt + persona 时发给大模型的系统提示词
+
 ### 群内动态添加指令
 
 在群里 @机器人 发送以下格式，即可动态添加指令到 `prompt_custom.yaml`，重启后依然生效：
 
 ```
-@机器人 添加关键字(关键词)指令(指令类型)大模型想提示词(要点)
+@机器人 #添加人格(人格名)指令(指令类型)大模型想提示词(要点)
 ```
 
 示例：
 ```
-@机器人 添加关键字(雌小鬼锐评下)指令(chat_review)大模型想提示词(嘴臭的雌小鬼，毒舌，喜欢说老登)
+@机器人 #添加人格(雌小鬼锐评下)指令(chat_review)大模型想提示词(嘴臭的雌小鬼，毒舌，喜欢说老登)
 ```
 
 添加后立即生效，无需重启。动态添加的指令保存在 `prompt_custom.yaml`，与 `prompt_system.yaml` 分离。
 
-通过群内指令只能增删 `prompt_custom.yaml` 中的自定义指令，无法修改或删除 `prompt_system.yaml` 中的系统指令和内置指令（如 `帮助`、`添加关键字`）。
+通过群内指令只能增删 `prompt_custom.yaml` 中的自定义指令，无法修改或删除 `prompt_system.yaml` 中的系统指令和内置指令（如 `帮助`、`添加人格`）。
 
 ## 📁 项目结构
 
@@ -261,7 +269,7 @@ good-review-master/
 │   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
 ├── router/                   # 指令系统：前缀树匹配 + 分发（原 cmd/，包名改为 router）
 │   ├── command.go            # Router + 前缀树(trie)路由匹配 + 未匹配兜底 + 安全 goroutine
-│   ├── internal_cmd.go        # 内部指令（添加关键字、删除关键字、添加/删除指令规则、帮助）
+│   ├── internal_cmd.go        # 内部指令（添加人格、删除人格、添加/删除指令规则、帮助）
 │   ├── chat_review.go         # chat_review 异步处理函数（缓存窗口 + 组装消息）
 │   ├── chat_window.go         # 缓存窗口决策：扩展 vs 重置（纯函数，可单测穷举）
 │   └── persona_render.go      # 人格渲染（5 维 → user 消息末尾片段）
@@ -440,9 +448,9 @@ cd tests/e2e && pnpm test
 | `system_prompt` | 文本 | 人格级系统指令（行为边界 / 输出要求） |
 | `emotion` | JSON 对象 | 情绪维度（维度 → 取值，人格核心） |
 
-**渲染位置**：`RenderPersona`（`router/persona_render.go`）把人格渲染成 user 消息**末尾**的片段——不进 system prompt，从而不破坏上方"前缀缓存命中"的稳定前缀。
+**渲染位置**：`RenderPersona`（`router/persona_render.go`）把人格渲染成 system prompt **末尾**的片段（身份头之后），user 消息（聊天记录）里不携带人格块。
 
-**内置两条通用规则**（`personaDirective`）：
+**内置两条通用规则**（`prompt_system.yaml` 的 `internal.persona_directive`，可改）：
 
 - **情绪缓和**：用户情绪过于强烈（无论愤怒、悲伤，还是过度兴奋、狂喜）时，情绪反应符合人格但以缓解对方情绪为先，不升级冲突、不火上浇油。
 - **表达多样性**：回复要有变化，避免固定口头禅/收尾词，防止自我回音导致的输出趋同。

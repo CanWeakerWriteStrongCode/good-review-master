@@ -320,7 +320,7 @@ What hot-reloads and what does not: `allow_groups`, thresholds, cost params, mod
 
 | Kind | Defined in | Examples |
 | --- | --- | --- |
-| Internal | `router/internal_cmd.go` via `Router.register()` | `添加关键字`, `删除关键字`, `帮助` |
+| Internal | `router/internal_cmd.go` via `Router.register()` | `添加人格`, `删除人格`, `帮助` |
 | User | `prompt_system.yaml` / `prompt_custom.yaml` YAML lists | `锐评下`, `猫娘` |
 
 ### Router struct (`router/command.go`)
@@ -369,7 +369,7 @@ func trieMatch(root *trieNode, text string) *Route   // O(k), k = len(text)
 1. `stripCQPrefix()` — strips `[CQ:at,qq=xxx]` codes and `@Nickname` text
 2. `trieMatch()` — longest prefix match on cleaned text
 3. `ComposeSystemPrompt()` builds the system prompt (bot identity + optional image hint + optional persona block)
-4. `BuildUserMsg()` builds the user message (chat log + fixed instruction + the keyword's prompt)
+4. `BuildUserMsg()` builds the user message (chat log + the keyword's prompt; fixed reply/tool instructions live only in the system prompt)
 5. Handler receives `(ctx, event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)`
 
 > ⚠️ **文档与代码的一处已知不符（阶段性 5 发现，未修）**：`extra`（关键字后面的补充文本）
@@ -423,11 +423,11 @@ Routes are auto-generated. No trie changes needed.
 
 ## Internal commands
 
-Defined purely in Go (no YAML). Registered in `registerInternalCommands()` called from `NewRouter()`. Currently five: add keyword (prompt via LLM), delete keyword, add rule, delete rule, help listing.
+Defined purely in Go (no YAML). Registered in `registerInternalCommands()` called from `NewRouter()`. Currently seven: add persona (prompt via LLM), delete persona, add rule, delete rule, switch persona, cancel persona, help listing.
 
-`添加关键字` format: `添加关键字(关键词)指令(指令类型)大模型想提示词(要点)` — the LLM generates the prompt from the requirements. Writing goes to `prompt_custom.yaml`.
+`添加人格` format: `添加人格(人格名)指令(指令类型)大模型想提示词(要点)` — the LLM generates the prompt and persona from the requirements. Writing goes to `prompt_custom.yaml`.
 
-`删除关键字` format: `删除关键字(关键词)`. Both refuse to touch keywords that exist in `prompt_system.yaml` or in the registry.
+`删除人格` format: `删除人格(人格名)`. Both refuse to touch names that exist in `prompt_system.yaml` or in the registry.
 
 Guard checks use `promptCfg.KeywordInSystemCmd(keyword)` and `CategoryInSystemRule(category)` — both read from the cached system prompt, not from disk.
 
@@ -474,8 +474,10 @@ pipeline instead of being ignored:
 2. **Judge**: a lightweight `ChatJSON` call with a *fixed* system prompt (prefix-cache friendly;
    all dynamic data goes in the user message) asks whether the bot should join. The prompt is
    deliberately "restrained, not maximally useful": a reply does not have to add information —
-   occasionally joining in banter is allowed — but consecutive low-value replies are not, and the
-   code gates below enforce frequency independently. Output is a strict `{reply, reason}` schema,
+   occasionally joining in banter is allowed, and implicit "someone react to this" cues (a joke, a
+   self-deprecating remark, a complaint clearly fishing for responses) count as a reason to reply —
+   but consecutive low-value replies are not, and the code gates below enforce frequency
+   independently. Output is a strict `{reply, reason}` schema,
    downgrading `json_schema → json_object → none` per adapter capability. Any error or unparsable
    answer means **no reply** (fail closed).
 3. **Generation**: only on `reply=true` — persona prompt + recent window via `chatReplyNow`, and

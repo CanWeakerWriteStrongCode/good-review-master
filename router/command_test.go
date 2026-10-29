@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 func TestComposeSystemPrompt包含稳定身份与at约定(t *testing.T) {
 	cfg := &config.Config{BotNickname: "不是好评大师", LLMConfig: config.LLMConf{ModelName: "m"}}
 
-	prompt := ComposeSystemPrompt(cfg, "0C2F9A2A", "")
+	prompt := ComposeSystemPrompt(cfg, "0C2F9A2A", "", "【要求】测试")
 	if !strings.Contains(prompt, "你的昵称是【不是好评大师】，用户ID是【0C2F9A2A】") {
 		t.Fatalf("提示词应同时给出昵称与稳定 ID：%s", prompt)
 	}
@@ -60,6 +60,8 @@ func TestStripCQPrefix剥离各种at写法(t *testing.T) {
 		{name: "多个 at 且机器人不在第一个", raw: "@张三(3319D7) @不是好评大师(0C2F9A2A) 锐评", want: "锐评"},
 		{name: "手打昵称", raw: "@不是好评大师 锐评", want: "锐评"},
 		{name: "保留正文里的其他 at", raw: "@不是好评大师(0C2F9A2A) 告诉@张三(3319D7)", want: "告诉@张三(3319D7)"},
+		// 「@你」不做特殊剥离：提示词里已给出机器人昵称，交给模型自行判断
+		{name: "不特殊处理@你", raw: "@你 锐评", want: "@你 锐评"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

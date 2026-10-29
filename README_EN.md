@@ -197,6 +197,14 @@ rules:
 
 Add a new variant by adding an entry under the same list — no code changes needed. If a `persona` block is present, all 5 fields are required; it is rendered at the tail of the user message sent to the LLM (see [Core Mechanisms](#core-mechanisms)).
 
+`internal` holds the built-in features' own prompts. Edit them directly in `prompt_system.yaml`; hot reload picks them up. The first three are listed in the order they are assembled into the reply system prompt; the last two are standalone calls:
+
+1. `internal.reply_requirement`: the 【要求】 line in the system prompt for @ replies
+2. `internal.proactive_requirement`: the 【要求】 line used instead when replying proactively
+3. `internal.persona_directive`: when a persona is present, the directive appended to the persona block (reason over emotion dimensions before replying)
+4. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message
+5. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
+
 ## Command System
 
 ### Two kinds of commands
@@ -204,7 +212,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 | Kind | Defined in | Examples |
 |---|---|---|
 | **Function commands** | `prompt_system.yaml` / `prompt_custom.yaml` | `锐评下`, `猫娘` |
-| **Internal commands** | Go code (`router/internal_cmd.go`) | `添加关键字`, `删除关键字`, `添加指令规则`, `删除指令规则`, `帮助` |
+| **Internal commands** | Go code (`router/internal_cmd.go`) | `添加人格`, `删除人格`, `添加指令规则`, `删除指令规则`, `帮助` |
 
 ### Triggering
 
@@ -216,19 +224,19 @@ Add a new variant by adding an entry under the same list — no code changes nee
 
 ### Dynamic commands (from group chat)
 
-Add a new keyword directly from the group — the LLM generates the prompt and a 5-field persona:
+Add a new persona directly from the group — the LLM generates the prompt and a 5-field persona:
 
 ```
-@bot 添加关键字(meanie-review)指令(chat_review)大模型想提示词(foul-mouthed, roasts everyone, calls them old)
+@bot #添加人格(meanie-review)指令(chat_review)大模型想提示词(foul-mouthed, roasts everyone, calls them old)
 ```
 
-Delete a keyword:
+Delete a persona:
 
 ```
-@bot 删除关键字(meanie-review)
+@bot #删除人格(meanie-review)
 ```
 
-System keywords (from `prompt_system.yaml`) and internal commands cannot be overwritten or deleted. Dynamically added keywords are saved to `prompt_custom.yaml` and persist across restarts.
+System keywords (from `prompt_system.yaml`) and internal commands cannot be overwritten or deleted. Dynamically added personas are saved to `prompt_custom.yaml` and persist across restarts.
 
 ### Get help
 
@@ -451,9 +459,9 @@ Every command can carry a 5-dimension persona (`Persona` in `config/prompt.go`),
 | `system_prompt` | text | Persona-level system directive (behavior boundaries / output requirements) |
 | `emotion` | JSON object | Emotion dimensions (dimension → value, the core of the persona) |
 
-**Rendering position**: `RenderPersona` (`router/persona_render.go`) renders the persona as a segment at the **tail** of the user message — never into the system prompt — so it doesn't break the stable prefix relied on by the prefix cache above.
+**Rendering position**: `RenderPersona` (`router/persona_render.go`) renders the persona as a segment at the **tail of the system prompt** (after the identity header); the user message (chat log) does not carry the persona block.
 
-**Two built-in generic rules** (`personaDirective`):
+**Two built-in generic rules** (`internal.persona_directive` in `prompt_system.yaml`, editable):
 
 - **Emotion de-escalation**: when the user's emotion is too intense (anger, sadness, or extreme excitement/elation alike), the emotional reaction should fit the persona but soothe the other person's mood first — don't escalate, don't provoke, don't add fuel.
 - **Response variety**: vary the replies — avoid a fixed catchphrase or the same closing word every time, to prevent output converging due to self-echo.

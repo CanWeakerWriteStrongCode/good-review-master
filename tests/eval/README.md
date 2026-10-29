@@ -46,7 +46,7 @@ go run ./tests/eval -dry
 
 如果评测自己抄一份提示词进 YAML，那就会出现最没用的一种结果：**评测全绿，线上照样回归**。
 
-代价是用例与你的提示词配置耦合：`catgirl-basic` 引用的 `猫娘` 来自
+代价是用例与你的提示词配置耦合：`whale-basic` 引用的 `鲸鱼娘` 来自
 `config/prompt_system_example.yaml`，你把关键字改了就要同步改用例。
 runner 在找不到关键字时会把当前可选的类别/关键字**全部列出来**，照着改即可。
 
@@ -60,7 +60,7 @@ cases:
     note: 这条用例想验证什么             # 只给人看
     prompt:
       category: chat_review           # prompt_system.yaml 里的类别
-      keyword: "猫娘"                  # 该类别下的关键字
+      keyword: "鲸鱼娘"                # 该类别下的关键字
     input: |                          # 群聊记录，格式与发给大模型的一致（每行一条 JSON）
       {"message_id":1001,"user_id":123456,"nickname":"张三","message":"今天好累"}
     checks:

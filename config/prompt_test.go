@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const promptSystemYAML = `
@@ -130,6 +133,150 @@ cmd:
 	}
 	if pc.CategoryInSystemRule("chat_review") != true {
 		t.Error("系统里的规则类别应判为 true")
+	}
+}
+
+// TestAddPersonaPrompt 验证 #添加人格 的生成提示词从 prompt_system.yaml 的
+// internal.add_persona 读取；老配置没有这一段时退回内置默认值。
+func TestAddPersonaPrompt(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	customPath := filepath.Join(dir, "prompt_custom.yaml")
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc, err := LoadPromptConfig(systemPath, customPath)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := pc.AddPersonaPrompt(); got != defaultAddPersonaPrompt {
+		t.Errorf("缺少 internal.add_persona 时应退回内置默认值，实际 %q", got)
+	}
+
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  add_persona: \"配置里的提示词\"\n"), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc.Reload()
+	if got := pc.AddPersonaPrompt(); got != "配置里的提示词" {
+		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
+	}
+}
+
+// TestProactiveJudgePrompt 验证主动插话裁判提示词从 prompt_system.yaml 的
+// internal.proactive_judge 读取；老配置没有这一段时退回内置默认值。
+func TestProactiveJudgePrompt(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	customPath := filepath.Join(dir, "prompt_custom.yaml")
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc, err := LoadPromptConfig(systemPath, customPath)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := pc.ProactiveJudgePrompt(); got != defaultProactiveJudgePrompt {
+		t.Errorf("缺少 internal.proactive_judge 时应退回内置默认值，实际 %q", got)
+	}
+
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  proactive_judge: \"配置里的裁判提示词\"\n"), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc.Reload()
+	if got := pc.ProactiveJudgePrompt(); got != "配置里的裁判提示词" {
+		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
+	}
+}
+
+// TestPersonaDirective 验证人格授权指令从 prompt_system.yaml 的
+// internal.persona_directive 读取；老配置没有这一段时退回内置默认值。
+func TestPersonaDirective(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	customPath := filepath.Join(dir, "prompt_custom.yaml")
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc, err := LoadPromptConfig(systemPath, customPath)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := pc.PersonaDirective(); got != defaultPersonaDirective {
+		t.Errorf("缺少 internal.persona_directive 时应退回内置默认值，实际 %q", got)
+	}
+
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  persona_directive: \"配置里的授权指令\"\n"), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc.Reload()
+	if got := pc.PersonaDirective(); got != "配置里的授权指令" {
+		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
+	}
+}
+
+// TestReplyRequirement 验证 @ 回复的【要求】句从 prompt_system.yaml 的
+// internal.reply_requirement 读取；老配置没有这一段时退回内置默认值。
+func TestReplyRequirement(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	customPath := filepath.Join(dir, "prompt_custom.yaml")
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc, err := LoadPromptConfig(systemPath, customPath)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := pc.ReplyRequirement(); got != defaultReplyRequirement {
+		t.Errorf("缺少 internal.reply_requirement 时应退回内置默认值，实际 %q", got)
+	}
+
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  reply_requirement: \"配置里的要求句\"\n"), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc.Reload()
+	if got := pc.ReplyRequirement(); got != "配置里的要求句" {
+		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
+	}
+}
+
+// TestProactiveRequirement 验证主动接话的【要求】句从 prompt_system.yaml 的
+// internal.proactive_requirement 读取；老配置没有这一段时退回内置默认值。
+func TestProactiveRequirement(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	customPath := filepath.Join(dir, "prompt_custom.yaml")
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc, err := LoadPromptConfig(systemPath, customPath)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := pc.ProactiveRequirement(); got != defaultProactiveRequirement {
+		t.Errorf("缺少 internal.proactive_requirement 时应退回内置默认值，实际 %q", got)
+	}
+
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  proactive_requirement: \"配置里的要求句\"\n"), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc.Reload()
+	if got := pc.ProactiveRequirement(); got != "配置里的要求句" {
+		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
+	}
+}
+
+// TestPromptSystem示例含内置提示词 防止内嵌模板漏掉 internal.* 的生成/裁判提示词：
+// 首次启动的用户拿到的是这份模板，缺了就只能吃兜底值、也没法在文件里改。
+func TestPromptSystem示例含内置提示词(t *testing.T) {
+	var cfg promptFile
+	if err := yaml.Unmarshal(promptSystemExampleTemplate, &cfg); err != nil {
+		t.Fatalf("内嵌模板解析失败：%v", err)
+	}
+	for _, key := range []string{"reply_requirement", "persona_directive", "add_persona", "proactive_judge", "proactive_requirement"} {
+		if strings.TrimSpace(cfg.Internal[key]) == "" {
+			t.Errorf("prompt_system_example.yaml 缺少 internal.%s", key)
+		}
 	}
 }
 

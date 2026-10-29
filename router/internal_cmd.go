@@ -10,18 +10,18 @@ import (
 	"good-review-master/onebot"
 )
 
-var addCmdRe = regexp.MustCompile(`添加关键字\((.+?)\)指令\((\w+)\)大模型想提示词\((.+)\)`)
-var delCmdRe = regexp.MustCompile(`删除关键字\((.+)\)`)
+var addCmdRe = regexp.MustCompile(`添加人格\((.+?)\)指令\((\w+)\)大模型想提示词\((.+)\)`)
+var delCmdRe = regexp.MustCompile(`删除人格\((.+)\)`)
 var addRuleRe = regexp.MustCompile(`添加指令规则\((.+?)\)规则要点\((.+)\)`)
 var delRuleRe = regexp.MustCompile(`删除指令规则\((.+)\)`)
 
 const ruleGenSystem = `你是一个提示词工程师。根据用户描述的规则要点，生成简洁、清晰的规则文本。每行一条，直接输出规则，不要多余解释。`
 
 const (
-	fmtAddCmd  = "添加关键字(关键词)指令(指令类型)大模型想提示词(要点)"
+	fmtAddCmd  = "添加人格(人格名)指令(指令类型)大模型想提示词(要点)"
 	helpAddCmd = "格式：" + fmtAddCmd + "\n可用指令类型: chat_review"
 
-	fmtDelCmd  = "删除关键字(关键词)"
+	fmtDelCmd  = "删除人格(人格名)"
 	helpDelCmd = "格式：" + fmtDelCmd
 
 	fmtAddRule  = "添加指令规则(指令类型)规则要点(要点)"
@@ -41,8 +41,8 @@ const (
 
 // registerInternalCommands 向路由器注册所有内置管理指令
 func (r *Router) registerInternalCommands() {
-	r.register(Command{Keyword: "#添加关键字", Help: helpAddCmd, Category: "internal", Handler: r.handleAddCommand})
-	r.register(Command{Keyword: "#删除关键字", Help: helpDelCmd, Category: "internal", Handler: r.handleDeleteCommand})
+	r.register(Command{Keyword: "#添加人格", Help: helpAddCmd, Category: "internal", Handler: r.handleAddCommand})
+	r.register(Command{Keyword: "#删除人格", Help: helpDelCmd, Category: "internal", Handler: r.handleDeleteCommand})
 	r.register(Command{Keyword: "#添加指令规则", Help: helpAddRule, Category: "internal", Handler: r.handleAddRule})
 	r.register(Command{Keyword: "#删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
 	r.register(Command{Keyword: "#切换人格", Help: helpSwitchPersona, Category: "internal", Handler: r.handleSwitchPersona})
@@ -62,7 +62,7 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 	requirements := matches[3]
 
 	if r.promptCfg.KeywordInSystemCmd(keyword) || r.isInternalKeyword(keyword) {
-		r.reply(event, groupID, "❌ 该关键字为系统/内部指令，禁止覆盖")
+		r.reply(event, groupID, "❌ 该人格名与系统/内部指令冲突，禁止覆盖")
 		return
 	}
 
@@ -71,7 +71,7 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 	// （改造前这里用的是 context.Background()，进程退出时这次调用会继续跑完）
 	genCtx, cancel := context.WithTimeout(ctx, r.appCfg().LLMTimeout)
 	defer cancel()
-	generated, err := r.llmClient.SingleChat(genCtx, requirements, addCommandGenPrompt)
+	generated, err := r.llmClient.SingleChat(genCtx, requirements, r.promptCfg.AddPersonaPrompt())
 	if err != nil {
 		logutil.Error("LLM 生成提示词失败", "err", err)
 		r.reply(event, groupID, "❌ 生成提示词失败: "+err.Error())
@@ -91,7 +91,7 @@ func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, group
 	}
 	r.promptCfg.Reload()
 	r.Rebuild()
-	r.reply(event, groupID, "✅ 指令已添加: "+keyword)
+	r.reply(event, groupID, "✅ 人格已添加: "+keyword)
 }
 
 func (r *Router) handleDeleteCommand(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
@@ -104,7 +104,7 @@ func (r *Router) handleDeleteCommand(_ context.Context, event onebot.Event, grou
 	keyword := matches[1]
 
 	if r.promptCfg.KeywordInSystemCmd(keyword) || r.isInternalKeyword(keyword) {
-		r.reply(event, groupID, "❌ 该关键字为系统/内部指令，禁止删除")
+		r.reply(event, groupID, "❌ 该人格名与系统/内部指令冲突，禁止删除")
 		return
 	}
 
@@ -114,7 +114,7 @@ func (r *Router) handleDeleteCommand(_ context.Context, event onebot.Event, grou
 	}
 	r.promptCfg.Reload()
 	r.Rebuild()
-	r.reply(event, groupID, "✅ 关键字已删除: "+keyword)
+	r.reply(event, groupID, "✅ 人格已删除: "+keyword)
 }
 
 func (r *Router) handleAddRule(ctx context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
@@ -215,7 +215,7 @@ func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, grou
 				buf.WriteString("  " + n + "\n")
 			}
 		} else {
-			buf.WriteString("当前无可切换人格，可用 #添加关键字 创建自带人格的指令")
+			buf.WriteString("当前无可切换人格，可用 #添加人格 创建自带人格的指令")
 		}
 		r.reply(event, groupID, strings.TrimSpace(buf.String()))
 		return

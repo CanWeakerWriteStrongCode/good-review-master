@@ -197,7 +197,9 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	return strings.TrimSpace(b.String())
 }
 
-// BuildUserMsg 组装发给大模型的 user message：聊天记录 + 固定要求 + 该指令的提示词。
+// BuildUserMsg 组装发给大模型的 user message：聊天记录 + 该指令的提示词。
+// 「按最后一条消息回复/执行」与工具使用的固定要求只放在 system prompt（见 replyRequirement
+// 与 composeSystemPrompt），这里不再重复，避免同一条指令发两遍。
 // 人格块不在 user 消息里：由调用方渲染后拼进 systemPrompt（RouteMessage 关键字路由 / replyDefault 群人格）。
 //
 // 导出是给 tests/eval 用的（与 ComposeSystemPrompt 同理）：离线评测必须看到与线上逐字相同的输入。
@@ -208,8 +210,5 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 // 这次只是把两个死参数删掉（纯机械清理，行为零变化），没有顺手把它加回去：
 // 那会改变发给大模型的内容，属于产品决定，该由人来拍板。
 func BuildUserMsg(chatLog string, keywordPrompt string) string {
-	userMsg := chatLog + "\n"
-	userMsg += "【重点】优先回复或者执行最后一条信息【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案或推脱"
-	userMsg += keywordPrompt + "\n"
-	return userMsg
+	return chatLog + "\n" + keywordPrompt + "\n"
 }

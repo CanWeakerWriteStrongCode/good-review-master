@@ -281,7 +281,7 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	route := trieMatch(r.table.Load().trie, text)
 	if route == nil {
 		// 未命中：走普通问答（replyDefault 会视群人格再补一段）
-		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, event.BotID(), ""))
+		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement()))
 		return
 	}
 
@@ -290,9 +290,9 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	// 群人格（#切换人格）只在未命中关键字的纯 @ 聊天里生效，见 replyDefault。
 	persona := ""
 	if route.Persona != nil {
-		persona = RenderPersona(*route.Persona, route.SharedRules)
+		persona = RenderPersona(*route.Persona, route.SharedRules, r.promptCfg.PersonaDirective())
 	}
-	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona)
+	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona, r.promptCfg.ReplyRequirement())
 	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
 		attribute.String("router.category", route.Category))
 	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, r.nameOf(groupID, event.UserID), extra)
@@ -318,22 +318,24 @@ func (r *Router) replyQuoted(event onebot.Event, groupID, text string) {
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
 // 机器人身份（模型名 / 昵称 / 稳定 ID）+ 聊天记录约定 +（启用看图时的图片说明）+ 可选的人格块。
 // botID 为空时省略 ID 行（例如离线评测或拿不到 bot 身份时）。
+// requirement 是【要求】句，@ 回复传 promptCfg.ReplyRequirement()。
 //
 // 导出是给 tests/eval 用的：离线评测必须拿到与线上**逐字相同**的提示词。
 // 评测集若自己再拼一份，防的就是"评测全绿但线上照样回归"这种最没用的结果——
 // 而 5 处字符串拼接正是最容易各改各的那种代码。
-func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock string) string {
-	return composeSystemPrompt(cfg, botID, personaBlock, false)
+func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement string) string {
+	return composeSystemPrompt(cfg, botID, personaBlock, requirement)
 }
 
 // ComposeProactiveSystemPrompt 主动插话变体：聊天记录约定、身份、人格块都与上面一致，
-// 只把"【要求】"那句换成主动参与的说法——那条消息并没有 @ 机器人，
-// 继续沿用"根据最后@你的群友发的消息"会让模型找不到自己在回谁。
-func ComposeProactiveSystemPrompt(cfg *config.Config, botID, personaBlock string) string {
-	return composeSystemPrompt(cfg, botID, personaBlock, true)
+// 只把"【要求】"那句换成主动参与的说法（由 prompt_system.yaml 的
+// internal.proactive_requirement 提供）——那条消息并没有 @ 机器人，
+// 继续沿用"按最后的消息回复/执行指令"会让模型以为自己被点名。
+func ComposeProactiveSystemPrompt(cfg *config.Config, botID, personaBlock, requirement string) string {
+	return composeSystemPrompt(cfg, botID, personaBlock, requirement)
 }
 
-func composeSystemPrompt(cfg *config.Config, botID, personaBlock string, proactive bool) string {
+func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement string) string {
 	identity := ""
 	if cfg.BotNickname != "" {
 		identity = fmt.Sprintf("你的昵称是【%s】", cfg.BotNickname)
@@ -346,11 +348,6 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock string, proacti
 	}
 	if identity != "" {
 		identity += "。"
-	}
-	requirement := "【要求】发给你的内容是聊天记录，根据最后@你的群友发的消息，继续聊天或者执行指令后回复。"
-	if proactive {
-		requirement = "【要求】发给你的内容是聊天记录。你判断这条消息值得参与后才被唤起（主动参与群聊），" +
-			"请自然、简短地接话；不要复述别人说过的内容，也不要 @ 任何人。"
 	}
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
 		"%s【聊天记录】每行一条群消息，message_id 是本窗口内的消息序号，user_id 是发言者的稳定ID，nickname 是昵称，message 是正文；"+
@@ -475,7 +472,7 @@ func (r *Router) availablePersonaNames() []string {
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑。
 func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Event, groupID string, systemPrompt string) {
 	if b, ok := r.getGroupPersona(groupID); ok {
-		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
+		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules, r.promptCfg.PersonaDirective())
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
@@ -494,8 +491,6 @@ func (r *Router) stripCQPrefix(rawMsg string, cfg *config.Config) string {
 			text = trimmed
 		} else if cfg.BotNickname != "" && strings.HasPrefix(text, "@"+cfg.BotNickname) {
 			text = strings.TrimPrefix(text, "@"+cfg.BotNickname)
-		} else if strings.HasPrefix(text, "@你") {
-			text = strings.TrimPrefix(text, "@你")
 		}
 		text = strings.TrimSpace(text)
 		if text == before {
