@@ -220,8 +220,8 @@ func readableEventJSON(raw []byte) []byte {
 
 // ignoreReason 返回该事件为何不进入业务链路；空串表示应当消费。
 //
-// 只消费群消息：其它 type / detail_type 是合法事件，ack 后丢弃即可。
-// 群消息自身缺关键字段则按无效事件处理。
+// 只消费群消息与私聊：其它 type / detail_type 是合法事件，ack 后丢弃即可。
+// 群消息要 group_id，私聊要 user_id；缺关键字段按无效事件处理。
 func ignoreReason(event onebot.Event) string {
 	if event.Type == "" {
 		return "missing type"
@@ -229,13 +229,13 @@ func ignoreReason(event onebot.Event) string {
 	if event.Type != "message" {
 		return "type=" + event.Type
 	}
-	if event.DetailType != "group" {
+	if event.DetailType != "group" && event.DetailType != "private" {
 		return "detail_type=" + event.DetailType
 	}
 	if event.Self.Platform == "" {
 		return "missing self.platform"
 	}
-	if event.GroupID == "" {
+	if event.DetailType == "group" && event.GroupID == "" {
 		return "missing group_id"
 	}
 	if event.UserID == "" {

@@ -22,7 +22,7 @@ type Self struct {
 // Go 见到哨兵一律判定「不可比较」，只入缓存、不触发回复。
 const SentinelSelfID = "unknown_selfid"
 
-// Event 是本项目消费的 OneBot 12 事件（只处理群消息，其余在入站层丢弃）。
+// Event 是本项目消费的 OneBot 12 事件（只处理群消息与私聊，其余在入站层丢弃）。
 //
 // Account 不是协议字段：它来自上报路径 /im/event/{account}，用于和 self.platform
 // 拼出工作空间 ID。事件体本身没有任何私有路由字段。
@@ -66,6 +66,19 @@ func IsSelfPlaceholder(userID string) bool {
 		return true
 	}
 	return false
+}
+
+// IsPrivate 判断是否私聊（OneBot 12 detail_type=private）。
+func (e Event) IsPrivate() bool { return e.DetailType == "private" }
+
+// ChatID 返回会话键：群聊用 group_id，私聊用 "private:<user_id>"。
+// 缓存、人格、锚点、冷却都按这个键隔离，私聊因此天然是一对一会话，
+// 与任何群的 ID 都不会撞。
+func (e Event) ChatID() string {
+	if e.IsPrivate() {
+		return "private:" + e.UserID
+	}
+	return e.GroupID
 }
 
 // BotID 返回可用于 @ 比较的机器人 ID；不可比较时返回空串。

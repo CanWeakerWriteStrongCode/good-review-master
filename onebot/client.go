@@ -202,27 +202,36 @@ func (c *Client) SendGroupReply(groupID, replyID, atUser, content string) {
 
 // SendGroupMessageSegments 发送结构化群消息。失败只记日志，不阻塞业务。
 func (c *Client) SendGroupMessageSegments(groupID string, segments []Segment) {
+	c.sendMessage(map[string]any{"detail_type": "group", "group_id": groupID}, "group", groupID, segments)
+}
+
+// SendPrivateReply 发送私聊文本（OneBot 12 detail_type=private）。
+// 私聊没有引用/@ 语义：C2C 的被动回复由实现端自己处理，这里只发正文。
+func (c *Client) SendPrivateReply(userID, content string) {
+	c.sendMessage(map[string]any{"detail_type": "private", "user_id": userID},
+		"user", userID, []Segment{TextSegment(content)})
+}
+
+// sendMessage 是两种会话共用的 send_message 实现：只差 detail_type 与目标字段。
+// targetKey 同时用作日志字段名（group / user），保留原有日志可 grep 性。
+func (c *Client) sendMessage(params map[string]any, targetKey, target string, segments []Segment) {
 	if c == nil || c.base == "" {
-		logutil.Error("发送群消息失败：该账号没有配置出站地址", "group", groupID)
+		logutil.Error("发送消息失败：该账号没有配置出站地址", targetKey, target)
 		return
 	}
-	params := map[string]any{
-		"detail_type": "group",
-		"group_id":    groupID,
-		"message":     segments,
-	}
+	params["message"] = segments
 	payload, err := json.Marshal(params)
 	if err != nil {
-		logutil.Error("send_message 请求序列化失败", "err", err, "group", groupID)
+		logutil.Error("send_message 请求序列化失败", "err", err, targetKey, target)
 		return
 	}
-	logutil.Debug("调用 OneBot API", "action", "send_message", "group", groupID,
+	logutil.Debug("调用 OneBot API", "action", "send_message", targetKey, target,
 		"segments", len(segments), "types", segmentTypes(segments))
 	if _, err := call[struct{}](c, "send_message", params); err != nil {
-		logutil.Error("send_message 被平台拒绝", "err", err, "group", groupID, "request", string(payload))
+		logutil.Error("send_message 被平台拒绝", "err", err, targetKey, target, "request", string(payload))
 		return
 	}
-	logutil.Info("send_message 成功", "group", groupID, "segments", len(segments), "request", string(payload))
+	logutil.Info("send_message 成功", targetKey, target, "segments", len(segments), "request", string(payload))
 }
 
 // segmentTypes 返回消息段类型列表，仅用于日志排查。

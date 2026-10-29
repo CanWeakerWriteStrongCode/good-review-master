@@ -69,16 +69,18 @@ func (b *Bot) AcceptEvent(ctx context.Context, account string, event onebot.Even
 }
 
 // dispatch 做消费侧的最后一层过滤：白名单与重复消息。
+// 私聊没有群白名单可查，按一对一会话（private:<user_id>）进缓存与去重。
 func (b *Bot) dispatch(ctx context.Context, item job) {
 	event, ws := item.event, item.ws
 	cfg := ws.Snapshot()()
-	if !ws.AllowsGroup(event.GroupID) {
+	chatID := event.ChatID()
+	if !event.IsPrivate() && !ws.AllowsGroup(chatID) {
 		return
 	}
 
-	gc := ws.Cache.GetGroupCache(event.GroupID, cfg.MaxCacheMsg)
+	gc := ws.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg)
 	if gc.HasSeen(event.Self.UserID, event.MessageID) {
-		logutil.Debug("跳过重复消息", "group", event.GroupID, "self", event.Self.UserID, "msgID", event.MessageID)
+		logutil.Debug("跳过重复消息", "chat", chatID, "self", event.Self.UserID, "msgID", event.MessageID)
 		return
 	}
 

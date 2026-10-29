@@ -40,30 +40,37 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 	}
 }
 
-// ProcessMessage 处理单条群消息
+// ProcessMessage 处理单条消息（群聊或私聊）
 //
 // 开头取一次快照、全程用同一个局部变量：这样一条消息的整个处理过程
 // （白名单判定、截断长度、缓冲上限、@检测）看到的是**同一份**配置。
+//
+// 私聊按"一对一会话"处理：会话键是 private:<user_id>，缓存/人格/锚点都按它隔离；
+// 没有群白名单、群档案和 @ 语义——发给机器人就是找它，直接进路由。
 func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *workspace.Workspace) {
 	if ws == nil {
 		return
 	}
 	cfg := ws.Snapshot()()
-	groupID := event.GroupID
-	if !ws.AllowsGroup(groupID) {
+	private := event.IsPrivate()
+	chatID := event.ChatID()
+	// 私聊没有群可查白名单：账号被接管（workspace 已解析）即视为允许。
+	if !private && !ws.AllowsGroup(chatID) {
 		return
 	}
 
-	// 群档案与成员目录跟着消息一起积累：群只写一次，成员首次出现时写一行。
-	ws.EnsureGroup(groupID)
-	ws.ObserveMember(groupID, event.UserID)
-	for _, seg := range event.Message {
-		if seg.Type == onebot.SegmentMention {
-			ws.ObserveMember(groupID, seg.String("user_id"))
+	if !private {
+		// 群档案与成员目录跟着消息一起积累：群只写一次，成员首次出现时写一行。
+		ws.EnsureGroup(chatID)
+		ws.ObserveMember(chatID, event.UserID)
+		for _, seg := range event.Message {
+			if seg.Type == onebot.SegmentMention {
+				ws.ObserveMember(chatID, seg.String("user_id"))
+			}
 		}
 	}
 
-	nameOf := ws.DisplayNameFor(groupID)
+	nameOf := ws.DisplayNameFor(chatID)
 	content := truncate(event.RenderText(nameOf), cfg.MaxMsgRune)
 	if content == "" {
 		return
@@ -73,12 +80,12 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 	// 用已经存下的 ref_idx 反查一次，把 reply_to 补成真正的 message_id。
 	replyTo := event.QuotedMessageID()
 	if replyTo == "" {
-		replyTo = ws.State.ResolveMessageID(groupID, event.QuotedRefIdx())
+		replyTo = ws.State.ResolveMessageID(chatID, event.QuotedRefIdx())
 	}
 
 	msg := cache.Message{
 		MessageID: event.MessageID,
-		GroupID:   groupID,
+		GroupID:   chatID,
 		SelfID:    event.Self.UserID,
 		UserID:    event.UserID,
 		Nickname:  nameOf(event.UserID),
@@ -88,30 +95,33 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 		RefIdx:    event.QQMsgIdx,
 		Time:      eventTime(event),
 	}
-	gc := ws.Cache.GetGroupCache(groupID, cfg.MaxCacheMsg)
+	gc := ws.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg)
 	gc.Add(msg)
-	telemetry.CacheMessages.WithLabelValues(ws.ID, groupID).Set(float64(gc.Len()))
+	telemetry.CacheMessages.WithLabelValues(ws.ID, chatID).Set(float64(gc.Len()))
 	ws.State.SaveMessage(msg)
-	// self.user_id 按群学习（QQ 官方是群作用域 openid），重启后仍能对 @ 做比较。
-	// 只有值变化时才写库，避免每条消息一次同步 INSERT。
-	ws.LearnIdentity(groupID, event.Self.UserID)
-	// 借本条消息的身份核对一次机器人昵称（平台侧改名后 state.db 的缓存不会自己失效）。
-	// 传 self_id + group_id：多账号共用一个实现端时，只有它们能让实现端定位到本机器人。
-	ws.SyncSelfName(event.BotID(), groupID)
+	if !private {
+		// self.user_id 按群学习（QQ 官方是群作用域 openid），重启后仍能对 @ 做比较。
+		// 只有值变化时才写库，避免每条消息一次同步 INSERT。
+		ws.LearnIdentity(chatID, event.Self.UserID)
+		// 借本条消息的身份核对一次机器人昵称（平台侧改名后 state.db 的缓存不会自己失效）。
+		// 传 self_id + group_id：多账号共用一个实现端时，只有它们能让实现端定位到本机器人。
+		ws.SyncSelfName(event.BotID(), chatID)
+	}
 
-	// 触发优先级：标准 mention > 实现端显式 @ 标记（无 openid 时）> 昵称兜底。
+	// 私聊不用判 @：发给机器人就是找它。
+	// 群聊触发优先级：标准 mention > 实现端显式 @ 标记（无 openid 时）> 昵称兜底。
 	// 收到事件不等于被 @，@全体也不等于 @ 本账号。
-	if event.MentionsBot() || event.AdapterAtMe() ||
+	if private || event.MentionsBot() || event.AdapterAtMe() ||
 		isAtBot(content, cfg, b.allowNicknameFallback(ws, cfg.BotNickname)) {
 		// 把消费循环的 ctx 传下去：一次"消息 → 路由 → 大模型 → 工具调用"
 		// 因此成为同一条链路（trace span 能串起来），关机也能取消在途调用。
-		ws.Router.RouteMessage(ctx, content, event, groupID)
+		ws.Router.RouteMessage(ctx, content, event, chatID)
 		return
 	}
 
 	// 没被点名：交给主动插话链路，由大模型裁决要不要接话。
 	// 门控、冷却、串行 worker 全在 Router 内，功能关闭时这里是空操作。
-	ws.Router.TryProactive(ctx, event, groupID, content)
+	ws.Router.TryProactive(ctx, event, chatID, content)
 }
 
 // allowNicknameFallback 昵称兜底只在昵称唯一归属一个工作空间时可信。

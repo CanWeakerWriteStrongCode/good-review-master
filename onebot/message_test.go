@@ -48,6 +48,17 @@ func TestRenderText空内容回退AltMessage(t *testing.T) {
 	}
 }
 
+func TestChatID按会话隔离(t *testing.T) {
+	group := Event{DetailType: "group", GroupID: "G1", UserID: "u1"}
+	if group.IsPrivate() || group.ChatID() != "G1" {
+		t.Fatalf("群聊会话键 = %q", group.ChatID())
+	}
+	private := Event{DetailType: "private", UserID: "u1"}
+	if !private.IsPrivate() || private.ChatID() != "private:u1" {
+		t.Fatalf("私聊会话键 = %q", private.ChatID())
+	}
+}
+
 func TestMentionsBot(t *testing.T) {
 	base := Event{
 		Self:    Self{Platform: "qq", UserID: "bot-openid"},

@@ -90,6 +90,33 @@ func TestSendMessage动作外壳(t *testing.T) {
 	client.SendGroupReply("g1", "42", "u1", "hi")
 }
 
+// TestSendPrivateReply私聊参数 私聊走 detail_type=private + user_id，
+// 不带 group_id，也不带引用/@ 段（C2C 没有这些语义）。
+func TestSendPrivateReply私聊参数(t *testing.T) {
+	client := newClientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		action, params := decodeAction(t, r)
+		if action != "send_message" {
+			t.Errorf("action = %q", action)
+		}
+		if params["detail_type"] != "private" || params["user_id"] != "u-openid" {
+			t.Errorf("params = %+v", params)
+		}
+		if _, ok := params["group_id"]; ok {
+			t.Errorf("私聊不应带 group_id：%+v", params)
+		}
+		segments, ok := params["message"].([]any)
+		if !ok || len(segments) != 1 {
+			t.Fatalf("message segments = %#v", params["message"])
+		}
+		if segments[0].(map[string]any)["type"] != "text" {
+			t.Errorf("segment = %+v", segments[0])
+		}
+		writeAction(t, w, map[string]any{"status": "ok", "retcode": 0})
+	})
+
+	client.SendPrivateReply("u-openid", "hi")
+}
+
 func TestAction失败按retcode判定(t *testing.T) {
 	client := newClientFor(t, func(w http.ResponseWriter, _ *http.Request) {
 		// HTTP 200 + status=failed 是标准的失败表达，不能只看状态码。

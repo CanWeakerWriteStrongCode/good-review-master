@@ -305,16 +305,25 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 // （那条是发送者自己引用的消息）。QQ 官方用 message_reference + at 段；
 // 拿不到该消息的 REFIDX 时插件会退化成只 @ 不引用。
 //
+// 私聊没有引用/@ 语义，直接按 user_id 发文本。
 // 被点名回复同时清空主动插话的"连续发言"计数：对话对象已经切回机器人。
-func (r *Router) reply(event onebot.Event, groupID, text string) {
-	r.obClient.SendGroupReply(groupID, event.MessageID, event.UserID, text)
-	r.proactive.noteDirect(groupID, text, time.Now())
+func (r *Router) reply(event onebot.Event, chatID, text string) {
+	if event.IsPrivate() {
+		r.obClient.SendPrivateReply(event.UserID, text)
+	} else {
+		r.obClient.SendGroupReply(chatID, event.MessageID, event.UserID, text)
+	}
+	r.proactive.noteDirect(chatID, text, time.Now())
 }
 
 // replyQuoted 引用触发消息、不 @ 人（主动插话用）。
 // 主动接话不该把某人"架"出来回答，引用只用来让群友知道在接哪一句。
-func (r *Router) replyQuoted(event onebot.Event, groupID, text string) {
-	r.obClient.SendGroupReply(groupID, event.MessageID, "", text)
+func (r *Router) replyQuoted(event onebot.Event, chatID, text string) {
+	if event.IsPrivate() {
+		r.obClient.SendPrivateReply(event.UserID, text)
+		return
+	}
+	r.obClient.SendGroupReply(chatID, event.MessageID, "", text)
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：

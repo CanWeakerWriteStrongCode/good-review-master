@@ -154,13 +154,37 @@ func TestServerRejectsWrongVersion(t *testing.T) {
 	}
 }
 
+func TestServerAcceptsPrivateMessage(t *testing.T) {
+	consumer := &fakeConsumer{}
+	server := newTestServer(t, "", consumer)
+
+	rec := postEvent(t, server, "1906xxxx", "", `{
+		"id":"event-2","time":1700000001,"type":"message","detail_type":"private","sub_type":"friend",
+		"self":{"platform":"qq","user_id":"unknown_selfid"},
+		"message_id":"100","alt_message":"你好","message":[{"type":"text","data":{"text":"你好"}}],
+		"user_id":"USER_OPENID"
+	}`)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body=%s", rec.Code, rec.Body)
+	}
+	if len(consumer.events) != 1 {
+		t.Fatalf("consumer got %d events, want 1", len(consumer.events))
+	}
+	got := consumer.events[0]
+	if !got.IsPrivate() || got.ChatID() != "private:USER_OPENID" {
+		t.Fatalf("私聊会话键不对：%+v", got)
+	}
+}
+
 func TestServerIgnoresNonMessageEvents(t *testing.T) {
 	consumer := &fakeConsumer{}
 	server := newTestServer(t, "", consumer)
 
 	cases := []string{
 		`{"type":"notice","detail_type":"group","self":{"platform":"qq"}}`,
-		`{"type":"message","detail_type":"private","self":{"platform":"qq"},"user_id":"1"}`,
+		`{"type":"message","detail_type":"private","self":{"platform":"qq"}}`,
+		`{"type":"message","detail_type":"channel","self":{"platform":"qq"}}`,
 		`{"type":"message","detail_type":"group","group_id":"1","user_id":"1"}`,
 		`{"type":"message","detail_type":"group","self":{"platform":"qq"},"user_id":"1"}`,
 		`{"type":"message","detail_type":"group","self":{"platform":"qq"},"group_id":"1"}`,

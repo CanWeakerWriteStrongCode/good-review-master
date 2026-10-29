@@ -110,7 +110,16 @@ type OpenAIAdapter struct {
 	// jsonMode 记录 ChatJSON 可用的 response_format 档位（0=schema 1=object 2=none）。
 	// 后端对不支持的字段会回 400，降级一次后就不必每条消息都重试同一档。
 	jsonMode atomic.Int32
+
+	// noThinkingOff 记录后端是否拒绝 chat_template_kwargs（false=带，true=已剥离）。
+	// 只有 ChatJSON（裁判）会带它：严格云端把未知字段当 400，剥离一次后不再发。
+	noThinkingOff atomic.Bool
 }
+
+// noThinkingKwargs 关闭推理模型的思考阶段（Qwen3 系 chat template 认 enable_thinking）。
+// 裁判只判断"回/不回"，实测本机 llama.cpp 带思考 14s / 842 tokens，
+// 关掉后 1.6s / 63 tokens，判断结果不变。
+var noThinkingKwargs = map[string]any{"enable_thinking": false}
 
 // ChatJSON 的 response_format 档位。
 const (
@@ -148,7 +157,7 @@ func (adapter *OpenAIAdapter) SingleChat(ctx context.Context, chatLog, systemPro
 
 // Chat 多轮对话；tools 非空时下发原生 function calling 工具清单
 func (adapter *OpenAIAdapter) MutiChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error) {
-	return adapter.chatCompletion(ctx, messages, tools, nil)
+	return adapter.chatCompletion(ctx, messages, tools, nil, nil)
 }
 
 // ChatJSON 见 Client 接口。按 schema → json_object → 无 的档位逐级降级：
@@ -174,10 +183,22 @@ func (adapter *OpenAIAdapter) ChatJSON(ctx context.Context, messages []Message, 
 			}
 		}
 
-		resp, err := adapter.chatCompletion(ctx, messages, nil, format)
+		var kwargs map[string]any
+		if !adapter.noThinkingOff.Load() {
+			kwargs = noThinkingKwargs
+		}
+		resp, err := adapter.chatCompletion(ctx, messages, nil, format, kwargs)
 		if err == nil {
 			telemetry.LLMResponseFormatTotal.WithLabelValues(jsonModeNames[mode]).Inc()
 			return resp, nil
+		}
+		// 后端不认识 chat_template_kwargs：剥离后重试同一档。
+		// 必须排在 response_format 降级之前，否则会把"字段不支持"误判成"格式不支持"。
+		if !adapter.noThinkingOff.Load() && chatTemplateKwargsRejected(err) &&
+			adapter.noThinkingOff.CompareAndSwap(false, true) {
+			logutil.Warn("模型不支持 chat_template_kwargs，裁判将不再关闭思考",
+				"model", adapter.model, "err", err)
+			continue
 		}
 		if mode == jsonModeNone || !responseFormatRejected(err) {
 			return nil, err
@@ -192,8 +213,10 @@ func (adapter *OpenAIAdapter) ChatJSON(ctx context.Context, messages []Message, 
 }
 
 // chatCompletion 是两条调用路径的公共实现：组装请求、打日志、计时、埋点、解析响应。
-// responseFormat 为 nil 时不带 response_format 字段（与改造前的请求字节一致）。
-func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Message, tools []Tool, responseFormat *openai.ChatCompletionResponseFormat) (*ChatResponse, error) {
+// responseFormat 为 nil 时不带 response_format 字段；chatTemplateKwargs 为 nil 时
+// 不带 chat_template_kwargs 字段（主回复路径保持与改造前逐字节一致）。
+func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Message, tools []Tool,
+	responseFormat *openai.ChatCompletionResponseFormat, chatTemplateKwargs map[string]any) (*ChatResponse, error) {
 	formatName := "none"
 	if responseFormat != nil {
 		formatName = string(responseFormat.Type)
@@ -210,13 +233,14 @@ func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Mes
 	defer span.End()
 
 	req := openai.ChatCompletionRequest{
-		Model:          adapter.model,
-		Messages:       toOpenAIMessages(messages),
-		Temperature:    adapter.temp,
-		TopP:           adapter.topP,
-		Tools:          toOpenAITools(tools),
-		ToolChoice:     "auto",
-		ResponseFormat: responseFormat,
+		Model:              adapter.model,
+		Messages:           toOpenAIMessages(messages),
+		Temperature:        adapter.temp,
+		TopP:               adapter.topP,
+		Tools:              toOpenAITools(tools),
+		ToolChoice:         "auto",
+		ResponseFormat:     responseFormat,
+		ChatTemplateKwargs: chatTemplateKwargs,
 	}
 	// Debug 级把「发给大模型的完整请求 JSON」整段打出来。
 	// 字段顺序按模型 chat template 的渲染顺序排列（tools 在 messages 之前），
@@ -296,6 +320,18 @@ func responseFormatRejected(err error) bool {
 		return formatRejectStatus(reqErr.HTTPStatusCode)
 	}
 	return false
+}
+
+// chatTemplateKwargsRejected 判断错误是否像"后端不认识 chat_template_kwargs"。
+//
+// 只有报错里点名字段时才剥离：其余 4xx 交给 response_format 降级链，
+// 免得每换一个后端都多打一趟无效请求。
+func chatTemplateKwargsRejected(err error) bool {
+	if !responseFormatRejected(err) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "chat_template_kwargs") || strings.Contains(msg, "enable_thinking")
 }
 
 func formatRejectStatus(status int) bool {

@@ -5,8 +5,9 @@
     QQ 官方机器人 / OneBot / 微信 / TG ── AstrBot 适配器 ── 本插件 ──HTTP──> Go 核心
                                                     <──HTTP───  动作请求
 
-- 入站：把 AstrBot 收到的事件转成 OneBot 12 事件，POST 到 Go 的 /im/event/{account}；
-  account 优先取事件所属平台实例的 AppID（一个进程挂多个 QQ 官方账号时各走各的）；
+- 入站：把 AstrBot 收到的事件转成 OneBot 12 事件（群聊 group / 私聊 private），
+  POST 到 Go 的 /im/event/{account}；account 优先取事件所属平台实例的 AppID
+  （一个进程挂多个 QQ 官方账号时各走各的）；
 - 出站：监听一个本地 HTTP 端口，实现 OneBot 12 的 POST / 动作服务
   （send_message / get_self_info / get_group_info / get_group_member_info / ...）。
   aiocqhttp 走 AstrBot 的 send_by_session；qq_official 单独走官方被动回复 API
@@ -121,9 +122,11 @@ class OneBotBridge(Star):
         # 最近一条入站事件来自哪个平台实例；没有更精确信息时用它兜底。
         self._last_platform_id = ""
         # 出站路由：self_id → 平台实例是首选（同群多账号也能选对），
-        # group_id → 平台实例只在拿不到 self_id 时兜底。
+        # group_id → 平台实例只在拿不到 self_id 时兜底；私聊按 user_id 兜底
+        # （C2C 的 openid 按机器人分配，不会跨账号混用）。
         self._self_platform: dict[str, str] = {}
         self._group_platform: dict[str, str] = {}
+        self._private_platform: dict[str, str] = {}
         # 每个会话最近一条入站消息 ID：qq_official 的被动回复必须带它。
         self._last_msg_ids: dict[str, str] = {}
         # 每个会话的 msg_seq 计数器（官方 API 要求同一 msg_id 下唯一）。
@@ -163,8 +166,8 @@ class OneBotBridge(Star):
         try:
             msg = event.message_obj
             group_id = str(getattr(msg, "group_id", "") or "")
-            if not group_id:
-                # 私聊 / WebChat 不归 Go 管：不转发也不拦，交给 AstrBot 自己的 Agent。
+            if not group_id and not self._private_user_id(msg):
+                # 既不是群聊也不是私聊（如 WebChat）：不归 Go 管，不转发也不拦。
                 return
             await self._ensure_session()
             try:
@@ -194,10 +197,10 @@ class OneBotBridge(Star):
                 event.stop_event()
 
     def _build_payload(self, event: AstrMessageEvent) -> dict | None:
-        """把一条 AstrBot 群消息转成 OneBot 12 事件。
+        """把一条 AstrBot 消息转成 OneBot 12 事件（群聊 detail_type=group，私聊=private）。
 
-        事件体只用标准字段（id/time/type/detail_type/sub_type/self + 群消息字段），
-        没有任何私有路由字段：接收账号由上报路径表达，平台由 self.platform 表达。
+        事件体只用标准字段，没有任何私有路由字段：接收账号由上报路径表达，
+        平台由 self.platform 表达。
         """
         msg = event.message_obj
         platform_id = self._platform_id(event)
@@ -212,6 +215,29 @@ class OneBotBridge(Star):
         raw_message_id = str(getattr(msg, "message_id", "") or "")
         message_id = raw_message_id or f"local-{uuid.uuid4().hex}"
         timestamp = float(getattr(msg, "timestamp", 0) or time.time())
+
+        private_user_id = self._private_user_id(msg)
+        if private_user_id:
+            # 私聊（C2C）：OneBot 12 用 detail_type=private，没有 group_id。
+            # 私聊没有 @ 语义，self.user_id 发哨兵（Go 侧不会拿它做 @ 比较）；
+            # 出站时按 user_id 找回平台实例。
+            if platform_id:
+                self._private_platform[private_user_id] = platform_id
+            return {
+                "id": message_id,
+                "time": timestamp,
+                "type": "message",
+                "detail_type": "private",
+                "sub_type": "friend",
+                "self": {
+                    "platform": self._ob12_platform(platform_id),
+                    "user_id": "unknown_selfid",
+                },
+                "message_id": message_id,
+                "message": segments,
+                "alt_message": self._render_ob12(segments, ""),
+                "user_id": private_user_id,
+            }
 
         payload = {
             "id": message_id,
@@ -394,6 +420,13 @@ class OneBotBridge(Star):
             return str(event.get_platform_id() or "")
         except Exception:
             return ""
+
+    @staticmethod
+    def _private_user_id(msg) -> str:
+        """私聊对端 user_id（QQ 官方 C2C 是用户 openid）；群消息返回空串。"""
+        if str(getattr(msg, "group_id", "") or ""):
+            return ""
+        return str(getattr(getattr(msg, "sender", None), "user_id", "") or "")
 
     @staticmethod
     def _placeholder_at_me(msg) -> bool:
@@ -841,18 +874,31 @@ class OneBotBridge(Star):
         segments = [self._ob12_segment_to_ob11(seg) for seg in segments]
         if action == "send_message":
             detail_type = str(params.get("detail_type") or "")
-            if detail_type and detail_type != "group":
+            if detail_type == "private":
+                action = "send_private_msg"
+            elif detail_type in ("", "group"):
+                action = "send_group_msg"
+            else:
                 return {
                     "status": "failed",
                     "retcode": 1404,
-                    "message": f"暂不支持 detail_type={detail_type}（当前只有群消息）",
+                    "message": f"暂不支持 detail_type={detail_type}（只支持 group / private）",
                 }
-            action = "send_group_msg"
 
         group_id = str(params.get("group_id") or "")
         user_id = str(params.get("user_id") or "")
         self_id = str(params.get("self_id") or "")
-        adapter = self._get_adapter(group_id, self_id)
+        # 私聊没有 group_id / self_id 可选账号：用入站时记下的 user_id → 平台实例。
+        adapter = None
+        if not group_id and user_id:
+            platform_id = self._private_platform.get(user_id, "")
+            if platform_id:
+                try:
+                    adapter = self.context.get_platform_inst(platform_id)
+                except Exception:
+                    adapter = None
+        if adapter is None:
+            adapter = self._get_adapter(group_id, self_id)
         if adapter is None:
             return {
                 "status": "failed",
