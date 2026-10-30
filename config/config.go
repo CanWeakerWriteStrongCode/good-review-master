@@ -103,6 +103,13 @@ type LLMConf struct {
 	ReplyMaxSentences    int // 最终回复的句数上限（模型出稿后再排一次版）；0=关闭排版
 	ReplyRewriteMinRunes int // 原稿不足这么多字就不排版；0=不设下限
 
+	// 入库图片描述（全局图库）：长边/总像素限值、单张超时、失败重试、单消息并发。
+	ImageNoteMaxSide     int // 降采样长边；0=关闭入库描述
+	ImageNoteMaxPixels   int // 总像素上限；0=不限制
+	ImageNoteTimeoutSec  int // 单张描述超时秒数；0=用 LLMTimeout
+	ImageNoteRetries     int // 失败重试上限；0=不重试
+	ImageNoteConcurrency int // 单条消息内并发描述数；0=按 1 处理
+
 	RateLimitPerSec float64       // 出站全局限速（每秒允许的调用数）；0=不限速
 	RateLimitBurst  int           // 令牌桶容量；0=按限速值向上取整、至少 1
 	BreakerFailures int           // 连续失败多少次后熔断；-1=关闭熔断

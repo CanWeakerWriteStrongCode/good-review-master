@@ -713,6 +713,59 @@ llm:
 	}
 }
 
+// TestImageNoteConfig 入库图片描述参数：缺省值、显式 0 语义、负数非法。
+func TestImageNoteConfig(t *testing.T) {
+	const minimal = `runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`
+	cfg, err := loadWith(t, minimal, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := cfg.LLMConfig.ImageNoteMaxSide; got != 640 {
+		t.Fatalf("缺省长边 = %d，期望 640", got)
+	}
+	if got := cfg.LLMConfig.ImageNoteMaxPixels; got != 400000 {
+		t.Fatalf("缺省像素上限 = %d，期望 400000", got)
+	}
+	if got := cfg.LLMConfig.ImageNoteTimeoutSec; got != 15 {
+		t.Fatalf("缺省超时 = %d，期望 15", got)
+	}
+	if got := cfg.LLMConfig.ImageNoteRetries; got != 2 {
+		t.Fatalf("缺省重试 = %d，期望 2", got)
+	}
+	if got := cfg.LLMConfig.ImageNoteConcurrency; got != 3 {
+		t.Fatalf("缺省并发 = %d，期望 3", got)
+	}
+
+	cfg, err = loadWith(t, minimal+`  image_note_max_side: 0
+  image_note_max_pixels: 0
+  image_note_timeout_sec: 0
+  image_note_retries: 0
+  image_note_concurrency: 0
+`, "")
+	if err != nil {
+		t.Fatalf("显式 0 不应报错：%v", err)
+	}
+	if cfg.LLMConfig.ImageNoteMaxSide != 0 || cfg.LLMConfig.ImageNoteMaxPixels != 0 ||
+		cfg.LLMConfig.ImageNoteTimeoutSec != 0 || cfg.LLMConfig.ImageNoteRetries != 0 ||
+		cfg.LLMConfig.ImageNoteConcurrency != 0 {
+		t.Fatalf("显式 0 应全部保留，实际 %+v", cfg.LLMConfig)
+	}
+
+	for _, key := range []string{
+		"image_note_max_side", "image_note_max_pixels", "image_note_timeout_sec",
+		"image_note_retries", "image_note_concurrency",
+	} {
+		if _, err := loadWith(t, minimal+"  "+key+": -1\n", ""); err == nil {
+			t.Fatalf("%s 负数应被拒绝", key)
+		}
+	}
+}
+
 // TestReplySendInterval 分句发送间隔：缺省 800ms；显式 0 = 不拆分；负数非法。
 func TestReplySendInterval(t *testing.T) {
 	const minimal = `runtime:

@@ -73,6 +73,12 @@ func assemble(sections *sections) *Config {
 			ReplyMaxSentences:    *sections.LLM.ReplyMaxSentences,
 			ReplyRewriteMinRunes: *sections.LLM.ReplyRewriteMinRunes,
 
+			ImageNoteMaxSide:     *sections.LLM.ImageNoteMaxSide,
+			ImageNoteMaxPixels:   *sections.LLM.ImageNoteMaxPixels,
+			ImageNoteTimeoutSec:  *sections.LLM.ImageNoteTimeoutSec,
+			ImageNoteRetries:     *sections.LLM.ImageNoteRetries,
+			ImageNoteConcurrency: *sections.LLM.ImageNoteConcurrency,
+
 			RateLimitPerSec: sections.LLM.RateLimitPerSec,
 			RateLimitBurst:  sections.LLM.RateLimitBurst,
 			BreakerFailures: sections.LLM.BreakerFailures,

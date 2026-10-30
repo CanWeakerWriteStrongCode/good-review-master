@@ -18,10 +18,39 @@ type Message struct {
 	Nickname  string   `json:"nick"`
 	Card      string   `json:"card"`
 	Content   string   `json:"content"`
-	Images    []string `json:"images,omitempty"`   // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
-	ReplyToID string   `json:"quote_id,omitempty"` // 本条引用的消息 message_id；空=没有引用
-	RefIdx    string   `json:"ref_idx,omitempty"`  // 平台侧引用索引（QQ 官方 REFIDX），用于反查被引消息
-	Time      int64    `json:"time"`
+	Images    []string `json:"images,omitempty"` // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
+	// ImageIDs 与 Images 一一对齐：图片内容标识（sha256 + 字节大小），持久化在 messages.image_ids。
+	ImageIDs []ImageID `json:"image_ids,omitempty"`
+	// ImageNotes 与 Images 一一对齐：全局图库里的描述，仅内存（重启时按 ImageIDs 回填）。
+	ImageNotes []ImageNote `json:"-"`
+	ReplyToID  string      `json:"quote_id,omitempty"` // 本条引用的消息 message_id；空=没有引用
+	RefIdx     string      `json:"ref_idx,omitempty"`  // 平台侧引用索引（QQ 官方 REFIDX），用于反查被引消息
+	Time       int64       `json:"time"`
+}
+
+// ImageID 图片内容标识。sha256 与字节大小联合使用：单看哈希有极小概率碰撞，
+// 加大小一起比对成本可以忽略。
+type ImageID struct {
+	SHA  string `json:"sha"`
+	Size int64  `json:"size"`
+}
+
+// ImageNote 全局图库（image_notes 表）里一张图的描述。
+// 描述只写图本身、与聊天语境无关，所以可以跨群、跨账号复用。
+// 注意：只存描述与尺寸，**不存文件地址**——旧消息的图可能已被清理，
+// 候选列表展示的 url 始终取当前消息自己的 Images。
+type ImageNote struct {
+	ImageID
+	MIME      string `json:"mime,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Animated  bool   `json:"animated,omitempty"`
+	Note      string `json:"note,omitempty"`
+	InfoLevel string `json:"info_level,omitempty"` // high|medium|low|none|unknown
+	HasText   bool   `json:"has_text,omitempty"`
+	Status    string `json:"status,omitempty"`   // ok|failed
+	Attempts  int    `json:"attempts,omitempty"` // 描述尝试次数（失败重试上限用）
+	Model     string `json:"model,omitempty"`    // 生成描述用的模型名
 }
 
 // GroupMsgCache 群消息环形缓存（零拷贝实现）

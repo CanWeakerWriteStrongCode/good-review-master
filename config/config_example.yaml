@@ -129,6 +129,18 @@ llm:
   reply_max_sentences: 5
   # 原稿不足这么多字就不排版（直接发原文），省一次模型调用。默认 60；显式 0 = 不设下限。
   reply_rewrite_min_runes: 60
+  # 入库图片描述：图片进群时算内容哈希（sha256+大小），未命中全局图库就同步调一次低清描述并入库。
+  # 之后候选列表会带上「内容/信息量」，模型据此决定是否再看原图；view_image 仍是纯工具。
+  # 描述图的长边（像素）。越小越省视觉 token；显式 0 = 关闭入库描述（回到纯工具看图）。
+  image_note_max_side: 640
+  # 描述图的总像素上限（防止超长截图把 token 拉高）；显式 0 = 不限制。
+  image_note_max_pixels: 400000
+  # 单张图描述超时（秒）；显式 0 = 用 runtime.llm_timeout_sec。
+  image_note_timeout_sec: 15
+  # 描述失败后的重试次数；显式 0 = 不重试（失败后按"无描述"处理）。
+  image_note_retries: 2
+  # 单条消息内最多并发描述几张图；显式 0 = 按 1 处理。整条消息另有 30 秒总预算。
+  image_note_concurrency: 3
   # view_image 允许读取的本地图片目录。QQ 官方机器人收到的图片在 AstrBot 里是本地临时文件
   # （如 ~/.astrbot/data/temp/media_image_*.png），不是 http URL。
   # 不写默认 ["~/.astrbot/data/temp"]；自定义 AstrBot 数据目录时改这里。

@@ -141,6 +141,11 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `llm.image_max` | Max images actually viewed per reply (0 = disabled) | `3` |
 | `llm.reply_max_sentences` | Max sentences per final reply (one extra formatting call after drafting; 0 = disabled) | `5` |
 | `llm.reply_rewrite_min_runes` | Drafts shorter than this many characters skip formatting (0 = no minimum) | `60` |
+| `llm.image_note_max_side` | Long side of the downscaled image used for the ingest description (0 = disable ingest descriptions) | `640` |
+| `llm.image_note_max_pixels` | Max total pixels for the description image (0 = unlimited) | `400000` |
+| `llm.image_note_timeout_sec` | Per-image description timeout (0 = use `runtime.llm_timeout_sec`) | `15` |
+| `llm.image_note_retries` | Retry count after a failed description (0 = no retry) | `2` |
+| `llm.image_note_concurrency` | Concurrent descriptions within one message (0 = 1) | `3` |
 | `llm.image_local_dirs` | Local directories `view_image` may read (QQ official images are local AstrBot temp files) | `["~/.astrbot/data/temp"]` |
 | `runtime.llm_send_count` | Recent messages sent per request (reset window) | `200` |
 | `runtime.max_cache_msg` | Max ring-buffer messages (≈31×llm_send_count) | `6200` |
@@ -200,7 +205,7 @@ rules:
 
 Add a new variant by adding an entry under the same list — no code changes needed. If a `persona` block is present, all 5 fields are required; it is rendered at the tail of the user message sent to the LLM (see [Core Mechanisms](#core-mechanisms)).
 
-`internal` holds the built-in features' own prompts. Edit them directly in `prompt_system.yaml`; hot reload picks them up. The first three are listed in the order they are assembled into the reply system prompt; the last three are standalone calls:
+`internal` holds the built-in features' own prompts. Edit them directly in `prompt_system.yaml`; hot reload picks them up. The first three are listed in the order they are assembled into the reply system prompt; the last four are standalone calls:
 
 1. `internal.reply_requirement`: the 【要求】 line in the system prompt for @ replies
 2. `internal.proactive_requirement`: the 【要求】 line used instead when replying proactively
@@ -208,6 +213,7 @@ Add a new variant by adding an entry under the same list — no code changes nee
 4. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message; it outputs `reply / long_form / focus / reason` (never reply when the last message @s someone other than the bot)
 5. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
 6. `internal.reply_rewrite`: formatting prompt that rewrites the drafted reply into at most N short sentences (N = `llm.reply_max_sentences`); the request carries the bot identity, the chat log used to generate the reply and the reply itself, and asks the model to preserve the original tone
+7. `internal.image_describe`: generates a chat-independent description of a newly received image (type / topic / information level / whether it has text) into the global `image_notes` library, so the candidate list can decide whether the full image is worth viewing
 
 ## Command System
 

@@ -33,6 +33,19 @@ type llmSection struct {
 	// 缺省 60；显式 0 = 不设下限（只要开启排版就总是排版）。
 	ReplyRewriteMinRunes *int `yaml:"reply_rewrite_min_runes"`
 
+	// 入库图片描述（全局图库 image_notes）：图片进来时算内容哈希，未命中就同步调一次
+	// 低清描述并入库，后续候选列表直接带"内容/信息量"。
+	// ImageNoteMaxSide 描述用的降采样长边；显式 0 = 关闭入库描述（回到纯工具看图）。
+	ImageNoteMaxSide *int `yaml:"image_note_max_side"`
+	// ImageNoteMaxPixels 描述图的像素总数上限（防止超长截图拉高视觉 token）；显式 0 = 不限制。
+	ImageNoteMaxPixels *int `yaml:"image_note_max_pixels"`
+	// ImageNoteTimeoutSec 单张图的描述超时秒数；显式 0 = 用 llm_timeout_sec。
+	ImageNoteTimeoutSec *int `yaml:"image_note_timeout_sec"`
+	// ImageNoteRetries 描述失败后的重试上限；显式 0 = 不重试。
+	ImageNoteRetries *int `yaml:"image_note_retries"`
+	// ImageNoteConcurrency 单条消息内最多并发描述几张；显式 0 = 按 1 处理。
+	ImageNoteConcurrency *int `yaml:"image_note_concurrency"`
+
 	RateLimitPerSec    float64 `yaml:"rate_limit_per_sec"`
 	RateLimitBurst     int     `yaml:"rate_limit_burst"`
 	BreakerFailures    int     `yaml:"breaker_failures"`
@@ -63,6 +76,14 @@ const (
 	// defaultReplyRewriteMinRunes 短于这个字数就不排版：短回复本来就没多少可拆的，
 	// 多一次模型调用只会拖慢发送。0 = 不设下限。
 	defaultReplyRewriteMinRunes = 60
+
+	// 入库图片描述缺省：长边 640、总像素 ≤ 40 万（约 ≤500 视觉 token），
+	// 单张 15 秒超时、失败重试 2 次、单条消息内并发 3 张。
+	defaultImageNoteMaxSide     = 640
+	defaultImageNoteMaxPixels   = 400_000
+	defaultImageNoteTimeoutSec  = 15
+	defaultImageNoteRetries     = 2
+	defaultImageNoteConcurrency = 3
 )
 
 // supportedProviders 支持的 provider 白名单。加新 provider 时要同时改 app/build.go 的分支。
@@ -112,6 +133,26 @@ func (s *llmSection) SetDefaults() {
 	if s.ReplyRewriteMinRunes == nil {
 		defaultMinRunes := defaultReplyRewriteMinRunes
 		s.ReplyRewriteMinRunes = &defaultMinRunes
+	}
+	if s.ImageNoteMaxSide == nil {
+		v := defaultImageNoteMaxSide
+		s.ImageNoteMaxSide = &v
+	}
+	if s.ImageNoteMaxPixels == nil {
+		v := defaultImageNoteMaxPixels
+		s.ImageNoteMaxPixels = &v
+	}
+	if s.ImageNoteTimeoutSec == nil {
+		v := defaultImageNoteTimeoutSec
+		s.ImageNoteTimeoutSec = &v
+	}
+	if s.ImageNoteRetries == nil {
+		v := defaultImageNoteRetries
+		s.ImageNoteRetries = &v
+	}
+	if s.ImageNoteConcurrency == nil {
+		v := defaultImageNoteConcurrency
+		s.ImageNoteConcurrency = &v
 	}
 }
 
@@ -164,6 +205,21 @@ func (s *llmSection) Validate() error {
 	if s.ReplyRewriteMinRunes != nil && *s.ReplyRewriteMinRunes < 0 {
 		return fmt.Errorf("llm.reply_rewrite_min_runes 不能为负（当前 %d）：0 表示不设下限（总是排版），正整数表示原稿至少多少字才排版",
 			*s.ReplyRewriteMinRunes)
+	}
+	for _, item := range []struct {
+		name string
+		val  *int
+	}{
+		{"llm.image_note_max_side", s.ImageNoteMaxSide},
+		{"llm.image_note_max_pixels", s.ImageNoteMaxPixels},
+		{"llm.image_note_timeout_sec", s.ImageNoteTimeoutSec},
+		{"llm.image_note_retries", s.ImageNoteRetries},
+		{"llm.image_note_concurrency", s.ImageNoteConcurrency},
+	} {
+		if item.val != nil && *item.val < 0 {
+			return fmt.Errorf("%s 不能为负（当前 %d）：0 有各自含义（max_side=关闭描述，max_pixels=不限制，timeout=用 llm_timeout_sec，retries=不重试，concurrency=按 1 处理）",
+				item.name, *item.val)
+		}
 	}
 	// 这里刻意**不**检查 cache_hit_cost < cache_miss_cost。
 	// 两者相等是合法且有意为之的配置（等价于"永远不扩展、每次重置"）——

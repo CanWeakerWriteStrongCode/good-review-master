@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,9 +33,10 @@ const FileName = "state.db"
 const (
 	// schemaVersion 当前表结构版本。v1 是"每工作空间一个库"的旧结构，
 	// v2 起所有表都带 workspace_id；v3 增加 groups（群档案）；
-	// v4 给 messages 增加 ref_idx（平台引用索引，QQ 官方是 REFIDX）。
+	// v4 给 messages 增加 ref_idx（平台引用索引，QQ 官方是 REFIDX）；
+	// v5 给 messages 增加 image_ids（图片内容标识），并新增全局 image_notes 图库。
 	// 只有 v1 会重建表，v2 之后一律增量升级，已有消息不丢。
-	schemaVersion = 4
+	schemaVersion = 5
 
 	// writeQueueSize 异步写队列容量。群聊消息量很低，这个值足够吸收一次突发；
 	// 满了丢 DB 写（内存缓存仍有），入站路径绝不能被磁盘拖住。
@@ -156,6 +158,7 @@ func migrate(db *sql.DB, path string) error {
 			user_id      TEXT NOT NULL,
 			content      TEXT NOT NULL,
 			images       TEXT NOT NULL DEFAULT '[]',
+			image_ids    TEXT NOT NULL DEFAULT '[]',
 			reply_to     TEXT NOT NULL DEFAULT '',
 			ref_idx      TEXT NOT NULL DEFAULT '',
 			ts           INTEGER NOT NULL,
@@ -206,7 +209,27 @@ func migrate(db *sql.DB, path string) error {
 			updated_at   INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
-		`PRAGMA user_version = 4`,
+		// image_notes 是全局图库：**不带 workspace_id**。描述只写图本身，
+		// 同一张图在任意群/账号出现都能命中；主键是内容哈希 + 字节大小。
+		// 刻意不存文件地址：地址只属于某条消息，旧路径可能已被清理；
+		// 渲染候选时 url 取自 messages.images（当前聊天记录）。
+		`CREATE TABLE IF NOT EXISTS image_notes (
+			sha256     TEXT NOT NULL,
+			byte_size  INTEGER NOT NULL,
+			mime       TEXT NOT NULL DEFAULT '',
+			width      INTEGER NOT NULL DEFAULT 0,
+			height     INTEGER NOT NULL DEFAULT 0,
+			animated   INTEGER NOT NULL DEFAULT 0,
+			note       TEXT NOT NULL DEFAULT '',
+			info_level TEXT NOT NULL DEFAULT 'unknown',
+			has_text   INTEGER NOT NULL DEFAULT 0,
+			status     TEXT NOT NULL DEFAULT 'ok',
+			attempts   INTEGER NOT NULL DEFAULT 0,
+			model      TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (sha256, byte_size)
+		)`,
+		`PRAGMA user_version = 5`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -220,6 +243,12 @@ func migrate(db *sql.DB, path string) error {
 		}
 		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_ref ON messages(workspace_id, group_id, ref_idx)`); err != nil {
 			return fmt.Errorf("创建消息引用索引失败：%w", err)
+		}
+	}
+	// v5：messages 补 image_ids（与 images 对齐的图片内容标识）。
+	if version < 5 {
+		if err := ensureColumn(db, "messages", "image_ids", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -263,16 +292,20 @@ func (s *Scope) SaveMessage(msg cache.Message) {
 func (s *Store) writeLoop() {
 	defer s.wg.Done()
 	const insert = `INSERT OR REPLACE INTO messages
-		(workspace_id, group_id, message_id, user_id, content, images, reply_to, ref_idx, ts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		(workspace_id, group_id, message_id, user_id, content, images, image_ids, reply_to, ref_idx, ts)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	for item := range s.queue {
 		msg := item.msg
 		images, err := json.Marshal(msg.Images)
 		if err != nil {
 			images = []byte("[]")
 		}
+		imageIDs, err := json.Marshal(msg.ImageIDs)
+		if err != nil {
+			imageIDs = []byte("[]")
+		}
 		if _, err := s.db.Exec(insert, item.workspaceID, msg.GroupID, msg.MessageID, msg.UserID,
-			msg.Content, string(images), msg.ReplyToID, msg.RefIdx, msg.Time); err != nil {
+			msg.Content, string(images), string(imageIDs), msg.ReplyToID, msg.RefIdx, msg.Time); err != nil {
 			s.noteFailure("写入消息", err)
 		}
 	}
@@ -290,7 +323,7 @@ func (s *Scope) LoadRecent(limit int) ([]cache.Message, error) {
 		return nil, nil
 	}
 	rows, err := s.store.db.Query(`
-		SELECT group_id, message_id, user_id, content, images, reply_to, ref_idx, ts FROM (
+		SELECT group_id, message_id, user_id, content, images, image_ids, reply_to, ref_idx, ts FROM (
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY ts DESC) AS rn
 			FROM messages WHERE workspace_id = ?
 		) WHERE rn <= ? ORDER BY group_id, ts`, s.workspaceID, limit)
@@ -302,17 +335,163 @@ func (s *Scope) LoadRecent(limit int) ([]cache.Message, error) {
 	var out []cache.Message
 	for rows.Next() {
 		var msg cache.Message
-		var images string
+		var images, imageIDs string
 		if err := rows.Scan(&msg.GroupID, &msg.MessageID, &msg.UserID, &msg.Content,
-			&images, &msg.ReplyToID, &msg.RefIdx, &msg.Time); err != nil {
+			&images, &imageIDs, &msg.ReplyToID, &msg.RefIdx, &msg.Time); err != nil {
 			return nil, err
 		}
 		if images != "" {
 			_ = json.Unmarshal([]byte(images), &msg.Images)
 		}
+		if imageIDs != "" {
+			_ = json.Unmarshal([]byte(imageIDs), &msg.ImageIDs)
+		}
 		out = append(out, msg)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 图片描述不随消息存，按 image_ids 从全局图库批量回填（描述是跨群复用的）。
+	s.hydrateImageNotes(out)
+	return out, nil
+}
+
+// hydrateImageNotes 给一批消息按 ImageIDs 回填 ImageNotes（与 Images 对齐）。失败只降级。
+func (s *Scope) hydrateImageNotes(msgs []cache.Message) {
+	var ids []cache.ImageID
+	for _, msg := range msgs {
+		ids = append(ids, msg.ImageIDs...)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	notes, err := s.store.GetImageNotes(ids)
+	if err != nil {
+		s.store.noteFailure("读取图片描述", err)
+		return
+	}
+	for i := range msgs {
+		if len(msgs[i].ImageIDs) == 0 {
+			continue
+		}
+		notesForMsg := make([]cache.ImageNote, len(msgs[i].ImageIDs))
+		for j, id := range msgs[i].ImageIDs {
+			notesForMsg[j] = notes[id]
+		}
+		msgs[i].ImageNotes = notesForMsg
+	}
+}
+
+// ImageNote 是全局图库的一行（image_notes 表，不含 workspace_id）。
+// 读写都在 Store 上：同一张图在所有工作空间之间共享。
+type ImageNote = cache.ImageNote
+
+// GetImageNotes 按 (sha256, byte_size) 批量读取图片描述，返回以 ImageID 为键的 map。
+// 未命中的 id 不会出现在结果里。
+func (s *Store) GetImageNotes(ids []cache.ImageID) (map[cache.ImageID]cache.ImageNote, error) {
+	if s == nil || len(ids) == 0 {
+		return nil, nil
+	}
+	bySHA := make(map[string]cache.ImageID, len(ids))
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		if id.SHA == "" {
+			continue
+		}
+		if _, ok := bySHA[id.SHA]; !ok {
+			bySHA[id.SHA] = id
+			args = append(args, id.SHA)
+		}
+	}
+	if len(args) == 0 {
+		return nil, nil
+	}
+	out := make(map[cache.ImageID]cache.ImageNote, len(ids))
+	// 分块查询：一次 IN 的参数个数有上限（启动回填可能带出几千条 image_ids）。
+	const chunkSize = 400
+	for start := 0; start < len(args); start += chunkSize {
+		end := min(start+chunkSize, len(args))
+		chunk := args[start:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		rows, err := s.db.Query(`SELECT sha256, byte_size, mime, width, height, animated, note, info_level, has_text, status, attempts, model
+			FROM image_notes WHERE sha256 IN (`+placeholders+`)`, chunk...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var note cache.ImageNote
+			var animated, hasText int
+			if err := rows.Scan(&note.SHA, &note.Size, &note.MIME, &note.Width, &note.Height,
+				&animated, &note.Note, &note.InfoLevel, &hasText, &note.Status, &note.Attempts, &note.Model); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			note.Animated = animated != 0
+			note.HasText = hasText != 0
+			// 以 (sha, size) 为准：同哈希不同大小的记录不算命中。
+			if want, ok := bySHA[note.SHA]; ok && want.Size == note.Size {
+				out[want] = note
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// SaveImageNote 写入/更新一条成功的图片描述。
+func (s *Store) SaveImageNote(note cache.ImageNote) error {
+	if s == nil || note.SHA == "" {
+		return nil
+	}
+	if note.Status == "" {
+		note.Status = "ok"
+	}
+	return s.upsertImageNote(note)
+}
+
+// MarkImageNoteFailed 记录一次描述失败。保留原有的尺寸/mime 信息，只累加 attempts。
+func (s *Store) MarkImageNoteFailed(note cache.ImageNote) error {
+	if s == nil || note.SHA == "" {
+		return nil
+	}
+	note.Status = "failed"
+	return s.upsertImageNote(note)
+}
+
+func (s *Store) upsertImageNote(note cache.ImageNote) error {
+	animated, hasText := 0, 0
+	if note.Animated {
+		animated = 1
+	}
+	if note.HasText {
+		hasText = 1
+	}
+	_, err := s.db.Exec(`INSERT INTO image_notes
+		(sha256, byte_size, mime, width, height, animated, note, info_level, has_text, status, attempts, model, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(sha256, byte_size) DO UPDATE SET
+			mime = CASE WHEN excluded.mime <> '' THEN excluded.mime ELSE image_notes.mime END,
+			width = CASE WHEN excluded.width > 0 THEN excluded.width ELSE image_notes.width END,
+			height = CASE WHEN excluded.height > 0 THEN excluded.height ELSE image_notes.height END,
+			animated = excluded.animated,
+			note = excluded.note,
+			info_level = excluded.info_level,
+			has_text = excluded.has_text,
+			status = excluded.status,
+			attempts = excluded.attempts,
+			model = excluded.model,
+			updated_at = excluded.updated_at`,
+		note.SHA, note.Size, note.MIME, note.Width, note.Height, animated, note.Note,
+		note.InfoLevel, hasText, note.Status, note.Attempts, note.Model, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // ResolveMessageID 用平台引用索引反查本群被引消息的 message_id。

@@ -270,6 +270,10 @@ func (m *Manager) load(id, platform, account string) (*Workspace, error) {
 		ws.Router.SetPersonaStore(st)
 		// 机器人自己的回复也要落库：否则重启后模型只能看到用户说过的话。
 		ws.Router.SetMessageSink(st.SaveMessage)
+		// 全局图库（image_notes）不分工作空间：直接注入共享 Store，按内容哈希跨账号复用。
+		if m.stateStore != nil {
+			ws.Router.SetImageNoteStore(m.stateStore)
+		}
 	}
 
 	ws.restore(cfg)

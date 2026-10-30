@@ -101,6 +101,12 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 		RefIdx:    event.QQMsgIdx,
 		Time:      eventTime(event),
 	}
+	// 入库图片描述：同步（用户接受因此变慢）。命中全局图库直接复用，
+	// 未命中才调一次低清描述；失败不阻塞消息入库，按"无描述"处理。
+	if ids, notes := ws.Router.EnsureImageNotes(ctx, msg.Images); len(ids) > 0 {
+		msg.ImageIDs = ids
+		msg.ImageNotes = notes
+	}
 	gc := ws.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg)
 	gc.Add(msg)
 	telemetry.CacheMessages.WithLabelValues(ws.ID, chatID).Set(float64(gc.Len()))

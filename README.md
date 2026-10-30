@@ -142,6 +142,11 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | `llm.image_max`             | 单次回复最多实际查看的图片张数（0=关闭看图）        | `3`                        |
 | `llm.reply_max_sentences`   | 最终回复的句数上限（出稿后再排版一次，最多几句；0=关闭排版） | `5`                        |
 | `llm.reply_rewrite_min_runes` | 原稿不足这么多字就不排版（直接发原文）；0=不设下限 | `60`                      |
+| `llm.image_note_max_side`   | 入库描述用的降采样长边（像素）；0=关闭入库描述 | `640`                      |
+| `llm.image_note_max_pixels` | 入库描述图的总像素上限；0=不限制 | `400000`                   |
+| `llm.image_note_timeout_sec` | 单张图描述超时（秒）；0=用 `runtime.llm_timeout_sec` | `15`                       |
+| `llm.image_note_retries`    | 描述失败重试次数；0=不重试 | `2`                        |
+| `llm.image_note_concurrency` | 单条消息内并发描述张数；0=按 1 | `3`                        |
 | `llm.image_local_dirs`      | `view_image` 允许读取的本地图片目录（QQ 官方图片是 AstrBot 本地临时文件） | `["~/.astrbot/data/temp"]` |
 | `runtime.llm_send_count`    | 每次发送的最近消息条数（重置窗口）               | `200`                      |
 | `runtime.max_cache_msg`     | 环形缓冲条数上限（建议 ≈31×llm_send_count） | `6200`                     |
@@ -200,7 +205,7 @@ rules:
 
 新增同类型变体只需在对应列表下加一项，无需改 Go 代码。`persona` 5 字段全必填，渲染在发给大模型的 user 消息末尾（详见[核心机制](#-核心机制)）。
 
-`internal` 下是内置指令自己的提示词，可直接在 `prompt_system.yaml` 里修改，热重载生效。前三项按拼进回复 system prompt 的先后排列，后三项是独立调用：
+`internal` 下是内置指令自己的提示词，可直接在 `prompt_system.yaml` 里修改，热重载生效。前三项按拼进回复 system prompt 的先后排列，后四项是独立调用：
 
 1. `internal.reply_requirement`：@ 回复时 system prompt 里的【要求】句
 2. `internal.proactive_requirement`：主动接话时替代上一条的【要求】句
@@ -208,6 +213,7 @@ rules:
 4. `internal.proactive_judge`：没有被 @ 时，判断“这条消息要不要主动回复”的裁判提示词；输出 `reply / long_form / focus / reason`（最后一条 @ 的是别人、不是机器人时一律不回）
 5. `internal.add_persona`：`#添加人格` 生成 prompt + persona 时发给大模型的系统提示词
 6. `internal.reply_rewrite`：模型出稿后，把回复发回来改写成最多 N 句短句（N 见 `llm.reply_max_sentences`）的排版提示词；请求里会附上机器人身份、生成回复时用的群聊记录和这条回复本身，并要求保持原回复的语气
+7. `internal.image_describe`：图片入库时生成与聊天语境无关的内容摘要（类型 / 主题 / 信息量 / 是否有文字），写入全局图库 `image_notes`，供候选列表判断是否值得看原图
 
 ### 群内动态添加指令
 

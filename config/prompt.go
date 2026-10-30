@@ -81,6 +81,16 @@ const (
 // 正常从 prompt_system.yaml 的 internal.reply_requirement 读取，老配置文件没有这一段时用这份。
 const defaultReplyRequirement = "【要求】发给你的内容是聊天记录，继续聊天或者执行指令后回复。"
 
+// defaultImageDescribe 是"入库图片描述"的系统提示词兜底：
+// 图片进群时把降采样图发回来，生成一句与聊天语境无关的内容摘要，供后续判断是否值得看原图。
+const defaultImageDescribe = `你是一个图片描述器。用一两句话说明这张图里有什么，供后续判断是否值得仔细查看：
+- 先说类型：新闻截图 / 聊天截图 / 图表 / 照片 / 梗图 / 表情包 / 其他；
+- 再说主题（新闻标题、关键人物、数据、画面内容），不展开细节、不转录全文；
+- info_level：high=必须读图里的文字或数据才能回答，medium=有可用的信息但不密集，low=几乎无信息，none=纯表情/装饰；
+- has_text：图里是否有清晰可读的文字；
+- 只描述图本身，不要猜测图外的聊天语境；看不清就按低信息量处理。
+只输出 JSON，不要解释。`
+
 // defaultReplyRewrite 是"最终回复再排一次版"的系统提示词兜底：
 // 模型出稿后，连同群聊记录一起发回来，用 JSON schema 约束成最多 N 句短句（N 在 user 消息里给）。
 const defaultReplyRewrite = `你是群聊回复的排版器。用户消息里有群聊记录和机器人刚生成的一条回复，结合上下文理解后把它改写成短句（句数上限以用户消息为准）：
@@ -300,6 +310,12 @@ func (pc *PromptConfig) ProactiveRequirement() string {
 // 句数上限不写在这里：它随配置变化，放在 user 消息里，system 保持稳定以命中缓存。
 func (pc *PromptConfig) ReplyRewritePrompt() string {
 	return pc.internalPrompt("reply_rewrite", defaultReplyRewrite)
+}
+
+// ImageDescribePrompt 返回"入库图片描述"的系统提示词（prompt_system.yaml 的
+// internal.image_describe）。描述只写图本身，跨群/跨账号复用。
+func (pc *PromptConfig) ImageDescribePrompt() string {
+	return pc.internalPrompt("image_describe", defaultImageDescribe)
 }
 
 // FocusPrompt 返回生成回复时追加的"回复焦点"提示词：

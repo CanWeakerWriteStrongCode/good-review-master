@@ -287,7 +287,7 @@ func TestPromptSystem示例含内置提示词(t *testing.T) {
 	}
 	for _, key := range []string{
 		"reply_requirement", "add_persona", "proactive_judge",
-		"proactive_requirement", "focus_context", "focus_last", "focus_mention", "reply_rewrite",
+		"proactive_requirement", "focus_context", "focus_last", "focus_mention", "reply_rewrite", "image_describe",
 	} {
 		if strings.TrimSpace(cfg.Internal[key]) == "" {
 			t.Errorf("prompt_system_example.yaml 缺少 internal.%s", key)

@@ -192,21 +192,33 @@ func (r *Router) mcpToolsTokens() int {
 }
 
 // imageCandidatesBlock 组装发给模型的「本次窗口内图片候选」文本块：把发送窗口里带图消息的
-// 所有图片 url 都列出来（url 只是文本，成本低），由模型自行决定调 view_image 实际查看哪张。
+// 所有图片 url 都列出来（url 只是文本，成本低），并附上全局图库里的内容/信息量描述，
+// 由模型据此决定是否调 view_image 实际查看。
+// url 永远取消息自己的 Images（当前聊天记录）；图库只复用描述，不存也不复用文件地址——
+// 旧消息的图可能已被清理，按 message_id 加图库 id 对齐即可。
 // 真正的开销控制是「实际查看上限 cfg.ImageMax」（见 runChatWithTools 的硬限）。无候选返回空串。
 func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	type row struct {
-		nick  string
-		msgID string
-		url   string
+		nick    string
+		msgID   string
+		url     string
+		note    cache.ImageNote
+		hasNote bool
 	}
 	rows := make([]row, 0)
 	for _, m := range msgs {
-		for _, u := range m.Images {
+		for i, u := range m.Images {
 			if u == "" {
 				continue
 			}
-			rows = append(rows, row{nick: m.Nickname, msgID: m.MessageID, url: u})
+			item := row{nick: m.Nickname, msgID: m.MessageID, url: u}
+			if i < len(m.ImageNotes) {
+				note := m.ImageNotes[i]
+				if note.Status == "ok" && note.Note != "" {
+					item.note, item.hasNote = note, true
+				}
+			}
+			rows = append(rows, item)
 		}
 	}
 	if len(rows) == 0 {
@@ -216,14 +228,22 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	var b strings.Builder
 	b.WriteString("\n【群内图片候选（共 ")
 	b.WriteString(fmt.Sprintf("%d", len(rows)))
-	b.WriteString(" 张）】候选只是文字，查看某张图才会真正载入像素。需要看图来回答（图片/表情/截图/图内文字）时，调用 view_image 工具并传对应 url；")
+	b.WriteString(" 张）】候选只是文字，查看某张图才会真正载入像素并占用上下文。先看每行末尾的内容/信息量：")
+	b.WriteString("信息量 low/none、或类型是表情包/梗图的，不要看；信息量 high/medium、或消息文字在问图里的东西，且回复需要其中信息时，才调用 view_image。")
 	b.WriteString("url 必须从下面逐字复制（文件名里的时间戳不要改写、不要猜测），改写会导致文件不存在；")
 	if viewMax := r.appCfg().LLMConfig.ImageMax; viewMax > 0 {
 		b.WriteString(fmt.Sprintf("本次最多实际查看 %d 张，达到上限后请直接基于已看到的内容作答；", viewMax))
 	}
-	b.WriteString("不要编造没实际看过的图片内容。\n")
+	b.WriteString("没有描述的图按聊天文字判断，拿不准但需要回应时最多看 1 张；不要编造没实际看过的图片内容。\n")
 	for i, row := range rows {
-		b.WriteString(fmt.Sprintf("图%d 发送者:%s (消息%s) url:%s\n", i+1, row.nick, row.msgID, row.url))
+		line := fmt.Sprintf("图%d 发送者:%s (消息%s) url:%s", i+1, row.nick, row.msgID, row.url)
+		if row.hasNote {
+			line += fmt.Sprintf(" 内容:%s 信息量:%s", row.note.Note, row.note.InfoLevel)
+			if row.note.HasText {
+				line += " 文字:有"
+			}
+		}
+		b.WriteString(line + "\n")
 	}
 	return strings.TrimSpace(b.String())
 }

@@ -393,3 +393,123 @@ func TestV3升级补引用索引(t *testing.T) {
 		t.Fatalf("补列后应可写 ref_idx：%q", got)
 	}
 }
+
+// Test图片描述全局读写 image_notes 不带 workspace_id：任意工作空间都命中同一张图；
+// 同哈希不同大小不算命中。
+func Test图片描述全局读写(t *testing.T) {
+	st, _ := openTemp(t)
+	id := cache.ImageID{SHA: "abc", Size: 123}
+	note := cache.ImageNote{
+		ImageID: id, MIME: "image/png", Width: 10, Height: 20, Animated: false,
+		Note: "新闻截图，标题关于天气", InfoLevel: "high", HasText: true,
+		Status: "ok", Attempts: 1, Model: "m",
+	}
+	if err := st.SaveImageNote(note); err != nil {
+		t.Fatalf("SaveImageNote: %v", err)
+	}
+	got, err := st.GetImageNotes([]cache.ImageID{id, {SHA: "nope", Size: 1}})
+	if err != nil {
+		t.Fatalf("GetImageNotes: %v", err)
+	}
+	if len(got) != 1 || got[id].Note != note.Note || !got[id].HasText || got[id].InfoLevel != "high" {
+		t.Fatalf("读取结果不对：%+v", got)
+	}
+
+	// 全局：Store 级读取（不带 workspace_id），任何工作空间都命中同一张图。
+	if notes, err := st.GetImageNotes([]cache.ImageID{id}); err != nil || len(notes) != 1 {
+		t.Fatalf("全局图库应跨工作空间命中：%+v, %v", notes, err)
+	}
+
+	// 同哈希不同大小：不算命中。
+	if notes, err := st.GetImageNotes([]cache.ImageID{{SHA: "abc", Size: 999}}); err != nil || len(notes) != 0 {
+		t.Fatalf("同哈希不同大小不应命中：%+v, %v", notes, err)
+	}
+}
+
+// Test图片描述失败标记 失败写入累加 attempts，且保留已有尺寸信息。
+func Test图片描述失败标记(t *testing.T) {
+	st, _ := openTemp(t)
+	id := cache.ImageID{SHA: "s1", Size: 10}
+	if err := st.SaveImageNote(cache.ImageNote{ImageID: id, Width: 100, Height: 200, Status: "ok", Note: "梗图", InfoLevel: "low"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkImageNoteFailed(cache.ImageNote{ImageID: id, Width: 100, Height: 200, Attempts: 2}); err != nil {
+		t.Fatalf("MarkImageNoteFailed: %v", err)
+	}
+	got, err := st.GetImageNotes([]cache.ImageID{id})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("读取失败记录：%+v, %v", got, err)
+	}
+	if got[id].Status != "failed" || got[id].Attempts != 2 || got[id].Width != 100 || got[id].Height != 200 {
+		t.Fatalf("失败记录不对：%+v", got[id])
+	}
+}
+
+// Test消息图片标识持久化 ImageIDs 随消息落库；LoadRecent 按 id 回填描述。
+func Test消息图片标识持久化(t *testing.T) {
+	st, scope := openTemp(t)
+	id := cache.ImageID{SHA: "s9", Size: 42}
+	if err := st.SaveImageNote(cache.ImageNote{ImageID: id, Note: "表情包", InfoLevel: "none", Status: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	scope.SaveMessage(cache.Message{
+		MessageID: "m1", GroupID: "g1", Content: "[图片]", Time: 1,
+		Images: []string{"p1"}, ImageIDs: []cache.ImageID{id},
+	})
+	waitQueue(t, st)
+
+	msgs, err := scope.LoadRecent(1)
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("LoadRecent: %+v, %v", msgs, err)
+	}
+	if len(msgs[0].ImageIDs) != 1 || msgs[0].ImageIDs[0] != id {
+		t.Fatalf("image_ids 未持久化：%+v", msgs[0].ImageIDs)
+	}
+	if len(msgs[0].ImageNotes) != 1 || msgs[0].ImageNotes[0].Note != "表情包" {
+		t.Fatalf("描述未按 id 回填：%+v", msgs[0].ImageNotes)
+	}
+}
+
+// TestV4升级补图片字段 v4 库升级到 v5：补 image_ids 列与 image_notes 表，消息不丢。
+func TestV4升级补图片字段(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	scope := st.Scope("qq_a")
+	scope.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", Content: "旧消息", Time: 1})
+	waitQueue(t, st)
+	// 退回 v4：去掉 image_ids 列与图库表。
+	if _, err := st.db.Exec(`ALTER TABLE messages DROP COLUMN image_ids`); err != nil {
+		t.Fatalf("退回 v4 失败：%v", err)
+	}
+	if _, err := st.db.Exec(`DROP TABLE image_notes`); err != nil {
+		t.Fatalf("删除图库表失败：%v", err)
+	}
+	if _, err := st.db.Exec(`PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+	scope = st.Scope("qq_a")
+	msgs, err := scope.LoadRecent(10)
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "旧消息" {
+		t.Fatalf("升级不能丢消息：%+v, %v", msgs, err)
+	}
+	id := cache.ImageID{SHA: "s1", Size: 1}
+	if err := st.SaveImageNote(cache.ImageNote{ImageID: id, Note: "图", Status: "ok"}); err != nil {
+		t.Fatalf("升级后应可写图库：%v", err)
+	}
+	scope.SaveMessage(cache.Message{MessageID: "m2", GroupID: "g1", Content: "[图片]", ImageIDs: []cache.ImageID{id}, Time: 2})
+	waitQueue(t, st)
+	msgs, err = scope.LoadRecent(1)
+	if err != nil || len(msgs) != 1 || len(msgs[0].ImageIDs) != 1 {
+		t.Fatalf("补列后应可写 image_ids：%+v, %v", msgs, err)
+	}
+}

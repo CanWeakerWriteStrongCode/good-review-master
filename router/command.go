@@ -142,6 +142,9 @@ type Router struct {
 	// saveMessage 把消息写进共享 state.db（工作空间的 State.SaveMessage）。
 	// 机器人自己的回复也走这里；nil 时只写内存缓存，重启后丢失。
 	saveMessage func(cache.Message)
+
+	// imageNotes 全局图库（image_notes）读写；nil 时不做入库描述，保持纯工具看图。
+	imageNotes ImageNoteStore
 }
 
 // PersonaStore 持久化群当前人格。由工作空间的 state.Store 实现。
@@ -444,9 +447,12 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement st
 		"reply_id 表示该消息引用了哪条 message_id。"+
 		requirement,
 		cfg.LLMConfig.ModelName, identity)
-	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
+	// agent「看图」：候选列表里带全局图库的内容/信息量描述，按描述决定是否看原图。
+	// 描述缺失（新图描述失败）时退回按聊天文字判断。
 	if cfg.LLMConfig.ImageMax > 0 {
-		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用看图工具（查看有次数上限，达到后请直接作答）。"
+		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；候选列表里附有每张图的内容与信息量描述。" +
+			"信息量 low/none、或类型是表情包/梗图的，不要看；信息量 high/medium、或消息文字在问图里的东西、提到新闻/公告/截图/图表/报错时，回复需要其中信息才按 url 调用看图工具。" +
+			"有人 @ 你或私聊时发图，可以看 1 张。没有描述的图按聊天文字判断，拿不准但需要回应时最多看 1 张；查看有次数上限，达到后直接作答。"
 	}
 	if personaBlock != "" {
 		systemPrompt += "\n" + personaBlock
