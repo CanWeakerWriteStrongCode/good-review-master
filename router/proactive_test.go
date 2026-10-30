@@ -311,6 +311,10 @@ func TestProactive判定为是要生成回复(t *testing.T) {
 	if !strings.Contains(judge.Messages[1].Content, "有人知道这个报错怎么解吗") {
 		t.Fatalf("裁判窗口缺少聊天记录：%s", judge.Messages[1].Content)
 	}
+	// 裁判要能拿机器人 ID 和聊天记录里的 @昵称(ID) 对比，才知道 @ 的是不是自己
+	if !strings.Contains(judge.Messages[1].Content, "ID：bot-openid") {
+		t.Fatalf("裁判缺少机器人 ID，无法分辨 @ 的是自己还是别人：%s", judge.Messages[1].Content)
+	}
 
 	// 生成用的是"主动参与"提示词，而不是"根据最后@你的群友"
 	gen := fake.Calls()[0]

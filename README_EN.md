@@ -206,9 +206,9 @@ Add a new variant by adding an entry under the same list — no code changes nee
 2. `internal.proactive_requirement`: the 【要求】 line used instead when replying proactively
 3. `internal.persona_directive`: when a persona is present, the directive appended to the persona block (reason over emotion dimensions before replying)
 4. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`: the focus hint appended at the end of the system prompt; a group mention always uses `focus_mention` (reply only to the last message that called the bot), private chat uses `focus_last`, proactive replies pick one via the judge's `focus`
-5. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message; it outputs `reply / long_form / focus / background / reason`, where `background` (≤100 chars) summarizes the conversation and the focus for this reply and is passed to the formatting call
+5. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message; it outputs `reply / long_form / focus / reason` (never reply when the last message @s someone other than the bot)
 6. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
-7. `internal.reply_rewrite`: formatting prompt that rewrites the drafted reply into at most N short sentences (N = `llm.reply_max_sentences`); the request carries the judge's `background` and asks the model to preserve the original tone
+7. `internal.reply_rewrite`: formatting prompt that rewrites the drafted reply into at most N short sentences (N = `llm.reply_max_sentences`); the request carries the bot identity, the chat log used to generate the reply and the reply itself, and asks the model to preserve the original tone
 
 ## Command System
 

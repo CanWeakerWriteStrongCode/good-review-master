@@ -40,8 +40,7 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 //
 // longForm=true 表示这条是知识型长篇（主动链路来自裁判；直答链路会用一次轻量判定
 // 自行得出），生成后跳过"≤N 句"排版。
-// verdict 是主动链路已经拿到的裁判结论（排版时把 background 传给排版器）；
-// 直答链路传 nil，由本函数自己补一次轻量判定。
+// verdict 是主动链路已经拿到的裁判结论；直答链路传 nil，由本函数自己补一次轻量判定。
 func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image, verdict *judgeVerdict) (string, bool) {
 	cfg := r.appCfg()
 	msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
@@ -56,14 +55,12 @@ func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, 
 	msgs = cutAtMessage(msgs, event.MessageID)
 
 	var longForm bool
-	background := ""
 	if mention {
-		// 直答链路（@/私聊）在这里补一次轻量判定，只取 long_form 与 background：
+		// 直答链路（@/私聊）在这里补一次轻量判定，只取 long_form：
 		// 知识型长篇不再强制排版；reply 结论忽略（被点名必须回）。
-		longForm, background = r.judgeLongForm(ctx, event, groupID, cfg)
+		longForm = r.judgeLongForm(ctx, event, groupID, cfg)
 	} else if verdict != nil {
 		longForm = verdict.LongForm
-		background = verdict.Background
 	}
 
 	// 按 token 成本决定扩展/重置，得到本次要发送的窗口
@@ -106,7 +103,7 @@ func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, 
 		logutil.Info("知识型长篇回复，跳过排版", "group", groupID)
 		sentences = []string{reply}
 	} else {
-		sentences = r.rewriteReply(baseCtx, cfg, reply, background)
+		sentences = r.rewriteReply(baseCtx, cfg, reply, chatLog, cfg.BotNickname, event.BotID())
 	}
 	// 发送层决定合成一条还是逐条发（最多 5 条，QQ 被动回复上限）
 	reply = strings.Join(sentences, "\n")

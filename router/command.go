@@ -404,6 +404,26 @@ func ComposeProactiveSystemPrompt(cfg *config.Config, botID, personaBlock, requi
 	return composeSystemPrompt(cfg, botID, personaBlock, requirement)
 }
 
+// identityLine 拼「【机器人】昵称：X，ID：Y」一行，给裁判、排版这类需要认人的独立调用用：
+// 昵称会变、可能重名，同群还常有别的机器人，只有 ID 才能确认某条消息是不是机器人自己。
+// 两个值都拿不到时返回空串（调用方不写这一行）。
+func identityLine(botName, botID string) string {
+	if botName == "" && botID == "" {
+		return ""
+	}
+	line := "【机器人】"
+	if botName != "" {
+		line += "昵称：" + botName
+		if botID != "" {
+			line += "，"
+		}
+	}
+	if botID != "" {
+		line += "ID：" + botID
+	}
+	return line
+}
+
 func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement string) string {
 	identity := ""
 	if cfg.BotNickname != "" {

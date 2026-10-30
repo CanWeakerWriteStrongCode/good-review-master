@@ -114,7 +114,7 @@ func TestRewriteReply短回复不排版(t *testing.T) {
 
 	minRunes := cfg.LLMConfig.ReplyRewriteMinRunes
 	short := strings.Repeat("短", minRunes-1)
-	got := instance.rewriteReply(context.Background(), cfg, short, "")
+	got := instance.rewriteReply(context.Background(), cfg, short, "", "bot", "bot-openid")
 	if len(got) != 1 || got[0] != short {
 		t.Fatalf("短回复应原样返回，实际 %v", got)
 	}
@@ -123,7 +123,7 @@ func TestRewriteReply短回复不排版(t *testing.T) {
 	}
 
 	boundary := strings.Repeat("长", minRunes)
-	if got := instance.rewriteReply(context.Background(), cfg, boundary, ""); len(got) != 1 || got[0] != "拆过的" {
+	if got := instance.rewriteReply(context.Background(), cfg, boundary, "", "bot", "bot-openid"); len(got) != 1 || got[0] != "拆过的" {
 		t.Fatalf("达到字数下限应排版，实际 %v", got)
 	}
 	if calls := len(fake.StructuredCalls()); calls != 1 {
@@ -139,7 +139,7 @@ func TestRewriteReply超出上限合并尾部(t *testing.T) {
 	instance, fake := newProactiveTestRouter(t, cfg)
 	fake.SetStructuredReply(`{"sentences":["一。","二。","三。","四。","五。"]}`)
 
-	got := instance.rewriteReply(context.Background(), cfg, strings.Repeat("原稿", cfg.LLMConfig.ReplyRewriteMinRunes), "")
+	got := instance.rewriteReply(context.Background(), cfg, strings.Repeat("原稿", cfg.LLMConfig.ReplyRewriteMinRunes), "", "bot", "bot-openid")
 	want := []string{"一。", "二。", "三。四。五。"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("超出的句子应合并进最后一句，实际 %v", got)
@@ -203,24 +203,18 @@ func Test回复排版关闭时不调用(t *testing.T) {
 	}
 }
 
-// TestJudgeVerdictBackground 裁判新增 background：解析到结论里；老输出缺字段时为空串。
-func TestJudgeVerdictBackground(t *testing.T) {
-	withField, err := parseJudgeVerdict(`{"reply": true, "long_form": false, "focus": "整体上下文", "background": "在聊新版本发布时间，关注是否给出明确日期", "reason": "闲聊"}`)
+// TestJudgeVerdict不再输出背景 裁判只给结论字段：
+// 老提示词多给的 background 会被忽略，schema 里也不该再有它。
+func TestJudgeVerdict不再输出背景(t *testing.T) {
+	verdict, err := parseJudgeVerdict(`{"reply": true, "long_form": false, "focus": "最后一条消息", "background": "旧字段", "reason": "闲聊"}`)
 	if err != nil {
-		t.Fatalf("解析失败：%v", err)
+		t.Fatalf("多出的旧字段不应导致解析失败：%v", err)
 	}
-	if withField.Background != "在聊新版本发布时间，关注是否给出明确日期" {
-		t.Fatalf("background 应被解析出来，实际 %q", withField.Background)
+	if !verdict.shouldReply() {
+		t.Fatal("reply=true 应被解析出来")
 	}
-	without, err := parseJudgeVerdict(`{"reply": true, "long_form": false, "focus": "最后一条消息", "reason": "闲聊"}`)
-	if err != nil {
-		t.Fatalf("缺 background 不应报错：%v", err)
-	}
-	if without.Background != "" {
-		t.Fatalf("缺 background 时应为空串，实际 %q", without.Background)
-	}
-	if !strings.Contains(string(proactiveVerdictSchema), `"background"`) {
-		t.Fatal("裁判 schema 应包含 background")
+	if strings.Contains(string(proactiveVerdictSchema), `"background"`) {
+		t.Fatal("裁判 schema 不应再包含 background")
 	}
 }
 
@@ -280,12 +274,12 @@ func Test直答知识型长篇跳过排版(t *testing.T) {
 }
 
 // Test直答普通问答仍然排版 @ 机器人时 long_form=false：照常拆成短句；
-// 裁判给的 background 要作为【对话背景】带进排版请求。
+// 排版请求要带上群聊记录、机器人身份和这条待改写的回复。
 func Test直答普通问答仍然排版(t *testing.T) {
 	cfg := proactiveTestConfig()
 	cfg.LLMConfig.ReplyMaxSentences = 5
 	instance, fake := newProactiveTestRouter(t, cfg)
-	fake.SetJSONReply(`{"reply": true, "long_form": false, "focus": "最后一条消息", "background": "群友在确认机器人在不在线，关注是否及时接话", "reason": "闲聊"}`)
+	fake.SetJSONReply(`{"reply": true, "long_form": false, "focus": "最后一条消息", "reason": "闲聊"}`)
 	fake.SetReply(strings.Repeat("原稿一句话，先说结论再说原因。", 10))
 	fake.SetStructuredReply(`{"sentences":["拆成两句","这是第二句"]}`)
 
@@ -305,8 +299,10 @@ func Test直答普通问答仍然排版(t *testing.T) {
 
 	structured := fake.StructuredCalls()[0]
 	userMsg := structured.Messages[len(structured.Messages)-1].Content
-	if !strings.Contains(userMsg, "【对话背景】群友在确认机器人在不在线，关注是否及时接话") {
-		t.Fatalf("排版请求应带上裁判背景：%s", userMsg)
+	for _, want := range []string{"ID：bot-openid", "【群聊记录】", "@bot(bot-openid) 在吗", "【生成的回复】"} {
+		if !strings.Contains(userMsg, want) {
+			t.Fatalf("排版请求缺少 %q：%s", want, userMsg)
+		}
 	}
 	msgs := instance.cacheStore().GetGroupCache("g1", cfg.MaxCacheMsg).GetAll()
 	if got := msgs[len(msgs)-1].Content; got != "拆成两句\n这是第二句" {
@@ -345,12 +341,12 @@ func Test主动接话知识型长篇跳过排版(t *testing.T) {
 	}
 }
 
-// Test主动接话排版带上裁判背景 主动链路直接把裁判结论里的 background 传给排版器。
-func Test主动接话排版带上裁判背景(t *testing.T) {
+// Test主动接话排版带上聊天记录 主动链路的排版请求同样要带群聊记录与待改写回复。
+func Test主动接话排版带上聊天记录(t *testing.T) {
 	cfg := proactiveTestConfig()
 	cfg.LLMConfig.ReplyMaxSentences = 5
 	instance, fake := newProactiveTestRouter(t, cfg)
-	fake.SetJSONReply(`{"reply": true, "long_form": false, "focus": "整体上下文", "background": "群友在讨论报错原因，关注怎么解决", "reason": "回答问题"}`)
+	fake.SetJSONReply(`{"reply": true, "long_form": false, "focus": "整体上下文", "reason": "回答问题"}`)
 	fake.SetReply(strings.Repeat("先看日志再定位问题。", 10))
 	fake.SetStructuredReply(`{"sentences":["先看日志","再定位问题"]}`)
 
@@ -368,8 +364,10 @@ func Test主动接话排版带上裁判背景(t *testing.T) {
 		t.Fatalf("等待异步任务失败：%v", err)
 	}
 	userMsg := fake.StructuredCalls()[0].Messages[len(fake.StructuredCalls()[0].Messages)-1].Content
-	if !strings.Contains(userMsg, "【对话背景】群友在讨论报错原因，关注怎么解决") {
-		t.Fatalf("主动接话的排版请求应带上裁判背景：%s", userMsg)
+	for _, want := range []string{"【群聊记录】", "有人知道这个报错怎么解吗", "【生成的回复】"} {
+		if !strings.Contains(userMsg, want) {
+			t.Fatalf("主动接话的排版请求缺少 %q：%s", want, userMsg)
+		}
 	}
 }
 
