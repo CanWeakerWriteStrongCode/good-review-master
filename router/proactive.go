@@ -331,7 +331,7 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, groupID string, focusLast bool) string {
 	systemPrompt := ComposeProactiveSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ProactiveRequirement())
 	if b, ok := r.getGroupPersona(groupID); ok {
-		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules, r.promptCfg.PersonaDirective())
+		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}

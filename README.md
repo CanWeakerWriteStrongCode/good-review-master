@@ -200,15 +200,14 @@ rules:
 
 新增同类型变体只需在对应列表下加一项，无需改 Go 代码。`persona` 5 字段全必填，渲染在发给大模型的 user 消息末尾（详见[核心机制](#-核心机制)）。
 
-`internal` 下是内置指令自己的提示词，可直接在 `prompt_system.yaml` 里修改，热重载生效。前四条按拼进回复 system prompt 的先后排列，后两条是独立调用：
+`internal` 下是内置指令自己的提示词，可直接在 `prompt_system.yaml` 里修改，热重载生效。前三项按拼进回复 system prompt 的先后排列，后三项是独立调用：
 
 1. `internal.reply_requirement`：@ 回复时 system prompt 里的【要求】句
 2. `internal.proactive_requirement`：主动接话时替代上一条的【要求】句
-3. `internal.persona_directive`：有人格时，人格块末尾追加的授权指令（依据情绪维度推演后再回答）
-4. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`：追加在 system prompt 末尾的回复焦点提示；群内被点名固定用 `focus_mention`（只回最后一条找机器人的消息），私聊用 `focus_last`，主动接话按裁判给出的 `focus` 二选一
-5. `internal.proactive_judge`：没有被 @ 时，判断“这条消息要不要主动回复”的裁判提示词；输出 `reply / long_form / focus / reason`（最后一条 @ 的是别人、不是机器人时一律不回）
-6. `internal.add_persona`：`#添加人格` 生成 prompt + persona 时发给大模型的系统提示词
-7. `internal.reply_rewrite`：模型出稿后，把回复发回来改写成最多 N 句短句（N 见 `llm.reply_max_sentences`）的排版提示词；请求里会附上机器人身份、生成回复时用的群聊记录和这条回复本身，并要求保持原回复的语气
+3. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`：追加在 system prompt 末尾的回复焦点提示；群内被点名固定用 `focus_mention`（只回最后一条找机器人的消息），私聊用 `focus_last`，主动接话按裁判给出的 `focus` 二选一
+4. `internal.proactive_judge`：没有被 @ 时，判断“这条消息要不要主动回复”的裁判提示词；输出 `reply / long_form / focus / reason`（最后一条 @ 的是别人、不是机器人时一律不回）
+5. `internal.add_persona`：`#添加人格` 生成 prompt + persona 时发给大模型的系统提示词
+6. `internal.reply_rewrite`：模型出稿后，把回复发回来改写成最多 N 句短句（N 见 `llm.reply_max_sentences`）的排版提示词；请求里会附上机器人身份、生成回复时用的群聊记录和这条回复本身，并要求保持原回复的语气
 
 ### 群内动态添加指令
 
@@ -454,11 +453,6 @@ cd tests/e2e && pnpm test
 | `emotion` | JSON 对象 | 情绪维度（维度 → 取值，人格核心） |
 
 **渲染位置**：`RenderPersona`（`router/persona_render.go`）把人格渲染成 system prompt **末尾**的片段（身份头之后），user 消息（聊天记录）里不携带人格块。
-
-**内置两条通用规则**（`prompt_system.yaml` 的 `internal.persona_directive`，可改）：
-
-- **情绪缓和**：用户情绪过于强烈（无论愤怒、悲伤，还是过度兴奋、狂喜）时，情绪反应符合人格但以缓解对方情绪为先，不升级冲突、不火上浇油。
-- **表达多样性**：回复要有变化，避免固定口头禅/收尾词，防止自我回音导致的输出趋同。
 
 **无状态机**：不维护人格状态，对话窗口即隐式状态，LLM 是维度变化与回答的最终解释者。
 

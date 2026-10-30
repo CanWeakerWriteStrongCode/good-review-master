@@ -200,15 +200,14 @@ rules:
 
 Add a new variant by adding an entry under the same list — no code changes needed. If a `persona` block is present, all 5 fields are required; it is rendered at the tail of the user message sent to the LLM (see [Core Mechanisms](#core-mechanisms)).
 
-`internal` holds the built-in features' own prompts. Edit them directly in `prompt_system.yaml`; hot reload picks them up. The first four are listed in the order they are assembled into the reply system prompt; the last two are standalone calls:
+`internal` holds the built-in features' own prompts. Edit them directly in `prompt_system.yaml`; hot reload picks them up. The first three are listed in the order they are assembled into the reply system prompt; the last three are standalone calls:
 
 1. `internal.reply_requirement`: the 【要求】 line in the system prompt for @ replies
 2. `internal.proactive_requirement`: the 【要求】 line used instead when replying proactively
-3. `internal.persona_directive`: when a persona is present, the directive appended to the persona block (reason over emotion dimensions before replying)
-4. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`: the focus hint appended at the end of the system prompt; a group mention always uses `focus_mention` (reply only to the last message that called the bot), private chat uses `focus_last`, proactive replies pick one via the judge's `focus`
-5. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message; it outputs `reply / long_form / focus / reason` (never reply when the last message @s someone other than the bot)
-6. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
-7. `internal.reply_rewrite`: formatting prompt that rewrites the drafted reply into at most N short sentences (N = `llm.reply_max_sentences`); the request carries the bot identity, the chat log used to generate the reply and the reply itself, and asks the model to preserve the original tone
+3. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`: the focus hint appended at the end of the system prompt; a group mention always uses `focus_mention` (reply only to the last message that called the bot), private chat uses `focus_last`, proactive replies pick one via the judge's `focus`
+4. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message; it outputs `reply / long_form / focus / reason` (never reply when the last message @s someone other than the bot)
+5. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
+6. `internal.reply_rewrite`: formatting prompt that rewrites the drafted reply into at most N short sentences (N = `llm.reply_max_sentences`); the request carries the bot identity, the chat log used to generate the reply and the reply itself, and asks the model to preserve the original tone
 
 ## Command System
 
@@ -465,11 +464,6 @@ Every command can carry a 5-dimension persona (`Persona` in `config/prompt.go`),
 | `emotion` | JSON object | Emotion dimensions (dimension → value, the core of the persona) |
 
 **Rendering position**: `RenderPersona` (`router/persona_render.go`) renders the persona as a segment at the **tail of the system prompt** (after the identity header); the user message (chat log) does not carry the persona block.
-
-**Two built-in generic rules** (`internal.persona_directive` in `prompt_system.yaml`, editable):
-
-- **Emotion de-escalation**: when the user's emotion is too intense (anger, sadness, or extreme excitement/elation alike), the emotional reaction should fit the persona but soothe the other person's mood first — don't escalate, don't provoke, don't add fuel.
-- **Response variety**: vary the replies — avoid a fixed catchphrase or the same closing word every time, to prevent output converging due to self-echo.
 
 **Stateless persona**: no persona state is maintained; the chat window is the implicit state, and the LLM is the final interpreter of both dimension changes and the answer.
 

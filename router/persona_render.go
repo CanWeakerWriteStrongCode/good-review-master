@@ -11,11 +11,9 @@ import (
 
 // RenderPersona 把人格渲染成提示片段（纯函数），由调用方追加到 systemPrompt 末尾：
 // RouteMessage 关键字路由渲染 route.Persona；replyDefault 群人格渲染 #切换人格 的快照。
-// 渲染顺序：身份 → 性格 → 与群友的关系 → 人格级系统指令 → 情绪维度 → 授权指令。
+// 渲染顺序：身份 → 性格 → 与群友的关系 → 人格级系统指令 → 情绪维度 → 该指令的共享规则。
 // 只保留 essence 字段；说话方式不预设，由 LLM 依据性格+情绪维度自然生成。
-// directive 是块末尾的授权指令，由 prompt_system.yaml 的 internal.persona_directive 提供
-// （见 config.PromptConfig.PersonaDirective）。
-func RenderPersona(p config.Persona, sharedRules, directive string) string {
+func RenderPersona(p config.Persona, sharedRules string) string {
 	var b strings.Builder
 	b.WriteString("【人格】\n")
 	b.WriteString("身份：" + p.Identity + "\n")
@@ -23,7 +21,6 @@ func RenderPersona(p config.Persona, sharedRules, directive string) string {
 	writeJSONLine(&b, "与群友的关系", p.Relationship)
 	b.WriteString("人格级系统指令：" + p.SystemPrompt + "\n")
 	writeJSONLine(&b, "情绪维度", p.Emotion)
-	b.WriteString("\n" + directive + "\n")
 	b.WriteString("\n" + sharedRules + "\n")
 	return b.String()
 }

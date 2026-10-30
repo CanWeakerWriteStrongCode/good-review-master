@@ -188,32 +188,6 @@ func TestProactiveJudgePrompt(t *testing.T) {
 	}
 }
 
-// TestPersonaDirective 验证人格授权指令从 prompt_system.yaml 的
-// internal.persona_directive 读取；老配置没有这一段时退回内置默认值。
-func TestPersonaDirective(t *testing.T) {
-	dir := t.TempDir()
-	systemPath := filepath.Join(dir, "prompt_system.yaml")
-	customPath := filepath.Join(dir, "prompt_custom.yaml")
-	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
-		t.Fatalf("写入失败：%v", err)
-	}
-	pc, err := LoadPromptConfig(systemPath, customPath)
-	if err != nil {
-		t.Fatalf("加载失败：%v", err)
-	}
-	if got := pc.PersonaDirective(); got != defaultPersonaDirective {
-		t.Errorf("缺少 internal.persona_directive 时应退回内置默认值，实际 %q", got)
-	}
-
-	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  persona_directive: \"配置里的授权指令\"\n"), 0o600); err != nil {
-		t.Fatalf("写入失败：%v", err)
-	}
-	pc.Reload()
-	if got := pc.PersonaDirective(); got != "配置里的授权指令" {
-		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
-	}
-}
-
 // TestFocusPrompt 验证焦点提示词按场景三选一，且分别从
 // internal.focus_context / focus_last / focus_mention 读取。
 func TestFocusPrompt(t *testing.T) {
@@ -312,7 +286,7 @@ func TestPromptSystem示例含内置提示词(t *testing.T) {
 		t.Fatalf("内嵌模板解析失败：%v", err)
 	}
 	for _, key := range []string{
-		"reply_requirement", "persona_directive", "add_persona", "proactive_judge",
+		"reply_requirement", "add_persona", "proactive_judge",
 		"proactive_requirement", "focus_context", "focus_last", "focus_mention", "reply_rewrite",
 	} {
 		if strings.TrimSpace(cfg.Internal[key]) == "" {

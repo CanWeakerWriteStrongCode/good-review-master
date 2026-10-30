@@ -283,7 +283,7 @@ func resolvePrompt(promptCfg *config.PromptConfig, cfg *config.Config, one check
 		}
 		personaBlock := ""
 		if entry.Persona != nil {
-			personaBlock = router.RenderPersona(*entry.Persona, data.SharedRules[one.Prompt.Category], promptCfg.PersonaDirective())
+			personaBlock = router.RenderPersona(*entry.Persona, data.SharedRules[one.Prompt.Category])
 		}
 		return router.ComposeSystemPrompt(cfg, "", personaBlock, promptCfg.ReplyRequirement(), promptCfg.MentionFocusPrompt()), entry.Prompt, nil
 	}

@@ -114,15 +114,6 @@ rules:
 	if !strings.Contains(systemPrompt, "情绪反应性") {
 		t.Fatalf("systemPrompt 未包含情绪维度:\n%s", systemPrompt)
 	}
-	if !strings.Contains(systemPrompt, "推演每个维度应有的变化") {
-		t.Fatalf("systemPrompt 未包含授权指令:\n%s", systemPrompt)
-	}
-	if !strings.Contains(systemPrompt, "不要升级冲突") {
-		t.Fatalf("systemPrompt 未包含降冲突指令:\n%s", systemPrompt)
-	}
-	if !strings.Contains(systemPrompt, "缓解对方情绪") {
-		t.Fatalf("systemPrompt 未包含情绪缓和指令（过于强烈的喜怒哀乐时应缓解用户情绪）:\n%s", systemPrompt)
-	}
 	// 人格块在 systemPrompt 中位于身份头之后
 	if strings.Index(systemPrompt, "【人格】") <= strings.Index(systemPrompt, "你的昵称是") {
 		t.Fatalf("人格应位于身份头之后的 systemPrompt:\n%s", systemPrompt)

@@ -308,7 +308,7 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	// 群人格（#切换人格）只在未命中关键字的纯 @ 聊天里生效，见 replyDefault。
 	persona := ""
 	if route.Persona != nil {
-		persona = RenderPersona(*route.Persona, route.SharedRules, r.promptCfg.PersonaDirective())
+		persona = RenderPersona(*route.Persona, route.SharedRules)
 	}
 	// 有人直接 @ 机器人说话：只回最后一条点名消息，避免把回复铺到更早的 @ 或别的话题上。
 	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona, r.promptCfg.ReplyRequirement(), r.directFocusPrompt(event))
@@ -561,7 +561,7 @@ func (r *Router) availablePersonaNames() []string {
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑。
 func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Event, groupID string, systemPrompt string) {
 	if b, ok := r.getGroupPersona(groupID); ok {
-		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules, r.promptCfg.PersonaDirective())
+		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}

@@ -67,14 +67,6 @@ const defaultProactiveJudgePrompt = `你是群聊机器人的发言决策器，�
 
 只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "long_form": true 或 false, "focus": "整体上下文 或 最后一条消息", "reason": "不超过 20 字的理由"}`
 
-// defaultPersonaDirective 是人格块末尾授权指令的兜底：要求 LLM 依据人格维度推演各维度变化后再回答。
-// 正常从 prompt_system.yaml 的 internal.persona_directive 读取。
-// 另含两条通用规则：①情绪缓和——用户情绪过于强烈（喜怒哀乐皆然）时情绪反应符合人格，
-// 但以缓解对方情绪为先、不升级冲突；②表达多样性——避免固定口头禅/收尾词导致的输出趋同。
-const defaultPersonaDirective = `这是你的人格（emotion 字段即你的情绪维度）。回复时：依据你各维度的情绪状态，结合用户的问题内容，推演每个维度应有的变化——例如被夸奖时，
-按你的情绪反应性升高愉悦相关维度、按外显度决定是否表露、按恢复速度自然回落；然后把各维度的变化体现到你的回答里，用符合这些维度的语气和方式回应用户。当用户情绪过于强烈（无论愤怒、悲伤，还是过度兴奋、狂喜）时，
-情绪反应要与人格特质相符，但以缓解对方情绪为先：不要升级冲突，不针锋相对、不火上浇油，用符合人格的方式安抚、缓和对方的情绪。每次回复都在当前维度状态的基础上继续，不要每次都从平静开始。回复要有变化与丰富性：在符合人格的前提下，避免反复使用同一句口头禅或同一个词收尾，表达应自然多样。`
-
 // defaultFocusContext / defaultFocusLast / defaultFocusMention 是生成回复时追加的
 // "回复焦点"提示词兜底（正常从 internal.focus_context / focus_last / focus_mention 读取）：
 // 群里被点名用 focus_mention（只回最后一条找机器人的消息）；私聊与直接 @ 以外的
@@ -292,11 +284,6 @@ func (pc *PromptConfig) AddPersonaPrompt() string {
 // ProactiveJudgePrompt 返回主动插话裁判（判断"要不要回"）的系统提示词。
 func (pc *PromptConfig) ProactiveJudgePrompt() string {
 	return pc.internalPrompt("proactive_judge", defaultProactiveJudgePrompt)
-}
-
-// PersonaDirective 返回人格块末尾的授权指令（依据情绪维度推演后再回答）。
-func (pc *PromptConfig) PersonaDirective() string {
-	return pc.internalPrompt("persona_directive", defaultPersonaDirective)
 }
 
 // ReplyRequirement 返回 @ 回复时 system prompt 里的【要求】句。
