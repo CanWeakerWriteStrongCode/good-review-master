@@ -57,7 +57,7 @@ type imageDescribeOutput struct {
 var imageDescribeSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "content":    {"type": "string", "description": "图里有什么：类型 + 主题，不超过 60 字"},
+    "content":    {"type": "string", "description": "图里有什么：类型 + 主题 + 人物/角色的表情情绪，不超过 60 字"},
     "info_level": {"type": "string", "enum": ["high", "medium", "low", "none"], "description": "信息量：high=必须读图内文字/数据，medium=有可用信息，low=几乎没有，none=纯表情/装饰"},
     "has_text":   {"type": "boolean", "description": "图里是否有清晰可读的文字"}
   },
