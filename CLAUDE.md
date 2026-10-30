@@ -477,10 +477,13 @@ pipeline instead of being ignored:
    occasionally joining in banter is allowed, and implicit "someone react to this" cues (a joke, a
    self-deprecating remark, a complaint clearly fishing for responses) count as a reason to reply —
    but consecutive low-value replies are not, and the code gates below enforce frequency
-   independently. Output is a strict `{reply, focus, reason}` schema (`focus` = 整体上下文 /
-   最后一条消息, passed to generation as the focus hint), downgrading
+   independently. Output is a strict `{reply, long_form, focus, reason}` schema (`focus` = 整体上下文 /
+   最后一条消息, passed to generation as the focus hint; `long_form` = needs lookup/formal
+   long-form answer, which skips the ≤N-sentence rewrite), downgrading
    `json_schema → json_object → none` per adapter capability. Any error or unparsable
-   answer means **no reply** (fail closed).
+   answer means **no reply** (fail closed). The same judge is also called for @/private
+   messages, but only `long_form` is consumed — `reply=false` is ignored because a mention
+   must be answered.
 3. **Generation**: only on `reply=true` — persona prompt + recent window via `chatReplyNow`, and
    the reply is sent as a quote of the triggering message with no @mention.
 
@@ -499,12 +502,16 @@ via `RouteMessage` and never reaches the judge.
 
 ```go
 type Client interface {
-    Review(ctx context.Context, chatLog, systemPrompt string) (string, error)
+    SingleChat(ctx context.Context, chatLog, systemPrompt string) (string, error)
+    MutiChatWithTool(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error)
     ChatJSON(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error)
+    ChatStructured(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error)
 }
 ```
 
-`ChatJSON` is used by the proactive judge. It tries `response_format=json_schema` (strict), then
+`ChatJSON` is used by the proactive judge; `ChatStructured` is used to re-format the final reply into
+at most `llm.reply_max_sentences` short sentences (same implementation, separate method so the two
+flows stay distinguishable in tests/logs). Both try `response_format=json_schema` (strict), then
 `json_object`, then no structured-output hint, caching the accepted mode per adapter so the fallback
 is only paid once. Only 400/404/422/501 are treated as "format unsupported"; other statuses surface
 as errors.

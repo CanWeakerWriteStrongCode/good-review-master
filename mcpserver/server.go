@@ -21,7 +21,7 @@ const ToolName = "view_image"
 // toolSchema view_image 的入参 JSON Schema（url 必填）。
 const toolSchema = `{"type":"object","properties":{"url":{"type":"string","description":"要查看的图片地址（候选列表里给出的 url）"}},"required":["url"]}`
 
-const toolDescriptionText = "查看群消息里某张图片的内容。当回答需要看清图片（如图片/表情/截图/图中的文字）时，传入候选图片列表里对应的 url 调用本工具。一次看一张即可，避免重复看同一张。"
+const toolDescriptionText = "查看图片内容。传入 url 调用本工具。一次只能看一张。"
 
 // Server 进程内嵌 MCP 服务端：只监听 127.0.0.1，供本机 agent（mcpclient）连回调用 view_image。
 // token 非空时所有请求要求 Authorization: Bearer <token>（可选鉴权，防止误暴露被白嫖）。

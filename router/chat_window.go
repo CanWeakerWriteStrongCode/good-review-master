@@ -16,6 +16,21 @@ type windowDecision struct {
 	ResetCost   float64         // 重置成本 = 重置窗口 × 未命中价
 }
 
+// cutAtMessage 截取到指定消息（含）为止；消息已不在缓存时原样返回。
+// 直答用它把窗口锁在触发消息上：chatReview 是异步的，选窗时缓存里可能已经有
+// 这条之后的新消息，带进去会让"只回最后一条"指到别人的新消息上。
+func cutAtMessage(msgs []cache.Message, messageID string) []cache.Message {
+	if len(msgs) == 0 || messageID == "" {
+		return msgs
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].MessageID == messageID {
+			return msgs[:i+1]
+		}
+	}
+	return msgs
+}
+
 // decideChatWindow 按 token 成本决定发送「扩展窗口（缓存命中）」还是「重置窗口」。
 // 纯函数：所有输入显式传入，不依赖 Router/全局状态，便于表格驱动单元测试穷举各分支。
 //

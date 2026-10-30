@@ -98,6 +98,9 @@ type Client interface {
 	// 优先用 response_format=json_schema(strict)，后端不支持时自动降级
 	// json_object → 不传 response_format（纯提示词约束），档位会被记住。
 	ChatJSON(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error)
+	// ChatStructured 与 ChatJSON 同一套实现（单轮、无工具、schema 约束）。
+	// 单独成方法是为了让"回复排版"与"裁判"在调用方、测试替身和日志上可区分。
+	ChatStructured(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error)
 }
 
 // OpenAIAdapter 适配所有OpenAI协议的大模型（基于 go-openai SDK）
@@ -210,6 +213,12 @@ func (adapter *OpenAIAdapter) ChatJSON(ctx context.Context, messages []Message, 
 				"from", jsonModeNames[mode], "to", jsonModeNames[next], "err", err)
 		}
 	}
+}
+
+// ChatStructured 见 Client 接口：与 ChatJSON 共用同一套降级实现（同样关闭思考），
+// 单独成方法只为把"回复排版"和"裁判"在调用方与测试替身里区分开。
+func (adapter *OpenAIAdapter) ChatStructured(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error) {
+	return adapter.ChatJSON(ctx, messages, schema)
 }
 
 // chatCompletion 是两条调用路径的公共实现：组装请求、打日志、计时、埋点、解析响应。

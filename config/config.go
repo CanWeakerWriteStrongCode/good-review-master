@@ -16,13 +16,13 @@ type Config struct {
 	IMToken           string      // OneBot 12 接入共享 token（入站校验 + 出站 Bearer）
 	IMAPIBase         string      // 所有账号默认的出站根地址
 	IMAccounts        []IMAccount // 可选的按账号覆盖；api_base 为空表示沿用 IMAPIBase
+	EchoSelfMessages  bool        // 实现端会把机器人自己发的消息回传为事件时置 true：本地不再重复记录回复
 	BotNickname       string      // 运行时设置（get_self_info 结果），不来自配置文件
 	AllowGroups       []string    // 群白名单；含 "*" 表示全部群
 	WorkspaceAccounts []string    // 允许自动开通的工作空间 ID；含 "*" 表示全部
 
 	// 主动插话（非 @ 时由大模型裁决）。全局一份，所有工作空间共用。
 	ProactiveEnabled      bool
-	ProactiveWindow       int           // 裁判看的最近消息条数
 	ProactiveCooldown     time.Duration // 主动发言后该群的冷却
 	ProactiveMaxStreak    int           // 同一话题最多连续主动发言次数
 	ProactiveJudgeEvery   time.Duration // 两次判定的最小间隔
@@ -32,6 +32,7 @@ type Config struct {
 	LLMSendCount          int           // 每次发送 LLM 的消息条数（重置窗口）
 	LLMTimeout            time.Duration
 	MaxMsgRune            int
+	ReplySendInterval     time.Duration // 分句回复的发送间隔；>0 拆成最多 5 条逐条发，0=合成一条
 	IMListenAddr          string        // AstrBot sidecar 推送事件的监听地址
 	WebPort               int           // Web 管理面板端口，<=0 禁用
 	WebUsername           string        // Web 管理面板登录账号
@@ -98,6 +99,9 @@ type LLMConf struct {
 	ImageLocalDirs   []string // view_image 允许读取的本地图片目录（QQ 官方图片是 AstrBot 本地临时文件）
 	Temperature      float64
 	TopP             float64
+
+	ReplyMaxSentences    int // 最终回复的句数上限（模型出稿后再排一次版）；0=关闭排版
+	ReplyRewriteMinRunes int // 原稿不足这么多字就不排版；0=不设下限
 
 	RateLimitPerSec float64       // 出站全局限速（每秒允许的调用数）；0=不限速
 	RateLimitBurst  int           // 令牌桶容量；0=按限速值向上取整、至少 1

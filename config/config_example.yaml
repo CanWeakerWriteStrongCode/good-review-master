@@ -5,21 +5,30 @@
 
 # ===== 机器人配置 =====
 bot:
-  # 允许响应的群白名单（逗号分隔）。QQ 官方机器人填 group_openid（长字符串）。
+  # 允许响应的群白名单。QQ 官方机器人填 group_openid（长字符串）。
+  # 支持两种写法：逗号分隔字符串，或 YAML 列表（逐项也可写注释）。
   # 填 "*" 表示所有群都响应（注意：任意群都能触发大模型调用，成本不可控）。
   allow_groups: "123456,789012"
+  # 列表写法等价：allow_groups:
+  #   - "123456"
+  #   - "789012"
   # 允许自动开通的工作空间 ID（完整 ID = 平台名_接收账号），填 "*" 表示全部。
+  # 支持两种写法：逗号分隔字符串，或 YAML 列表（逐项也可写注释）。
   # 空列表 = 不自动开通（安全默认）；已记录在 state.db 里的工作空间不受名单影响，
   # 重启会直接恢复。QQ 官方机器人的账号填 AppID，平台名固定 qq，所以是 qq_<AppID>。
   allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  # 字符串写法等价：allow_workspace_accounts: "qq_1906xxxx,qq_1904xxxx"
   # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
   # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
+  # 裁判看的窗口与生成一致（runtime.llm_send_count 条），不再单独配置。
   proactive_enabled: true
-  proactive_window_msgs: 15
-  proactive_cooldown_sec: 90
-  proactive_max_streak: 5
-  proactive_judge_interval_sec: 20
-  proactive_judge_timeout_sec: 20
+  # 显式写 0 都有效；想用默认值请删掉该行（缺省才是默认，0 不再被覆盖）。
+  proactive_cooldown_sec: 90       # 0 = 主动发言后不冷却
+  proactive_max_streak: 5          # 0 = 不主动发言
+  # 两次判定的最小间隔（秒）：从"上次裁判开始"计时，含该轮裁判+生成的大模型耗时。
+  # 单轮耗时 ≥ 间隔时下一轮立刻放行；间隔内到达的新消息直接丢弃，不排队延后。
+  proactive_judge_interval_sec: 20 # 0 = 不设最小间隔
+  proactive_judge_timeout_sec: 20  # 0 = 沿用 runtime.llm_timeout_sec
   proactive_judge_images: 1        # 0 = 图片消息不判定；需 llm.image_max>0 才有效
 
 # ===== IM 接入（OneBot 12） =====
@@ -29,6 +38,9 @@ im:
   # 所有账号默认的出站地址（实现端 OneBot 12 动作服务）。
   # 常见部署一个 AstrBot 插件服务所有账号，只配这一行即可；账号 ID 从入站事件自动得到。
   api_base: "http://127.0.0.1:6199"
+  # 实现端是否会把机器人自己发出的消息再回传成入站事件（NapCat 这类会，AstrBot 桥不会）。
+  # true 时机器人回复靠回传事件入库，本地不再重复记录。默认 false。
+  echo_self_messages: false
   # 可选：多套实现端/多端口时按账号覆盖；不写 api_base 表示沿用上面的默认地址。
   # accounts:
   #   - id: "qq_1904xxxx"
@@ -42,6 +54,10 @@ runtime:
   llm_timeout_sec: 120
   # 单条消息最大字符数（超出截断）
   max_msg_rune: 500
+  # 分句回复：>0 时把排版后的句子拆成最多 5 条消息逐条发送，每条间隔这么多毫秒（更像真人一条条发）；
+  # 0 = 不拆分，所有句子合成一条消息。注意 QQ 官方对同一条触发消息的被动回复最多 5 次，
+  # 所以超过 5 句时会自动把余下句子合并进第 5 条。默认 800。
+  reply_send_interval_ms: 800
   # 环形缓冲条数上限（手动配，建议 ≈31×llm_send_count；几百 KB/群不会爆内存）
   max_cache_msg: 3100
   # AstrBot 桥接插件推送事件的监听地址（与插件的 event_url 主机端口对应，
@@ -106,6 +122,13 @@ llm:
   # 注意：候选列表会列出窗口内全部图片 url（只是文字，便宜）；真正花 token 的是模型实际查看，由本值硬限。
   # 启用后机器人会在本机内嵌一个 MCP 服务，提供 view_image/看图 工具，模型按需调用、机器人下载后回传
   image_max: 3
+  # 最终回复的句数上限：模型正常出稿后，再把回复发回去用 JSON schema 拆成最多这么多句短句，
+  # 让回复更像真人、不再是一大段。0 = 关闭这次排版（直接发原文）。默认 5。
+  # 模型多给的句子会合并到最后一句，不会丢内容。
+  # 注意：开启后每条回复会多一次大模型调用（排版请求很短，成本很低）。
+  reply_max_sentences: 5
+  # 原稿不足这么多字就不排版（直接发原文），省一次模型调用。默认 60；显式 0 = 不设下限。
+  reply_rewrite_min_runes: 60
   # view_image 允许读取的本地图片目录。QQ 官方机器人收到的图片在 AstrBot 里是本地临时文件
   # （如 ~/.astrbot/data/temp/media_image_*.png），不是 http URL。
   # 不写默认 ["~/.astrbot/data/temp"]；自定义 AstrBot 数据目录时改这里。

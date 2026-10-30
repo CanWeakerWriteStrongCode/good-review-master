@@ -138,6 +138,10 @@ type Router struct {
 	// displayName 按群查成员显示名（工作空间的成员目录）。nil 时日志与 handler
 	// 只用 user_id，不影响功能——昵称只是给人看的。
 	displayName func(groupID, userID string) string
+
+	// saveMessage 把消息写进共享 state.db（工作空间的 State.SaveMessage）。
+	// 机器人自己的回复也走这里；nil 时只写内存缓存，重启后丢失。
+	saveMessage func(cache.Message)
 }
 
 // PersonaStore 持久化群当前人格。由工作空间的 state.Store 实现。
@@ -176,6 +180,10 @@ func (r *Router) SetStore(store *cache.Store) {
 
 // SetWorkspace 设置工作空间 ID，只影响指标与日志标签。
 func (r *Router) SetWorkspace(id string) { r.workspace = id }
+
+// SetMessageSink 注入消息持久化入口（工作空间的 State.SaveMessage）：
+// 机器人回复也要落库，重启后聊天记录里才还有自己说过的话。
+func (r *Router) SetMessageSink(sink func(cache.Message)) { r.saveMessage = sink }
 
 // storeOr 返回注入的 Store；未注入时退回进程级默认 Store。
 func (r *Router) cacheStore() *cache.Store {
@@ -274,11 +282,20 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	cfg := r.appCfg()
 
 	text := r.stripCQPrefix(content, cfg)
+	// 剥掉 @/昵称前缀后没正文（例如只 @ 机器人、一个字没打）：
+	// 只有当这条消息确实点在机器人身上才继续，@ 的是别人就不该回。
+	// 聊天记录里保留了完整的「@昵称(ID)」，模型能看到这是一次点名并自行回应。
 	if text == "" {
-		return
+		if strings.TrimSpace(content) == "" || !addressesBot(event, content, cfg) {
+			return
+		}
 	}
 
-	route := trieMatch(r.table.Load().trie, text)
+	// 没有正文时跳过关键字匹配：空串不该命中任何指令。
+	var route *Command
+	if text != "" {
+		route = trieMatch(r.table.Load().trie, text)
+	}
 	if route == nil {
 		// 未命中：走普通问答（replyDefault 会视群人格再补一段）
 		// 焦点提示由 replyDefault 在人格块之后追加，保证它是最后一条指令。
@@ -293,8 +310,8 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	if route.Persona != nil {
 		persona = RenderPersona(*route.Persona, route.SharedRules, r.promptCfg.PersonaDirective())
 	}
-	// 有人直接 @ 机器人说话：默认聚焦最后一条，避免把回复铺到更早的话题上。
-	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona, r.promptCfg.ReplyRequirement(), r.promptCfg.FocusPrompt(true))
+	// 有人直接 @ 机器人说话：只回最后一条点名消息，避免把回复铺到更早的 @ 或别的话题上。
+	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona, r.promptCfg.ReplyRequirement(), r.directFocusPrompt(event))
 	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
 		attribute.String("router.category", route.Category))
 	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, r.nameOf(groupID, event.UserID), extra)
@@ -314,6 +331,7 @@ func (r *Router) reply(event onebot.Event, chatID, text string) {
 		r.obClient.SendGroupReply(chatID, event.MessageID, event.UserID, text)
 	}
 	r.proactive.noteDirect(chatID, text, time.Now())
+	r.recordSelfReply(event, chatID, text)
 }
 
 // replyQuoted 引用触发消息、不 @ 人（主动插话用）。
@@ -321,17 +339,51 @@ func (r *Router) reply(event onebot.Event, chatID, text string) {
 func (r *Router) replyQuoted(event onebot.Event, chatID, text string) {
 	if event.IsPrivate() {
 		r.obClient.SendPrivateReply(event.UserID, text)
+	} else {
+		r.obClient.SendGroupReply(chatID, event.MessageID, "", text)
+	}
+	r.recordSelfReply(event, chatID, text)
+}
+
+// selfReplySeq 进程内单调序号：出站消息没有平台 message_id（send_message 不回传），
+// 用 时间戳+序号 补一个稳定唯一值，只用于缓存去重、选窗锚点和数据库主键。
+var selfReplySeq atomic.Uint64
+
+// recordSelfReply 把机器人发出的回复写回内存缓存与 state.db。
+// 不记录的话，下一轮请求的聊天记录里只有用户说的话，模型不知道自己刚回过什么，
+// 容易重复回答、或把已经答过的问题再答一遍。
+func (r *Router) recordSelfReply(event onebot.Event, chatID, text string) {
+	if strings.TrimSpace(text) == "" || r.appCfg == nil {
 		return
 	}
-	r.obClient.SendGroupReply(chatID, event.MessageID, "", text)
+	cfg := r.appCfg()
+	// 实现端会把机器人自己的消息回传成事件时，入站链路已经把它写进缓存/DB；
+	// 这里再记一次就是重复的两条（消息 ID 还不一样）。
+	if cfg.EchoSelfMessages {
+		return
+	}
+	now := time.Now()
+	msg := cache.Message{
+		MessageID: fmt.Sprintf("bot-%d-%d", now.UnixNano(), selfReplySeq.Add(1)),
+		GroupID:   chatID,
+		SelfID:    event.Self.UserID,
+		UserID:    event.BotID(),
+		Nickname:  cfg.BotNickname,
+		Content:   text,
+		Time:      now.Unix(),
+	}
+	r.cacheStore().GetGroupCache(chatID, cfg.MaxCacheMsg).Add(msg)
+	if r.saveMessage != nil {
+		r.saveMessage(msg)
+	}
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
 // 机器人身份（模型名 / 昵称 / 稳定 ID）+ 聊天记录约定 +（启用看图时的图片说明）+ 可选的人格块
 // + 末尾的回复焦点提示。
 // botID 为空时省略 ID 行（例如离线评测或拿不到 bot 身份时）。
-// requirement 是【要求】句，focus 是回复焦点提示（空串表示不追加），@ 回复分别传
-// promptCfg.ReplyRequirement() / promptCfg.FocusPrompt(true)。
+// requirement 是【要求】句，focus 是回复焦点提示（空串表示不追加），直答分别传
+// promptCfg.ReplyRequirement() / directFocusPrompt(event)（群 @ 用 mention 版，私聊用 focus_last）。
 //
 // 导出是给 tests/eval 用的：离线评测必须拿到与线上**逐字相同**的提示词。
 // 评测集若自己再拼一份，防的就是"评测全绿但线上照样回归"这种最没用的结果——
@@ -374,7 +426,7 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement st
 		cfg.LLMConfig.ModelName, identity)
 	// agent「看图」：提示模型需要看清图片时用 view_image 按需查看（静态指令，前缀稳定）
 	if cfg.LLMConfig.ImageMax > 0 {
-		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用 view_image 工具（实际查看有数量上限，达到后请直接作答）。不要编造没实际看过的图片内容。"
+		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；需要看图时，按候选列表里的对应 url 调用看图工具（查看有次数上限，达到后请直接作答）。"
 	}
 	if personaBlock != "" {
 		systemPrompt += "\n" + personaBlock
@@ -493,8 +545,30 @@ func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Eve
 	} else {
 		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 	}
-	systemPrompt += "\n" + r.promptCfg.FocusPrompt(true)
+	systemPrompt += "\n" + r.directFocusPrompt(event)
 	r.chatReview(ctx, event, groupID, systemPrompt, "", r.nameOf(groupID, event.UserID), text)
+}
+
+// directFocusPrompt 直答的焦点提示：群里被点名（@ 或叫昵称）只回最后一条点名消息；
+// 私聊没有 @ 语义，仍按"最后一条消息"处理。
+func (r *Router) directFocusPrompt(event onebot.Event) string {
+	if event.IsPrivate() {
+		return r.promptCfg.FocusPrompt(true)
+	}
+	return r.promptCfg.MentionFocusPrompt()
+}
+
+// addressesBot 判断一条剥完前缀没正文的消息是不是点在机器人身上：
+// 标准 mention、实现端 @ 标记、私聊，或手打的「@昵称」「@你」都算。
+// 只 @ 了别人（mention 段里没有本账号）时返回 false——这种消息不该回复。
+func addressesBot(event onebot.Event, content string, cfg *config.Config) bool {
+	if event.IsPrivate() || event.MentionsBot() || event.AdapterAtMe() {
+		return true
+	}
+	if cfg.BotNickname != "" && strings.HasPrefix(content, "@"+cfg.BotNickname) {
+		return true
+	}
+	return strings.HasPrefix(content, "@你")
 }
 
 // stripCQPrefix 去除消息开头的 @ 标记，让后面的文本能命中关键字。

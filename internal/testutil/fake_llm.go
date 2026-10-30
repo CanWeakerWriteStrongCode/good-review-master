@@ -34,13 +34,15 @@ type ChatCall struct {
 
 // FakeLLM 实现 llm.Client：返回固定回复并记录每次调用
 type FakeLLM struct {
-	mu        sync.Mutex
-	calls     []LLMCall
-	chatCalls []ChatCall
-	jsonCalls []JSONCall
-	script    []*llm.ChatResponse // Chat 的依次返回值，用完后回落固定 reply
-	reply     string
-	jsonReply string // ChatJSON 的固定返回（默认不回复）
+	mu              sync.Mutex
+	calls           []LLMCall
+	chatCalls       []ChatCall
+	jsonCalls       []JSONCall
+	structuredCalls []JSONCall
+	script          []*llm.ChatResponse // Chat 的依次返回值，用完后回落固定 reply
+	reply           string
+	jsonReply       string // ChatJSON 的固定返回（默认不回复）
+	structuredReply string // ChatStructured 的固定返回（默认空串 → 调用方按解析失败回退原文）
 }
 
 // NewFakeLLM 创建返回固定回复的 FakeLLM
@@ -63,6 +65,14 @@ func (f *FakeLLM) SetJSONReply(reply string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jsonReply = reply
+}
+
+// SetStructuredReply 自定义 ChatStructured 的固定返回（例如 `{"sentences":["一","二"]}`）。
+// 不设置时返回空串，调用方会走"解析失败 → 用原文"的分支。
+func (f *FakeLLM) SetStructuredReply(reply string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.structuredReply = reply
 }
 
 // Review 实现 llm.Client，记录调用并返回固定回复
@@ -133,6 +143,26 @@ func (f *FakeLLM) ChatJSON(_ context.Context, messages []llm.Message, schema jso
 	return &llm.ChatResponse{Content: f.jsonReply}, nil
 }
 
+// ChatStructured 实现 llm.Client：记录排版调用与 schema，返回预设内容。
+func (f *FakeLLM) ChatStructured(_ context.Context, messages []llm.Message, schema json.RawMessage) (*llm.ChatResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	call := JSONCall{Schema: schema, Response: f.structuredReply}
+	call.Messages = make([]llm.Message, len(messages))
+	copy(call.Messages, messages)
+	f.structuredCalls = append(f.structuredCalls, call)
+	return &llm.ChatResponse{Content: f.structuredReply}, nil
+}
+
+// StructuredCalls 返回已记录的排版调用副本
+func (f *FakeLLM) StructuredCalls() []JSONCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]JSONCall, len(f.structuredCalls))
+	copy(out, f.structuredCalls)
+	return out
+}
+
 // JSONCalls 返回已记录的 ChatJSON 调用副本
 func (f *FakeLLM) JSONCalls() []JSONCall {
 	f.mu.Lock()
@@ -158,5 +188,6 @@ func (f *FakeLLM) Reset() {
 	f.calls = nil
 	f.chatCalls = nil
 	f.jsonCalls = nil
+	f.structuredCalls = nil
 	f.script = nil
 }

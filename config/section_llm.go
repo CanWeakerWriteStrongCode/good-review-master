@@ -24,6 +24,15 @@ type llmSection struct {
 	Temperature      float64  `yaml:"temperature"`
 	TopP             float64  `yaml:"top_p"`
 
+	// ReplyMaxSentences 最终回复的句数上限：模型产出后再调一次"排版"请求，
+	// 强制拆成不超过这么多句短句。0 = 关闭排版（直接发原始回复）。
+	// 用指针区分"没写"（用缺省 5）与"显式写 0（关闭）"。
+	ReplyMaxSentences *int `yaml:"reply_max_sentences"`
+
+	// ReplyRewriteMinRunes 原稿短于这个字数就不排版（直接发原文），省一次模型调用。
+	// 缺省 60；显式 0 = 不设下限（只要开启排版就总是排版）。
+	ReplyRewriteMinRunes *int `yaml:"reply_rewrite_min_runes"`
+
 	RateLimitPerSec    float64 `yaml:"rate_limit_per_sec"`
 	RateLimitBurst     int     `yaml:"rate_limit_burst"`
 	BreakerFailures    int     `yaml:"breaker_failures"`
@@ -46,6 +55,14 @@ const (
 	// llm_timeout_sec（默认 120 秒），开着它反而是在保护群里的体验。
 	defaultBreakerFailures    = 5
 	defaultBreakerCooldownSec = 30
+
+	// defaultReplyMaxSentences 最终回复的句数上限缺省值：
+	// 模型出稿后再排一次版，最多 5 句短句（同时不超过 QQ 被动回复的 5 条上限）。0 = 关闭。
+	defaultReplyMaxSentences = 5
+
+	// defaultReplyRewriteMinRunes 短于这个字数就不排版：短回复本来就没多少可拆的，
+	// 多一次模型调用只会拖慢发送。0 = 不设下限。
+	defaultReplyRewriteMinRunes = 60
 )
 
 // supportedProviders 支持的 provider 白名单。加新 provider 时要同时改 app/build.go 的分支。
@@ -87,6 +104,14 @@ func (s *llmSection) SetDefaults() {
 	}
 	if s.BreakerCooldownSec == 0 {
 		s.BreakerCooldownSec = defaultBreakerCooldownSec
+	}
+	if s.ReplyMaxSentences == nil {
+		defaultSentences := defaultReplyMaxSentences
+		s.ReplyMaxSentences = &defaultSentences
+	}
+	if s.ReplyRewriteMinRunes == nil {
+		defaultMinRunes := defaultReplyRewriteMinRunes
+		s.ReplyRewriteMinRunes = &defaultMinRunes
 	}
 }
 
@@ -131,6 +156,14 @@ func (s *llmSection) Validate() error {
 	if s.BreakerCooldownSec < 0 {
 		return fmt.Errorf("llm.breaker_cooldown_sec 不能为负（当前 %d）：它是熔断后进入半开试探前的冷却秒数",
 			s.BreakerCooldownSec)
+	}
+	if s.ReplyMaxSentences != nil && *s.ReplyMaxSentences < 0 {
+		return fmt.Errorf("llm.reply_max_sentences 不能为负（当前 %d）：0 表示关闭排版，正整数表示最终回复最多几句",
+			*s.ReplyMaxSentences)
+	}
+	if s.ReplyRewriteMinRunes != nil && *s.ReplyRewriteMinRunes < 0 {
+		return fmt.Errorf("llm.reply_rewrite_min_runes 不能为负（当前 %d）：0 表示不设下限（总是排版），正整数表示原稿至少多少字才排版",
+			*s.ReplyRewriteMinRunes)
 	}
 	// 这里刻意**不**检查 cache_hit_cost < cache_miss_cost。
 	// 两者相等是合法且有意为之的配置（等价于"永远不扩展、每次重置"）——

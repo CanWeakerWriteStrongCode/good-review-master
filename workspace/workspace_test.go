@@ -557,3 +557,52 @@ func TestWorkspace成员名先写members再镜像meta(t *testing.T) {
 		t.Fatalf("meta.name 应为新名，实际 %q", got)
 	}
 }
+
+// TestLearnMemberName消息自带名字 桥接透传 sender 昵称时不需要等 get_group_member_info：
+// 目录立即生效，并落 members 表供重启后继续使用。
+func TestLearnMemberName消息自带名字(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_a"},
+		MaxCacheMsg:       10,
+	}
+	newManager := func() *Manager {
+		m, err := New(func() *config.Config { return cfg }, system,
+			filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		return m
+	}
+
+	m := newManager()
+	ws, err := m.ResolveOrCreate("qq", "a")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
+	}
+	ws.LearnMemberName("g1", "u1", "小张")
+	if got := ws.DisplayNameFor("g1")("u1"); got != "小张" {
+		t.Fatalf("消息自带的名字应立即生效，实际 %q", got)
+	}
+	// 同名重复学习是幂等的，不能把名字打回空。
+	ws.LearnMemberName("g1", "u1", "小张")
+	if got := ws.DisplayNameFor("g1")("u1"); got != "小张" {
+		t.Fatalf("重复学习后名字不应变化，实际 %q", got)
+	}
+	m.Close()
+
+	m2 := newManager()
+	defer m2.Close()
+	ws2, ok := m2.ByID("qq_a")
+	if !ok || ws2 == nil {
+		t.Fatal("工作空间应从档案恢复")
+	}
+	if got := ws2.DisplayNameFor("g1")("u1"); got != "小张" {
+		t.Fatalf("重启后应按 members 表恢复名字，实际 %q", got)
+	}
+}

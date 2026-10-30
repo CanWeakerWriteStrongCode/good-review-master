@@ -13,6 +13,17 @@ import (
 // errEmptyReply 模型既没给文本也没给工具调用（或强制作答后仍为空）
 var errEmptyReply = errors.New("大模型返回空内容")
 
+// errToolCallReply 模型把工具调用写成了正文（常见于工具已撤回的收尾轮）。
+// 这种文本里会带 tool_call 结构和本地文件路径，绝不能原样发到聊天里。
+var errToolCallReply = errors.New("大模型把工具调用当成了回复文本")
+
+// forcedAnswerInstruction 收尾轮的强制说明：只撤 tools 字段不够，
+// 有的模型会照着历史里的工具调用格式继续把 tool_call 写进正文。
+const forcedAnswerInstruction = "（本轮已收回全部工具：不要再调用任何工具，也不要输出 tool_call / function / parameter 之类的调用格式或文件路径。请只根据上面已经拿到的信息，直接用自然语言回复用户。）"
+
+// toolCallCorrection 检出工具调用正文后的纠正说明：明确指出上一条无效，要求直接作答。
+const toolCallCorrection = "你上一条输出的是工具调用格式，不是给用户的回复；工具已经收回，无法再执行。请直接用自然语言输出最终回复，不要包含 tool_call / function / parameter 结构，也不要输出文件路径。"
+
 // MCPProvider 对话期需要的 MCP 能力（由 *mcpclient.Manager 实现）。
 // 用接口而非具体类型：MCP 未启用时可以直接传 nil，单测也能塞假实现穷举循环分支。
 type MCPProvider interface {
@@ -32,7 +43,8 @@ type MCPProvider interface {
 // 成本说明：每轮都会重发完整上下文（system + 聊天记录 + 历轮工具结果），
 // 但第 2 轮起前缀与上一轮完全一致，走大模型的 prefix cache 命中价，边际成本很低；
 // 真正的新增开销只有 assistant 的 tool_calls 和 tool 结果那几条消息。
-// 轮数用尽后撤回 tools 字段，模型只能基于已拿到的信息直接作答，杜绝无限调用。
+// 轮数用尽后撤回 tools 字段，并追加一条"只能直接作答"的说明；若模型仍把
+// tool_call 写成正文，会改问一次（同样不带工具），仍不合格则报错不发。
 func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg string, images []llm.Image) (string, error) {
 	// 一次工具循环全程用同一份配置：轮数上限与看图上限是同一次对话的两条硬约束，
 	// 中途换掉会让"最多 N 轮"这类保证失去意义
@@ -73,8 +85,11 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 	for round := 1; ; round++ {
 		roundTools := tools
 		if round > maxRounds {
-			// 轮数用尽：不再下发工具，强制模型直接作答
+			// 轮数用尽：不再下发工具，并明确要求模型直接作答。
+			// 只撤 tools 字段不够——模型会继续按历史里的格式输出工具调用文本，
+			// 正文里带着本地文件路径，直接发出去就泄露到聊天里了。
 			roundTools = nil
+			messages = append(messages, llm.Message{Role: llm.RoleUser, Content: forcedAnswerInstruction})
 			logutil.Warn("MCP 工具调用轮数达上限，撤回工具强制作答", "工具数", len(tools), "上限", maxRounds)
 		}
 
@@ -96,10 +111,28 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 
 		if len(resp.ToolCalls) == 0 || roundTools == nil {
 			// 没要求调工具 = 最终答案；已撤回工具却仍返回 tool_calls 的模型也在这里收口
-			if strings.TrimSpace(resp.Content) == "" {
+			content := strings.TrimSpace(resp.Content)
+			if content == "" {
 				return "", errEmptyReply
 			}
-			return resp.Content, nil
+			if looksLikeToolCall(content) {
+				// 模型把工具调用当正文吐了出来：改问一次（不带工具），
+				// 仍不合格就报错不发，避免工具格式和文件路径进聊天。
+				logutil.Warn("模型把工具调用当成回复文本，改问一次", "轮次", round, "预览", truncateRunes(content, 80))
+				messages = append(messages, llm.Message{Role: llm.RoleUser, Content: toolCallCorrection})
+				retry, err := r.llmClient.MutiChatWithTool(ctx, messages, nil)
+				if err != nil {
+					return "", err
+				}
+				content = strings.TrimSpace(retry.Content)
+				if content == "" {
+					return "", errEmptyReply
+				}
+				if looksLikeToolCall(content) {
+					return "", errToolCallReply
+				}
+			}
+			return content, nil
 		}
 
 		logutil.Info("模型请求调用 MCP 工具", "轮次", round, "调用数", len(resp.ToolCalls))
@@ -206,6 +239,19 @@ func (r *Router) callToolOutcome(ctx context.Context, tc llm.ToolCall) (string, 
 		return out, nil
 	}
 	return out, nil
+}
+
+// looksLikeToolCall 判断回复正文是否其实是工具调用。
+// Qwen 等模板在没有 tools 字段的收尾轮会退化成把 <tool_call>...</tool_call>
+// 写进 content；这里按标签形态识别，避免把调用结构和本地路径当回复发出去。
+func looksLikeToolCall(s string) bool {
+	lower := strings.ToLower(s)
+	for _, marker := range []string{"<tool_call", "</tool_call>", "<function=", "<parameter="} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // truncateRunes 按字符数截断，超长时补省略号（与 bot 层截断群消息的写法一致）

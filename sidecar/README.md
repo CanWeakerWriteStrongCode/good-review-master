@@ -70,7 +70,7 @@ QQ 官方机器人的平台条目（WebUI 里填，或加到 `data/config/cmd_co
 | `token` | 空 | 与 Go 的 `im_token`（`secret.yaml`）相同 |
 | `action_listen_host` | `127.0.0.1` | OneBot 12 动作服务监听地址 |
 | `action_listen_port` | `6199` | Go 的 `im.api_base` 指向 `http://host:port` |
-| `forward_self_messages` | `false` | 是否转发机器人自己发的消息 |
+| `forward_self_messages` | `false` | 是否转发机器人自己发的消息；打开时要把 Go 的 `im.echo_self_messages` 也设为 `true`，否则回复会被回传事件和本地记录各写一次 |
 | `action_timeout_sec` | `10` | 单个动作超时 |
 | `event_retry` | `3` | 事件推送失败重试次数 |
 

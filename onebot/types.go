@@ -22,6 +22,14 @@ type Self struct {
 // Go 见到哨兵一律判定「不可比较」，只入缓存、不触发回复。
 const SentinelSelfID = "unknown_selfid"
 
+// Sender 是发送者的展示信息（OneBot 11 兼容的可选扩展）。
+// QQ 官方消息事件本身只有 openid，拿不到昵称；桥接能从 AstrBot 拿到时才会带上。
+type Sender struct {
+	UserID   string `json:"user_id"`
+	Nickname string `json:"nickname"`
+	Card     string `json:"card"`
+}
+
 // Event 是本项目消费的 OneBot 12 事件（只处理群消息与私聊，其余在入站层丢弃）。
 //
 // Account 不是协议字段：它来自上报路径 /im/event/{account}，用于和 self.platform
@@ -38,6 +46,9 @@ type Event struct {
 	AltMessage string    `json:"alt_message"`
 	GroupID    string    `json:"group_id"`
 	UserID     string    `json:"user_id"`
+
+	// Sender 可选：有值时用于学习成员显示名，减少 QQ 官方 openid-only 造成的空昵称。
+	Sender *Sender `json:"sender,omitempty"`
 
 	// QQAtMe 是平台扩展（qq.at_me）：实现端明确知道这是一条群 @ 事件，
 	// 但拿不到本账号可比较的 openid（群内权限缺 mention 元数据时）。
@@ -70,6 +81,18 @@ func IsSelfPlaceholder(userID string) bool {
 
 // IsPrivate 判断是否私聊（OneBot 12 detail_type=private）。
 func (e Event) IsPrivate() bool { return e.DetailType == "private" }
+
+// SenderName 返回发送者展示名：群名片优先，其次账号昵称；都没有时为空串。
+// QQ 官方事件基本不带这两个字段，能拿到属于加分项（AstrBot 桥接会透传）。
+func (e Event) SenderName() string {
+	if e.Sender == nil {
+		return ""
+	}
+	if card := strings.TrimSpace(e.Sender.Card); card != "" {
+		return card
+	}
+	return strings.TrimSpace(e.Sender.Nickname)
+}
 
 // ChatID 返回会话键：群聊用 group_id，私聊用 "private:<user_id>"。
 // 缓存、人格、锚点、冷却都按这个键隔离，私聊因此天然是一对一会话，

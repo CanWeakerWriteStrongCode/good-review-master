@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,16 +204,16 @@ func proactiveTestConfig() *config.Config {
 		LLMSendCount:          20,
 		LLMTimeout:            2 * time.Second,
 		ProactiveEnabled:      true,
-		ProactiveWindow:       15,
 		ProactiveCooldown:     90 * time.Second,
 		ProactiveMaxStreak:    5,
 		ProactiveJudgeEvery:   20 * time.Second,
 		ProactiveJudgeTimeout: 2 * time.Second,
 		ProactiveJudgeImages:  1,
 		LLMConfig: config.LLMConf{
-			CacheHitCost:     0.033,
-			CacheMissCost:    1.0,
-			MaxContextTokens: 50000,
+			CacheHitCost:         0.033,
+			CacheMissCost:        1.0,
+			ReplyRewriteMinRunes: 60,
+			MaxContextTokens:     50000,
 		},
 	}
 }
@@ -247,6 +248,37 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("等待超时：%s", what)
+}
+
+// Test裁判窗口与生成一致 裁判看到的条数取自 runtime.llm_send_count，
+// 不再单独准备一份聊天记录；生成阶段自己再按缓存命中扩展/重置。
+func Test裁判窗口与生成一致(t *testing.T) {
+	cfg := proactiveTestConfig()
+	cfg.LLMSendCount = 3
+	instance, fake := newProactiveTestRouter(t, cfg)
+	fake.SetJSONReply(`{"reply": false, "long_form": false, "focus": "最后一条消息", "reason": "闲聊"}`)
+
+	contents := []string{"第1条消息", "第2条消息", "第3条消息", "第4条消息", "第5条消息", "第6条消息"}
+	for i, content := range contents {
+		seedMessages(instance, cfg, cache.Message{
+			MessageID: fmt.Sprintf("m%d", i+1), GroupID: "g1", UserID: "u1",
+			Nickname: "张三", Content: content,
+		})
+	}
+	instance.TryProactive(context.Background(), proactiveEvent("u1", "m6", contents[5]), "g1", contents[5])
+
+	waitFor(t, "裁判调用", func() bool { return len(fake.JSONCalls()) == 1 })
+	text := fake.JSONCalls()[0].Messages[1].Content
+	for i := 0; i < 3; i++ {
+		if strings.Contains(text, contents[i]) {
+			t.Fatalf("裁判不应看到 %s（窗口=%d）：%s", contents[i], cfg.LLMSendCount, text)
+		}
+	}
+	for i := 3; i < len(contents); i++ {
+		if !strings.Contains(text, contents[i]) {
+			t.Fatalf("裁判应看到 %s：%s", contents[i], text)
+		}
+	}
 }
 
 func TestProactive判定为是要生成回复(t *testing.T) {

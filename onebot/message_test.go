@@ -142,3 +142,25 @@ func TestQuotedRefIdx(t *testing.T) {
 		t.Fatalf("没有引用时为空，got %q", got)
 	}
 }
+
+// TestSenderName 发送者展示名：群名片优先于账号昵称；两者都没有时为空。
+// QQ 官方事件基本不带 sender，这一层只是给 AstrBot 透传的名字兜底。
+func TestSenderName(t *testing.T) {
+	cases := []struct {
+		name string
+		send *Sender
+		want string
+	}{
+		{"没有 sender", nil, ""},
+		{"只有昵称", &Sender{Nickname: "张三"}, "张三"},
+		{"名片优先", &Sender{Nickname: "张三", Card: "小张"}, "小张"},
+		{"空白忽略", &Sender{Nickname: "  ", Card: "\t"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Event{Sender: tc.send}).SenderName(); got != tc.want {
+				t.Fatalf("SenderName() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

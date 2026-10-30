@@ -30,6 +30,11 @@ type imAccountSection struct {
 type imSection struct {
 	// APIBase 所有账号默认的出站地址（实现端 OneBot 12 HTTP API 根地址）。
 	APIBase string `yaml:"api_base"`
+	// EchoSelfMessages 实现端是否会把机器人自己发出的消息再作为入站事件回传
+	// （NapCat 这类实现端会；AstrBot 桥不转发自身消息，缺省 false）。
+	// 为 true 时本地不再记录机器人回复——回传的事件会走正常入站链路写缓存/落库，
+	// 本地再记一次就重复了。
+	EchoSelfMessages bool `yaml:"echo_self_messages"`
 	// Accounts 可选的按账号覆盖；api_base 留空表示沿用上面的默认地址。
 	Accounts []imAccountSection `yaml:"accounts"`
 }

@@ -120,15 +120,15 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | 配置项                         | 说明                              | 示例值                        |
 |-----------------------------|---------------------------------|----------------------------|
 | `im.api_base`               | 所有账号默认的出站地址（实现端动作服务） | `http://127.0.0.1:6199` |
+| `im.echo_self_messages`     | 实现端是否回传机器人自己发的消息（NapCat 会，AstrBot 桥不会）；true 时回复靠回传事件入库、本地不再重复记录 | `false` |
 | `im.accounts`               | 可选：多实现端时按账号覆盖出站地址 `[{id, api_base}]`；`id` = `平台名_接收账号` | 一般不用配 |
-| `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群） | `123456,789012`            |
-| `bot.allow_workspace_accounts`    | 允许自动开通的工作空间 ID（如 `qq_1906xxxx`；`*` 表示全部） | `["qq_1906xxxx"]` |
+| `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群；支持逗号分隔字符串或 YAML 列表） | `123456,789012`            |
+| `bot.allow_workspace_accounts`    | 允许自动开通的工作空间 ID（如 `qq_1906xxxx`；`*` 表示全部；支持 YAML 列表或逗号分隔字符串） | `["qq_1906xxxx"]` |
 | `bot.proactive_enabled`     | 主动插话：没被 @ 时也先由大模型判定要不要接话 | `false`                    |
-| `bot.proactive_window_msgs` | 判定/生成时看最近多少条消息              | `15`                       |
-| `bot.proactive_cooldown_sec`| 主动发言后该群冷却秒数（期间不再判定）        | `90`                       |
-| `bot.proactive_max_streak`  | 同一话题最多连续主动发言次数              | `5`                        |
-| `bot.proactive_judge_interval_sec` | 两次判定的最小间隔（秒）            | `20`                       |
-| `bot.proactive_judge_timeout_sec`  | 单次判定超时（秒，超时=不回复）          | `20`                       |
+| `bot.proactive_cooldown_sec`| 主动发言后该群冷却秒数（期间不再判定；0=不冷却）        | `90`                       |
+| `bot.proactive_max_streak`  | 同一话题最多连续主动发言次数（0=不主动发言）              | `5`                        |
+| `bot.proactive_judge_interval_sec` | 两次判定的最小间隔（秒，0=不设；从上次判定开始计时）            | `20`                       |
+| `bot.proactive_judge_timeout_sec`  | 单次判定超时（秒，超时=不回复；0=沿用 `runtime.llm_timeout_sec`）          | `20`                       |
 | `bot.proactive_judge_images` | 每次判定最多附几张图（0=图片消息不判定）       | `1`                        |
 | `llm.provider`              | 固定填 `openai`（兼容所有 OpenAI 格式）    | `openai`                   |
 | `llm.api_key`               | 大模型 API Key（写在 `secret.yaml`）    | `sk-xxx`                   |
@@ -140,11 +140,14 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | `llm.cache_miss_cost`       | 缓存未命中单价（相对值）                    | `1.0`                      |
 | `llm.max_context_tokens`    | 单次发送大模型的上下文 token 上限（超限强制重置）    | `50000`                    |
 | `llm.image_max`             | 单次回复最多实际查看的图片张数（0=关闭看图）        | `3`                        |
+| `llm.reply_max_sentences`   | 最终回复的句数上限（出稿后再排版一次，最多几句；0=关闭排版） | `5`                        |
+| `llm.reply_rewrite_min_runes` | 原稿不足这么多字就不排版（直接发原文）；0=不设下限 | `60`                      |
 | `llm.image_local_dirs`      | `view_image` 允许读取的本地图片目录（QQ 官方图片是 AstrBot 本地临时文件） | `["~/.astrbot/data/temp"]` |
 | `runtime.llm_send_count`    | 每次发送的最近消息条数（重置窗口）               | `200`                      |
 | `runtime.max_cache_msg`     | 环形缓冲条数上限（建议 ≈31×llm_send_count） | `6200`                     |
 | `runtime.llm_timeout_sec`   | 大模型超时（秒）                        | `20`                       |
 | `runtime.max_msg_rune`      | 单条消息最大字符数                       | `500`                      |
+| `runtime.reply_send_interval_ms` | 分句发送间隔：>0 拆成最多 5 条逐条发；0=合成一条 | `800`                      |
 | `runtime.im_listen_addr`    | AstrBot 推送事件的监听地址               | `127.0.0.1:18090`           |
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）              | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                     | `admin`                    |
@@ -202,9 +205,10 @@ rules:
 1. `internal.reply_requirement`：@ 回复时 system prompt 里的【要求】句
 2. `internal.proactive_requirement`：主动接话时替代上一条的【要求】句
 3. `internal.persona_directive`：有人格时，人格块末尾追加的授权指令（依据情绪维度推演后再回答）
-4. `internal.focus_context` / `internal.focus_last`：追加在 system prompt 末尾的回复焦点提示；直接 @ 回复固定用 `focus_last`，主动接话按裁判给出的 `focus` 二选一
+4. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`：追加在 system prompt 末尾的回复焦点提示；群内被点名固定用 `focus_mention`（只回最后一条找机器人的消息），私聊用 `focus_last`，主动接话按裁判给出的 `focus` 二选一
 5. `internal.proactive_judge`：没有被 @ 时，判断“这条消息要不要主动回复”的裁判提示词
 6. `internal.add_persona`：`#添加人格` 生成 prompt + persona 时发给大模型的系统提示词
+7. `internal.reply_rewrite`：模型出稿后，把回复发回来改写成最多 N 句短句（N 见 `llm.reply_max_sentences`）的排版提示词
 
 ### 群内动态添加指令
 

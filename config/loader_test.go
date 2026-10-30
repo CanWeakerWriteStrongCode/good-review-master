@@ -177,6 +177,27 @@ func TestIM账号可覆盖全局地址(t *testing.T) {
 	}
 }
 
+func Test回传自身消息开关(t *testing.T) {
+	cfg, err := loadWith(t, baseConfig, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if cfg.EchoSelfMessages {
+		t.Fatal("im.echo_self_messages 缺省应为 false")
+	}
+
+	enabled := strings.Replace(baseConfig, `  api_base: "http://127.0.0.1:6199"`,
+		`  api_base: "http://127.0.0.1:6199"
+  echo_self_messages: true`, 1)
+	cfg, err = loadWith(t, enabled, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if !cfg.EchoSelfMessages {
+		t.Fatal("显式 true 应生效")
+	}
+}
+
 func Test环境变量优先于secret(t *testing.T) {
 	t.Setenv(envLLMAPIKey, "sk-from-env")
 	t.Setenv(envWebPassword, "pw-from-env")
@@ -438,7 +459,6 @@ func configsEqual(a, b *Config) bool {
 		return false
 	}
 	if a.ProactiveEnabled != b.ProactiveEnabled ||
-		a.ProactiveWindow != b.ProactiveWindow ||
 		a.ProactiveCooldown != b.ProactiveCooldown ||
 		a.ProactiveMaxStreak != b.ProactiveMaxStreak ||
 		a.ProactiveJudgeEvery != b.ProactiveJudgeEvery ||
@@ -478,11 +498,11 @@ func TestProactive默认值(t *testing.T) {
 	if cfg.ProactiveEnabled {
 		t.Fatal("proactive_enabled 未配置时应默认关闭")
 	}
-	if cfg.ProactiveWindow != 15 || cfg.ProactiveCooldown != 90*time.Second ||
+	if cfg.ProactiveCooldown != 90*time.Second ||
 		cfg.ProactiveMaxStreak != 5 || cfg.ProactiveJudgeEvery != 20*time.Second ||
 		cfg.ProactiveJudgeTimeout != 20*time.Second || cfg.ProactiveJudgeImages != 1 {
-		t.Fatalf("主动插话默认值不对：window=%d cooldown=%v streak=%d every=%v timeout=%v images=%d",
-			cfg.ProactiveWindow, cfg.ProactiveCooldown, cfg.ProactiveMaxStreak,
+		t.Fatalf("主动插话默认值不对：cooldown=%v streak=%d every=%v timeout=%v images=%d",
+			cfg.ProactiveCooldown, cfg.ProactiveMaxStreak,
 			cfg.ProactiveJudgeEvery, cfg.ProactiveJudgeTimeout, cfg.ProactiveJudgeImages)
 	}
 }
@@ -493,7 +513,6 @@ func TestProactive显式配置(t *testing.T) {
 		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
 		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
   proactive_enabled: true
-  proactive_window_msgs: 8
   proactive_cooldown_sec: 30
   proactive_max_streak: 2
   proactive_judge_interval_sec: 5
@@ -503,10 +522,224 @@ func TestProactive显式配置(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载失败：%v", err)
 	}
-	if !cfg.ProactiveEnabled || cfg.ProactiveWindow != 8 ||
+	if !cfg.ProactiveEnabled ||
 		cfg.ProactiveCooldown != 30*time.Second || cfg.ProactiveMaxStreak != 2 ||
 		cfg.ProactiveJudgeEvery != 5*time.Second || cfg.ProactiveJudgeTimeout != 3*time.Second ||
 		cfg.ProactiveJudgeImages != 0 {
 		t.Fatalf("显式配置未生效：%+v", cfg)
+	}
+}
+
+// TestProactive显式零生效 0 是有效配置（不冷却/无判定间隔/不主动发言/沿用 llm 超时），
+// 只有删掉那一行才会用默认值；负数非法。
+func TestProactive显式零生效(t *testing.T) {
+	yaml := strings.Replace(baseConfig,
+		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
+		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  proactive_enabled: true
+  proactive_cooldown_sec: 0
+  proactive_max_streak: 0
+  proactive_judge_interval_sec: 0
+  proactive_judge_timeout_sec: 0
+  proactive_judge_images: 0`, 1)
+	cfg, err := loadWith(t, yaml, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if cfg.ProactiveCooldown != 0 || cfg.ProactiveMaxStreak != 0 ||
+		cfg.ProactiveJudgeEvery != 0 || cfg.ProactiveJudgeTimeout != 0 ||
+		cfg.ProactiveJudgeImages != 0 {
+		t.Fatalf("显式 0 被默认值覆盖了：%+v", cfg)
+	}
+
+	negative := strings.Replace(baseConfig,
+		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
+		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  proactive_cooldown_sec: -1`, 1)
+	if _, err := loadWith(t, negative, ""); err == nil {
+		t.Fatal("负数应被拒绝")
+	}
+}
+
+// TestAllowGroups兼容字符串与列表 allow_groups 两种 YAML 写法都要能加载：
+// 历史逗号字符串不能失效，列表形态要按顺序保留、忽略空白项。
+func TestAllowGroups兼容字符串与列表(t *testing.T) {
+	cases := []struct {
+		name   string
+		groups string
+		want   []string
+	}{
+		{
+			name:   "逗号分隔字符串",
+			groups: "  allow_groups: \"10001, 10002\"\n",
+			want:   []string{"10001", "10002"},
+		},
+		{
+			name:   "YAML 列表",
+			groups: "  allow_groups:\n    - \"10001\"\n    - \"10002\"\n",
+			want:   []string{"10001", "10002"},
+		},
+		{
+			name:   "列表带注释与空项",
+			groups: "  allow_groups:\n    # 群 A\n    - \"10001\"\n    - \"\"\n    - \"10002\"\n",
+			want:   []string{"10001", "10002"},
+		},
+		{
+			name:   "空值",
+			groups: "  allow_groups:\n",
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadWith(t, "bot:\n"+tc.groups+`runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`, "")
+			if err != nil {
+				t.Fatalf("加载失败：%v", err)
+			}
+			if !reflect.DeepEqual(cfg.AllowGroups, tc.want) {
+				t.Fatalf("AllowGroups = %v，期望 %v", cfg.AllowGroups, tc.want)
+			}
+		})
+	}
+}
+
+// TestAllowWorkspaceAccounts兼容字符串与列表 与 allow_groups 一样：
+// 逗号分隔字符串和 YAML 列表都要能加载，并保持声明顺序。
+func TestAllowWorkspaceAccounts兼容字符串与列表(t *testing.T) {
+	cases := []struct {
+		name     string
+		accounts string
+		want     []string
+	}{
+		{
+			name:     "逗号分隔字符串",
+			accounts: "  allow_workspace_accounts: \"qq_a1, qq_a2\"\n",
+			want:     []string{"qq_a1", "qq_a2"},
+		},
+		{
+			name:     "YAML 列表",
+			accounts: "  allow_workspace_accounts:\n    - \"qq_a1\"\n    - \"qq_a2\"\n",
+			want:     []string{"qq_a1", "qq_a2"},
+		},
+		{
+			name:     "列表带注释与空项",
+			accounts: "  allow_workspace_accounts:\n    # 账号 A\n    - \"qq_a1\"\n    - \"\"\n    - \"qq_a2\"\n",
+			want:     []string{"qq_a1", "qq_a2"},
+		},
+		{
+			name:     "空值",
+			accounts: "  allow_workspace_accounts:\n",
+			want:     []string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadWith(t, "bot:\n"+tc.accounts+`runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`, "")
+			if err != nil {
+				t.Fatalf("加载失败：%v", err)
+			}
+			if !reflect.DeepEqual(cfg.WorkspaceAccounts, tc.want) {
+				t.Fatalf("WorkspaceAccounts = %v，期望 %v", cfg.WorkspaceAccounts, tc.want)
+			}
+		})
+	}
+}
+
+// TestReplyMaxSentences 最终回复的句数上限：缺省 5；显式 0 = 关闭排版；负数非法。
+func TestReplyMaxSentences(t *testing.T) {
+	const minimal = `runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`
+	cfg, err := loadWith(t, minimal, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := cfg.LLMConfig.ReplyMaxSentences; got != 5 {
+		t.Fatalf("缺省句数上限 = %d，期望 5", got)
+	}
+
+	cfg, err = loadWith(t, minimal+"  reply_max_sentences: 0\n", "")
+	if err != nil {
+		t.Fatalf("显式关闭不应报错：%v", err)
+	}
+	if got := cfg.LLMConfig.ReplyMaxSentences; got != 0 {
+		t.Fatalf("显式 0 应关闭排版，实际 %d", got)
+	}
+
+	if _, err := loadWith(t, minimal+"  reply_max_sentences: -1\n", ""); err == nil {
+		t.Fatal("负数应被拒绝")
+	}
+}
+
+// TestReplyRewriteMinRunes 排版字数下限：缺省 60；显式 0 = 不设下限；负数非法。
+func TestReplyRewriteMinRunes(t *testing.T) {
+	const minimal = `runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`
+	cfg, err := loadWith(t, minimal, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := cfg.LLMConfig.ReplyRewriteMinRunes; got != 60 {
+		t.Fatalf("缺省字数下限 = %d，期望 60", got)
+	}
+
+	cfg, err = loadWith(t, minimal+"  reply_rewrite_min_runes: 0\n", "")
+	if err != nil {
+		t.Fatalf("显式 0 不应报错：%v", err)
+	}
+	if got := cfg.LLMConfig.ReplyRewriteMinRunes; got != 0 {
+		t.Fatalf("显式 0 应保留，实际 %d", got)
+	}
+
+	if _, err := loadWith(t, minimal+"  reply_rewrite_min_runes: -1\n", ""); err == nil {
+		t.Fatal("负数应被拒绝")
+	}
+}
+
+// TestReplySendInterval 分句发送间隔：缺省 800ms；显式 0 = 不拆分；负数非法。
+func TestReplySendInterval(t *testing.T) {
+	const minimal = `runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`
+	cfg, err := loadWith(t, minimal, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := cfg.ReplySendInterval; got != 800*time.Millisecond {
+		t.Fatalf("缺省间隔 = %v，期望 800ms", got)
+	}
+
+	zero := strings.Replace(minimal, "  max_msg_rune: 500\n", "  max_msg_rune: 500\n  reply_send_interval_ms: 0\n", 1)
+	cfg, err = loadWith(t, zero, "")
+	if err != nil {
+		t.Fatalf("显式 0 不应报错：%v", err)
+	}
+	if got := cfg.ReplySendInterval; got != 0 {
+		t.Fatalf("显式 0 应关闭拆分，实际 %v", got)
+	}
+
+	neg := strings.Replace(minimal, "  max_msg_rune: 500\n", "  max_msg_rune: 500\n  reply_send_interval_ms: -1\n", 1)
+	if _, err := loadWith(t, neg, ""); err == nil {
+		t.Fatal("负数应被拒绝")
 	}
 }

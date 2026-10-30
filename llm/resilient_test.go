@@ -51,6 +51,13 @@ func (s *stubClient) ChatJSON(context.Context, []Message, json.RawMessage) (*Cha
 	return &ChatResponse{Content: s.reply}, nil
 }
 
+func (s *stubClient) ChatStructured(context.Context, []Message, json.RawMessage) (*ChatResponse, error) {
+	if err := s.record(); err != nil {
+		return nil, err
+	}
+	return &ChatResponse{Content: s.reply}, nil
+}
+
 // TestResilient全零选项不改变行为：默认配置下装饰器必须完全透明。
 // 这点很重要——它意味着"引入限速/熔断"这件事对没配它们的用户零影响。
 func TestResilient全零选项不改变行为(t *testing.T) {

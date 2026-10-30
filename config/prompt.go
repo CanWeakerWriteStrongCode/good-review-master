@@ -60,7 +60,11 @@ const defaultProactiveJudgePrompt = `你是群聊机器人的发言决策器，�
 - "最后一条消息"：最后一条是独立提问、追问或点名，或与前文无关，只需回应它；
 - "整体上下文"：话题在延续、需要承接前文，或最后一条只有结合上文才看得懂，按整段语境回应。
 
-只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "focus": "整体上下文 或 最后一条消息", "reason": "不超过 20 字的理由"}`
+还要给出 long_form（是否需要查资料 / 正式知识型长篇解答）：
+- true：需要查证事实、新闻、数据、规则，或在解释概念、教程、对比等必须完整展开的问题；
+- false：日常闲聊、接梗、简短问答。
+
+只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "long_form": true 或 false, "focus": "整体上下文 或 最后一条消息", "reason": "不超过 20 字的理由"}`
 
 // defaultPersonaDirective 是人格块末尾授权指令的兜底：要求 LLM 依据人格维度推演各维度变化后再回答。
 // 正常从 prompt_system.yaml 的 internal.persona_directive 读取。
@@ -70,17 +74,26 @@ const defaultPersonaDirective = `这是你的人格（emotion 字段即你的情
 按你的情绪反应性升高愉悦相关维度、按外显度决定是否表露、按恢复速度自然回落；然后把各维度的变化体现到你的回答里，用符合这些维度的语气和方式回应用户。当用户情绪过于强烈（无论愤怒、悲伤，还是过度兴奋、狂喜）时，
 情绪反应要与人格特质相符，但以缓解对方情绪为先：不要升级冲突，不针锋相对、不火上浇油，用符合人格的方式安抚、缓和对方的情绪。每次回复都在当前维度状态的基础上继续，不要每次都从平静开始。回复要有变化与丰富性：在符合人格的前提下，避免反复使用同一句口头禅或同一个词收尾，表达应自然多样。`
 
-// defaultFocusContext / defaultFocusLast 是生成回复时追加的"回复焦点"提示词兜底
-// （正常从 internal.focus_context / internal.focus_last 读取）：
-// 直接 @ 回复固定用 focus_last；主动接话按裁判给出的 focus 二选一。
+// defaultFocusContext / defaultFocusLast / defaultFocusMention 是生成回复时追加的
+// "回复焦点"提示词兜底（正常从 internal.focus_context / focus_last / focus_mention 读取）：
+// 群里被点名用 focus_mention（只回最后一条找机器人的消息）；私聊与直接 @ 以外的
+// 直答用 focus_last；主动接话按裁判给出的 focus 二选一。
 const (
 	defaultFocusContext = "【回复焦点】结合整体上下文：先理解整段聊天的话题和来龙去脉，再回应最后一条消息，不要只盯着最后一句孤立作答。"
 	defaultFocusLast    = "【回复焦点】只回复最后一条消息，不要回答多余的内容；前文仅用于理解语境。"
+	defaultFocusMention = "【回复焦点】只回复最后一条找你（@ 你或叫你昵称）的消息，不要回答更早的消息；前文仅用于理解语境。"
 )
 
 // defaultReplyRequirement 是 @ 回复时 system prompt 里"【要求】"句的兜底：
 // 正常从 prompt_system.yaml 的 internal.reply_requirement 读取，老配置文件没有这一段时用这份。
 const defaultReplyRequirement = "【要求】发给你的内容是聊天记录，继续聊天或者执行指令后回复。"
+
+// defaultReplyRewrite 是"最终回复再排一次版"的系统提示词兜底：
+// 模型出稿后把它发回来，用 JSON schema 约束成最多 N 句短句（N 在 user 消息里给）。
+const defaultReplyRewrite = `你是群聊回复的排版器。把给你的回复改写成若干句短句（句数上限以用户消息为准）：
+- 可以适当删减，不用非要保留原意，但不要新增事实；
+- 每句控制在 50 字左右，口语化，像真人在群里一条条发消息；
+- 只输出 JSON，不要解释。`
 
 // defaultProactiveRequirement 是主动插话（裁判判定要回后）生成回复时，
 // system prompt 里"【要求】"那句的兜底：正常从 prompt_system.yaml 的
@@ -293,13 +306,25 @@ func (pc *PromptConfig) ProactiveRequirement() string {
 	return pc.internalPrompt("proactive_requirement", defaultProactiveRequirement)
 }
 
+// ReplyRewritePrompt 返回"把最终回复改写成短句"请求的系统提示词。
+// 句数上限不写在这里：它随配置变化，放在 user 消息里，system 保持稳定以命中缓存。
+func (pc *PromptConfig) ReplyRewritePrompt() string {
+	return pc.internalPrompt("reply_rewrite", defaultReplyRewrite)
+}
+
 // FocusPrompt 返回生成回复时追加的"回复焦点"提示词：
-// focusLast=true 聚焦最后一条（直接 @ 回复固定用它），否则按整体上下文。
+// focusLast=true 聚焦最后一条（私聊等没有 @ 语义的直答用它），否则按整体上下文。
 func (pc *PromptConfig) FocusPrompt(focusLast bool) string {
 	if focusLast {
 		return pc.internalPrompt("focus_last", defaultFocusLast)
 	}
 	return pc.internalPrompt("focus_context", defaultFocusContext)
+}
+
+// MentionFocusPrompt 返回群里被点名（@ 或叫昵称）直答时的焦点提示词：
+// 只回最后一条找机器人的消息，别翻回更早的 @ 作答。
+func (pc *PromptConfig) MentionFocusPrompt() string {
+	return pc.internalPrompt("focus_mention", defaultFocusMention)
 }
 
 // internalPrompt 取 prompt_system.yaml 的 internal.<key>；缺失或为空时退回内置默认值，

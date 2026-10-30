@@ -173,6 +173,75 @@ func TestRunChatWithTools_轮数上限后撤回工具(t *testing.T) {
 	}
 }
 
+// 收尾轮模型仍把工具调用写成正文（Qwen 常见）：不能直接发出去，
+// 要改问一次并明确告知工具已收回；改问后拿到自然语言才算成功。
+func TestRunChatWithTools_收尾轮工具调用正文会改问一次(t *testing.T) {
+	setupTestLogger(t)
+	fakeLLM := testutil.NewFakeLLM()
+	askAgain := &llm.ChatResponse{ToolCalls: []llm.ToolCall{
+		{ID: "call_1", Name: "view_image", Arguments: `{"url":"C:\\tmp\\a.jpg"}`},
+	}}
+	toolCallText := &llm.ChatResponse{Content: "<tool_call>\n<function=view_image>\n<parameter=url>\nC:\\tmp\\a.jpg\n</parameter>\n</function>\n</tool_call>"}
+	fakeLLM.SetChatScript(askAgain, toolCallText, &llm.ChatResponse{Content: "图里是一只猫，正在窗台上睡觉。"})
+	r := newToolLoopRouter(fakeLLM, weatherMCP("晴"), 1, 2000)
+
+	reply, err := r.runChatWithTools(context.Background(), "s", "u", nil)
+	if err != nil {
+		t.Fatalf("改问后应成功，得到错误: %v", err)
+	}
+	if reply != "图里是一只猫，正在窗台上睡觉。" {
+		t.Fatalf("回复不对: %q", reply)
+	}
+
+	chatCalls := fakeLLM.ChatCalls()
+	if len(chatCalls) != 3 {
+		t.Fatalf("期望 3 次调用（1 轮工具 + 收尾轮 + 改问），得到 %d", len(chatCalls))
+	}
+	// 收尾轮：撤回工具并明确要求直接作答
+	forced := chatCalls[1]
+	if forced.ToolNames != nil {
+		t.Fatalf("收尾轮必须撤回工具，实际下发: %v", forced.ToolNames)
+	}
+	if last := forced.Messages[len(forced.Messages)-1]; !strings.Contains(last.Content, "已收回全部工具") {
+		t.Fatalf("收尾轮应追加直接作答的说明，实际最后一条: %+v", last)
+	}
+	// 改问轮：不带工具，且纠正上一条是工具调用格式
+	retry := chatCalls[2]
+	if retry.ToolNames != nil {
+		t.Fatalf("改问轮不应带工具，实际下发: %v", retry.ToolNames)
+	}
+	if last := retry.Messages[len(retry.Messages)-1]; !strings.Contains(last.Content, "工具调用格式") {
+		t.Fatalf("改问轮应纠正工具调用格式，实际最后一条: %+v", last)
+	}
+}
+
+// 改问后仍然是工具调用文本：宁可报错不发，也不能把文件路径发到聊天里。
+func TestRunChatWithTools_工具调用正文仍不合格则失败(t *testing.T) {
+	setupTestLogger(t)
+	fakeLLM := testutil.NewFakeLLM()
+	toolCallText := &llm.ChatResponse{Content: "<tool_call><function=view_image><parameter=url>C:\\tmp\\a.jpg</parameter></function></tool_call>"}
+	fakeLLM.SetChatScript(toolCallText, toolCallText)
+	r := newToolLoopRouter(fakeLLM, weatherMCP("晴"), 5, 2000)
+
+	if _, err := r.runChatWithTools(context.Background(), "s", "u", nil); !errors.Is(err, errToolCallReply) {
+		t.Fatalf("期望 errToolCallReply，得到: %v", err)
+	}
+}
+
+func TestLooksLikeToolCall(t *testing.T) {
+	cases := map[string]bool{
+		"<tool_call>\n<function=view_image>\n</function>\n</tool_call>": true,
+		"<function=get_weather><parameter=city>北京</parameter>":          true,
+		"北京今天 32 度，注意防晒。":                                               false,
+		"帮我看看 <图片> 里的内容":                                                false,
+	}
+	for text, want := range cases {
+		if got := looksLikeToolCall(text); got != want {
+			t.Fatalf("looksLikeToolCall(%q) = %v，期望 %v", text, got, want)
+		}
+	}
+}
+
 // 工具执行失败：失败原因要作为 role=tool 消息回填给模型（让它自纠），而不是中断整个对话。
 func TestRunChatWithTools_工具报错回填给模型(t *testing.T) {
 	setupTestLogger(t)

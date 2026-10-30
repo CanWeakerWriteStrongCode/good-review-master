@@ -237,6 +237,7 @@ class OneBotBridge(Star):
                 "message": segments,
                 "alt_message": self._render_ob12(segments, ""),
                 "user_id": private_user_id,
+                "sender": self._sender_payload(msg),
             }
 
         payload = {
@@ -251,6 +252,7 @@ class OneBotBridge(Star):
             "alt_message": self._render_ob12(segments, group_id),
             "group_id": group_id,
             "user_id": str(getattr(getattr(msg, "sender", None), "user_id", "") or ""),
+            "sender": self._sender_payload(msg),
         }
         # 群内没给机器人「查看群所有信息」权限时，QQ 的群 @ 事件只给占位 At、
         # mentions 为空（本机 A 账号实测）；补上权限后 mentions[].is_you 会带真实
@@ -674,6 +676,20 @@ class OneBotBridge(Star):
                 f"[onebot-bridge] 首次收到群消息：group_id={group_id}。"
                 f"把它加入 Go 的 bot.allow_groups（QQ 官方机器人这里是 group_openid）"
             )
+
+    @staticmethod
+    def _sender_payload(msg) -> dict[str, str]:
+        """发送者展示信息（OneBot 11 兼容的可选扩展）。
+
+        QQ 官方消息事件本身不给昵称，但 AstrBot 若能拿到，会填在 sender.nickname/card；
+        原样透传给 Go，省掉一次 get_group_member_info 反查，也让首条消息就有名字。
+        """
+        sender = getattr(msg, "sender", None)
+        return {
+            "user_id": str(getattr(sender, "user_id", "") or ""),
+            "nickname": str(getattr(sender, "nickname", "") or ""),
+            "card": str(getattr(sender, "card", "") or ""),
+        }
 
     @staticmethod
     def _display_name(*values) -> str:

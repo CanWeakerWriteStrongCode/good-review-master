@@ -76,11 +76,11 @@ func TestChatJSON降级链(t *testing.T) {
 	}
 }
 
-// TestChatJSON裁判关闭思考 裁判判定不该带推理模型的思考阶段（省 token、快十倍），
-// 而主回复路径（MutiChatWithTool）的请求里不能出现这个字段。
+// TestChatJSON裁判关闭思考 裁判判定与回复排版都不该带推理模型的思考阶段
+// （省 token、快十倍），而主回复路径（MutiChatWithTool）的请求里不能出现这个字段。
 func TestChatJSON裁判关闭思考(t *testing.T) {
 	var mu sync.Mutex
-	var judgeFlags []bool // 每次 ChatJSON 请求是否带 enable_thinking=false
+	var judgeFlags []bool // 每次 ChatJSON / ChatStructured 请求是否带 enable_thinking=false
 	var mainHasKwargs bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,9 +112,13 @@ func TestChatJSON裁判关闭思考(t *testing.T) {
 
 	client := NewOpenAIAdapter("test-key", server.URL, "test-model", 0.6, 0.95)
 	schema := json.RawMessage(`{"type":"object","properties":{"reply":{"type":"boolean"}},"required":["reply"],"additionalProperties":false}`)
+	rewriteSchema := json.RawMessage(`{"type":"object","properties":{"sentences":{"type":"array","items":{"type":"string"}}},"required":["sentences"],"additionalProperties":false}`)
 
 	if _, err := client.ChatJSON(context.Background(), []Message{{Role: RoleUser, Content: "要不要回？"}}, schema); err != nil {
 		t.Fatalf("裁判调用失败：%v", err)
+	}
+	if _, err := client.ChatStructured(context.Background(), []Message{{Role: RoleUser, Content: "把这段话拆成短句"}}, rewriteSchema); err != nil {
+		t.Fatalf("排版调用失败：%v", err)
 	}
 	if _, err := client.MutiChatWithTool(context.Background(), []Message{{Role: RoleUser, Content: "聊天"}},
 		[]Tool{{Name: "t", ParamsJSON: json.RawMessage(`{"type":"object"}`)}}); err != nil {
@@ -123,8 +127,8 @@ func TestChatJSON裁判关闭思考(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(judgeFlags) != 1 || !judgeFlags[0] {
-		t.Fatalf("裁判请求应带 enable_thinking=false，实际 %v", judgeFlags)
+	if len(judgeFlags) != 2 || !judgeFlags[0] || !judgeFlags[1] {
+		t.Fatalf("裁判与排版请求都应带 enable_thinking=false，实际 %v", judgeFlags)
 	}
 	if mainHasKwargs {
 		t.Fatal("主回复路径不应带 chat_template_kwargs")

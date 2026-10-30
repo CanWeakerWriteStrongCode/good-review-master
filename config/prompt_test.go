@@ -214,7 +214,8 @@ func TestPersonaDirective(t *testing.T) {
 	}
 }
 
-// TestFocusPrompt 验证焦点提示词二选一，且分别从 internal.focus_context / focus_last 读取。
+// TestFocusPrompt 验证焦点提示词按场景三选一，且分别从
+// internal.focus_context / focus_last / focus_mention 读取。
 func TestFocusPrompt(t *testing.T) {
 	dir := t.TempDir()
 	systemPath := filepath.Join(dir, "prompt_system.yaml")
@@ -232,8 +233,11 @@ func TestFocusPrompt(t *testing.T) {
 	if got := pc.FocusPrompt(true); got != defaultFocusLast {
 		t.Errorf("缺省应退回最后一条兜底，实际 %q", got)
 	}
+	if got := pc.MentionFocusPrompt(); got != defaultFocusMention {
+		t.Errorf("缺省应退回点名兜底，实际 %q", got)
+	}
 
-	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  focus_context: \"看整体\"\n  focus_last: \"看最后\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  focus_context: \"看整体\"\n  focus_last: \"看最后\"\n  focus_mention: \"看点名\"\n"), 0o600); err != nil {
 		t.Fatalf("写入失败：%v", err)
 	}
 	pc.Reload()
@@ -242,6 +246,9 @@ func TestFocusPrompt(t *testing.T) {
 	}
 	if got := pc.FocusPrompt(true); got != "看最后" {
 		t.Errorf("应从 prompt_system.yaml 读取最后一条提示，实际 %q", got)
+	}
+	if got := pc.MentionFocusPrompt(); got != "看点名" {
+		t.Errorf("应从 prompt_system.yaml 读取点名提示，实际 %q", got)
 	}
 }
 
@@ -306,7 +313,7 @@ func TestPromptSystem示例含内置提示词(t *testing.T) {
 	}
 	for _, key := range []string{
 		"reply_requirement", "persona_directive", "add_persona", "proactive_judge",
-		"proactive_requirement", "focus_context", "focus_last",
+		"proactive_requirement", "focus_context", "focus_last", "focus_mention", "reply_rewrite",
 	} {
 		if strings.TrimSpace(cfg.Internal[key]) == "" {
 			t.Errorf("prompt_system_example.yaml 缺少 internal.%s", key)
@@ -341,5 +348,30 @@ func TestPromptConfig畸形自定义文件不致命(t *testing.T) {
 	}
 	if len(pc.Snapshot().CmdConfigs["chat_review"]) != 1 {
 		t.Error("应回退到只有系统指令")
+	}
+}
+
+// TestReplyRewritePrompt 排版提示词从 internal.reply_rewrite 读取；老配置没有时用内置兜底。
+func TestReplyRewritePrompt(t *testing.T) {
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	customPath := filepath.Join(dir, "prompt_custom.yaml")
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc, err := LoadPromptConfig(systemPath, customPath)
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if got := pc.ReplyRewritePrompt(); got != defaultReplyRewrite {
+		t.Errorf("缺少 internal.reply_rewrite 时应退回内置默认值，实际 %q", got)
+	}
+
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  reply_rewrite: \"配置里的排版提示词\"\n"), 0o600); err != nil {
+		t.Fatalf("写入失败：%v", err)
+	}
+	pc.Reload()
+	if got := pc.ReplyRewritePrompt(); got != "配置里的排版提示词" {
+		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
 	}
 }

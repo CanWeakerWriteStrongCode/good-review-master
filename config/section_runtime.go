@@ -22,6 +22,12 @@ type runtimeSection struct {
 	ShutdownDelaySec int    `yaml:"shutdown_delay_sec"`
 	MetricsAddr      string `yaml:"metrics_addr"`
 	OTLPEndpoint     string `yaml:"otlp_endpoint"`
+
+	// ReplySendIntervalMs 分句回复的发送间隔（毫秒）。
+	// >0：把排版后的句子拆成最多 5 条消息逐条发送，每条间隔该毫秒数；
+	// 0：不拆分，所有句子合成一条消息发出去（旧行为）；
+	// 指针用于区分"没写"（缺省 800ms）与"显式写 0（关闭分条）"。
+	ReplySendIntervalMs *int `yaml:"reply_send_interval_ms"`
 }
 
 // defaultLLMSendCount 与 llm_send_count 缺省值。
@@ -44,6 +50,9 @@ const MetricsAddrOff = "off"
 // defaultCacheMsgMultiplier 环形缓冲条数上限相对 llm_send_count 的倍数。
 // 取 31 是为了让扩展窗口能一路走到盈亏平衡点（见 docs/cache-cost-analysis.md）。
 const defaultCacheMsgMultiplier = 31
+
+// defaultReplySendIntervalMs 分句回复的缺省发送间隔：约 0.8 秒一条，接近真人打字节奏。
+const defaultReplySendIntervalMs = 800
 
 func (s *runtimeSection) Name() string { return "runtime" }
 
@@ -77,6 +86,10 @@ func (s *runtimeSection) SetDefaults() {
 	s.IMListenAddr = strings.TrimSpace(s.IMListenAddr)
 	if s.IMListenAddr == "" {
 		s.IMListenAddr = defaultIMListenAddr
+	}
+	if s.ReplySendIntervalMs == nil {
+		defaultInterval := defaultReplySendIntervalMs
+		s.ReplySendIntervalMs = &defaultInterval
 	}
 }
 
@@ -126,6 +139,10 @@ func (s *runtimeSection) Validate() error {
 	if _, _, err := net.SplitHostPort(s.IMListenAddr); err != nil {
 		return fmt.Errorf("runtime.im_listen_addr 不是合法的 host:port（当前 %q）：%v；"+
 			"例如 127.0.0.1:18090", s.IMListenAddr, err)
+	}
+	if s.ReplySendIntervalMs != nil && *s.ReplySendIntervalMs < 0 {
+		return fmt.Errorf("runtime.reply_send_interval_ms 不能为负（当前 %d）：0 表示不拆分、合成一条发送，正数为逐条发送的间隔毫秒",
+			*s.ReplySendIntervalMs)
 	}
 	return nil
 }

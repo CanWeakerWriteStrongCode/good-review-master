@@ -115,6 +115,18 @@ func (c *resilientClient) ChatJSON(ctx context.Context, messages []Message, sche
 	return response, err
 }
 
+// ChatStructured 见 Client 接口。排版调用与裁判走同一套保护，
+// 但它失败时调用方会退回原文，所以不会因为熔断把回复弄丢。
+func (c *resilientClient) ChatStructured(ctx context.Context, messages []Message, schema json.RawMessage) (*ChatResponse, error) {
+	var response *ChatResponse
+	err := c.guard(func() error {
+		var callErr error
+		response, callErr = c.inner.ChatStructured(ctx, messages, schema)
+		return callErr
+	})
+	return response, err
+}
+
 // guard 依次过限速与熔断，最后才真正调用内层客户端。
 func (c *resilientClient) guard(call func() error) error {
 	// 限速用 Allow 而不是 Wait：等下去只会把池子里的 worker 占住，

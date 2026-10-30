@@ -22,7 +22,7 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 	// 一次锐评是一个完整的业务动作，全程用同一份配置：
 	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
 	r.GoCtx(parent, func(ctx context.Context) error {
-		r.chatReplyNow(ctx, event, groupID, systemPrompt, keywordPrompt, true, nil)
+		r.chatReplyNow(ctx, event, groupID, systemPrompt, keywordPrompt, true, nil, false)
 		return nil
 	})
 }
@@ -32,7 +32,15 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 // @ 链路由 chatReview 包成 goroutine；主动插话的 worker 本身已在串行 goroutine 里，
 // 直接同步调用——它需要知道有没有产出可发送的回复，才能决定要不要记冷却与连续计数。
 // mention=false 时只引用触发消息、不 @ 人（主动接话不该把人架出来回答）。
-func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image) (string, bool) {
+// chatReplyNow 同步完成一次"选窗 → 调模型 → 发送 → 记录锚点"。
+//
+// @ 链路由 chatReview 包成 goroutine；主动插话的 worker 本身已在串行 goroutine 里，
+// 直接同步调用——它需要知道有没有产出可发送的回复，才能决定要不要记冷却与连续计数。
+// mention=false 时只引用触发消息、不 @ 人（主动接话不该把人架出来回答）。
+//
+// longForm=true 表示这条是知识型长篇（主动链路来自裁判；直答链路会用一次轻量判定
+// 自行得出），生成后跳过"≤N 句"排版。
+func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image, longForm bool) (string, bool) {
 	cfg := r.appCfg()
 	msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
 	if len(msgs) == 0 {
@@ -41,11 +49,21 @@ func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, 
 		}
 		return "", false
 	}
+	// 只处理触发消息之前的窗口：@ 触发后选窗前新到的消息不属于本次请求，
+	// 否则"只回最后一条点名消息"会指到别人的新消息上。
+	msgs = cutAtMessage(msgs, event.MessageID)
+
+	// 直答链路（@/私聊）在这里补一次轻量判定，只取 long_form：
+	// 知识型长篇不再强制排版；reply 结论忽略（被点名必须回）。
+	if mention {
+		longForm = r.judgeLongForm(ctx, event, groupID, cfg)
+	}
 
 	// 按 token 成本决定扩展/重置，得到本次要发送的窗口
 	chatLogMsgs := r.selectChatWindow(msgs, groupID, systemPrompt, cfg)
 	chatLog := cache.BuildChatLog(chatLogMsgs)
 
+	baseCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)
 	defer cancel()
 	userMsg := BuildUserMsg(chatLog, keywordPrompt)
@@ -72,12 +90,20 @@ func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, 
 	if strings.TrimSpace(reply) == "" {
 		return "", false
 	}
-
-	if mention {
-		r.reply(event, groupID, reply)
+	// 最终稿再排一次版：大模型容易写成一大段，这里用 JSON schema 强制拆成最多 N 句短句。
+	// 知识型长篇（longForm）跳过：那类问题是真的需要完整展开。
+	// 用 baseCtx 而不是上面那个已带主调用超时的 ctx，排版才有自己独立的时间预算；
+	// 排版失败会退回原文，不影响这次回复。
+	var sentences []string
+	if longForm {
+		logutil.Info("知识型长篇回复，跳过排版", "group", groupID)
+		sentences = []string{reply}
 	} else {
-		r.replyQuoted(event, groupID, reply)
+		sentences = r.rewriteReply(baseCtx, cfg, reply)
 	}
+	// 发送层决定合成一条还是逐条发（最多 5 条，QQ 被动回复上限）
+	reply = strings.Join(sentences, "\n")
+	r.sendReply(baseCtx, event, groupID, mention, sentences, cfg)
 
 	// 保存锚点（窗口首条 + 末条 message_id）
 	r.cacheStore().SetLLMAnchor(groupID, cache.LLMAnchor{
@@ -187,6 +213,7 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 	b.WriteString("\n【群内图片候选（共 ")
 	b.WriteString(fmt.Sprintf("%d", len(rows)))
 	b.WriteString(" 张）】候选只是文字，查看某张图才会真正载入像素。需要看图来回答（图片/表情/截图/图内文字）时，调用 view_image 工具并传对应 url；")
+	b.WriteString("url 必须从下面逐字复制（文件名里的时间戳不要改写、不要猜测），改写会导致文件不存在；")
 	if viewMax := r.appCfg().LLMConfig.ImageMax; viewMax > 0 {
 		b.WriteString(fmt.Sprintf("本次最多实际查看 %d 张，达到上限后请直接基于已看到的内容作答；", viewMax))
 	}

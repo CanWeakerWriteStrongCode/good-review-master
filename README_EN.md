@@ -119,15 +119,15 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | Key | Description | Example |
 |-----|-------------|---------|
 | `im.api_base` | Default outbound endpoint shared by all accounts | `http://127.0.0.1:6199` |
+| `im.echo_self_messages` | Whether the implementation echoes the bot's own messages back as events (NapCat does, AstrBot bridge does not); when true, replies are stored via those events and not recorded locally | `false` |
 | `im.accounts` | Optional per-account overrides `[{id, api_base}]`; `id` = `platform_account` | usually unset |
-| `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups) | `123456,789012` |
-| `bot.allow_workspace_accounts` | Workspace IDs allowed to auto-provision (`qq_1906xxxx`; `*` for all) | `["qq_1906xxxx"]` |
+| `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups; accepts a comma-separated string or a YAML list) | `123456,789012` |
+| `bot.allow_workspace_accounts` | Workspace IDs allowed to auto-provision (`qq_1906xxxx`; `*` for all; YAML list or comma-separated string) | `["qq_1906xxxx"]` |
 | `bot.proactive_enabled` | Proactive replies: let the LLM decide whether to join when not mentioned | `false` |
-| `bot.proactive_window_msgs` | Recent messages the judge/generation sees | `15` |
-| `bot.proactive_cooldown_sec` | Per-group cooldown after a proactive reply | `90` |
-| `bot.proactive_max_streak` | Max consecutive proactive replies on one topic | `5` |
-| `bot.proactive_judge_interval_sec` | Minimum interval between judge runs (seconds) | `20` |
-| `bot.proactive_judge_timeout_sec` | Judge timeout (seconds; timeout = no reply) | `20` |
+| `bot.proactive_cooldown_sec` | Per-group cooldown after a proactive reply (0 = no cooldown) | `90` |
+| `bot.proactive_max_streak` | Max consecutive proactive replies on one topic (0 = never) | `5` |
+| `bot.proactive_judge_interval_sec` | Minimum interval between judge runs, measured from the previous start (0 = none) | `20` |
+| `bot.proactive_judge_timeout_sec` | Judge timeout (timeout = no reply; 0 = use `runtime.llm_timeout_sec`) | `20` |
 | `bot.proactive_judge_images` | Max images attached per judge (0 = image messages skipped) | `1` |
 | `llm.provider` | Always `openai` (OpenAI-compatible) | `openai` |
 | `llm.api_key` | LLM API key (lives in `secret.yaml`) | `sk-xxx` |
@@ -139,11 +139,14 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `llm.cache_miss_cost` | Cache miss cost (relative) | `1.0` |
 | `llm.max_context_tokens` | Max context tokens per LLM request (force reset if exceeded) | `50000` |
 | `llm.image_max` | Max images actually viewed per reply (0 = disabled) | `3` |
+| `llm.reply_max_sentences` | Max sentences per final reply (one extra formatting call after drafting; 0 = disabled) | `5` |
+| `llm.reply_rewrite_min_runes` | Drafts shorter than this many characters skip formatting (0 = no minimum) | `60` |
 | `llm.image_local_dirs` | Local directories `view_image` may read (QQ official images are local AstrBot temp files) | `["~/.astrbot/data/temp"]` |
 | `runtime.llm_send_count` | Recent messages sent per request (reset window) | `200` |
 | `runtime.max_cache_msg` | Max ring-buffer messages (≈31×llm_send_count) | `6200` |
 | `runtime.llm_timeout_sec` | LLM timeout (seconds) | `20` |
 | `runtime.max_msg_rune` | Max characters per message | `500` |
+| `runtime.reply_send_interval_ms` | Sentence send interval: >0 sends up to 5 messages one by one; 0 = single message | `800` |
 | `runtime.im_listen_addr` | Ingress address for AstrBot-pushed events | `127.0.0.1:18090` |
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
@@ -202,9 +205,10 @@ Add a new variant by adding an entry under the same list — no code changes nee
 1. `internal.reply_requirement`: the 【要求】 line in the system prompt for @ replies
 2. `internal.proactive_requirement`: the 【要求】 line used instead when replying proactively
 3. `internal.persona_directive`: when a persona is present, the directive appended to the persona block (reason over emotion dimensions before replying)
-4. `internal.focus_context` / `internal.focus_last`: the focus hint appended at the end of the system prompt; direct @ replies always use `focus_last`, proactive replies pick one via the judge's `focus`
+4. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`: the focus hint appended at the end of the system prompt; a group mention always uses `focus_mention` (reply only to the last message that called the bot), private chat uses `focus_last`, proactive replies pick one via the judge's `focus`
 5. `internal.proactive_judge`: the judge prompt that decides whether to reply proactively to a non-@ message
 6. `internal.add_persona`: system prompt used by `#添加人格` when generating a prompt + persona
+7. `internal.reply_rewrite`: formatting prompt that rewrites the drafted reply into at most N short sentences (N = `llm.reply_max_sentences`)
 
 ## Command System
 

@@ -46,19 +46,22 @@ var proactiveVerdictSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "reply":  {"type": "boolean", "description": "机器人是否应该主动回复最后一条消息"},
+    "long_form": {"type": "boolean", "description": "是否需要查资料或正式知识型长篇解答（允许超过排版句数上限）"},
     "focus":  {"type": "string", "enum": ["整体上下文", "最后一条消息"], "description": "回复焦点：看整体上下文，还是只聚焦最后一条消息"},
     "reason": {"type": "string",  "description": "不超过 20 字的理由"}
   },
-  "required": ["reply", "focus", "reason"],
+  "required": ["reply", "long_form", "focus", "reason"],
   "additionalProperties": false
 }`)
 
 // judgeVerdict 裁判结论。Reply 用指针：区分"模型明确说 false"和"字段缺失"。
 // Focus 决定生成阶段按哪种口径组织回复；缺失或无法识别时按整体上下文处理。
+// LongForm 表示这条需要查资料/正式知识型长篇解答，生成后跳过排版（不强制 ≤N 句）。
 type judgeVerdict struct {
-	Reply  *bool  `json:"reply"`
-	Focus  string `json:"focus"`
-	Reason string `json:"reason"`
+	Reply    *bool  `json:"reply"`
+	LongForm bool   `json:"long_form"`
+	Focus    string `json:"focus"`
+	Reason   string `json:"reason"`
 }
 
 func (v judgeVerdict) shouldReply() bool { return v.Reply != nil && *v.Reply }
@@ -82,7 +85,7 @@ type proactiveCandidate struct {
 type proactiveGroup struct {
 	running     bool                // 有 worker 在跑（覆盖"判定 + 生成"两段）
 	pending     *proactiveCandidate // 单槽：运行期间新消息只覆盖，不排队
-	lastJudgeAt time.Time           // 上次判定开始时刻（判定间隔）
+	lastJudgeAt time.Time           // 上次判定**开始**时刻；判定间隔从这一刻算，含本轮大模型耗时
 	lastReplyAt time.Time           // 上次发言时刻（冷却）
 	lastReply   string              // 上次发言摘要（裁判输入）
 	streak      int                 // 当前话题里连续主动发言次数
@@ -141,6 +144,8 @@ func (p *proactiveRegistry) enqueue(groupID string, cand *proactiveCandidate, cf
 		return false
 	}
 
+	// 判定间隔从"上次判定开始"算：本轮裁判+生成的耗时已经包含在间隔里。
+	// 因此单轮耗时 ≥ 间隔时，下一条会立刻接上；间隔内的新消息直接丢弃，不排队延后。
 	g.running = true
 	g.pending = cand
 	return true
@@ -167,6 +172,8 @@ func (p *proactiveRegistry) next(groupID string, cfg *config.Config, now time.Ti
 	}
 	if g.streak >= cfg.ProactiveMaxStreak || coolingDown(g, cfg, now) ||
 		g.lastJudgeAt.Add(cfg.ProactiveJudgeEvery).After(now) {
+		// 间隔没过：这条待判消息直接丢弃（不是留到间隔结束后补判）。
+		// lastJudgeAt 是上一轮的开始时刻，所以上一轮跑得越久，这里越容易直接放行。
 		return nil, false
 	}
 	g.lastJudgeAt = now
@@ -297,7 +304,7 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 	// 否则生成只能看到聊天记录里的“[图片]”，会出现“裁判看懂了新闻、回复却在聊构图”的割裂。
 	images := r.judgeImages(ctx, cand.event, cfg)
 
-	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, images)
+	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, images, false)
 	if err != nil {
 		telemetry.ProactiveJudgeTotal.WithLabelValues(r.workspace, telemetry.ProactiveJudgeError).Inc()
 		logutil.Warn("主动判定失败，本条不回复", "group", groupID, "err", err)
@@ -309,10 +316,10 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 		return
 	}
 	telemetry.ProactiveJudgeTotal.WithLabelValues(r.workspace, telemetry.ProactiveJudgeYes).Inc()
-	logutil.Info("主动判定：回复", "group", groupID, "focus", verdict.Focus, "reason", verdict.Reason)
+	logutil.Info("主动判定：回复", "group", groupID, "focus", verdict.Focus, "long_form", verdict.LongForm, "reason", verdict.Reason)
 
 	systemPrompt := r.proactiveSystemPrompt(cfg, cand.event, groupID, verdict.focusLast())
-	reply, sent := r.chatReplyNow(ctx, cand.event, groupID, systemPrompt, "", false, images)
+	reply, sent := r.chatReplyNow(ctx, cand.event, groupID, systemPrompt, "", false, images, verdict.LongForm)
 	if sent {
 		r.proactive.recordReply(groupID, reply, time.Now())
 	}
@@ -334,15 +341,18 @@ func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, g
 
 // judgeProactive 问裁判"这条要不要回"。任何失败都由调用方按"不回"处理。
 // images 是已经下载好的候选图片（handleProactive 只下载一次，生成阶段复用）。
-func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proactiveCandidate, cfg *config.Config, images []llm.Image) (judgeVerdict, error) {
+// mention=true 表示这条本身 @ 了机器人（或私聊）：reply 结论一律忽略，只取 long_form/focus。
+func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proactiveCandidate, cfg *config.Config, images []llm.Image, mention bool) (judgeVerdict, error) {
 	msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
-	window := judgeWindow(msgs, cand.event.MessageID, cfg.ProactiveWindow)
+	// 裁判与生成看同一份窗口来源：都用 llm_send_count 条。生成阶段会按缓存命中
+	// 再实时扩展/重置，这里不再单独给裁判准备一份聊天记录。
+	window := judgeWindow(msgs, cand.event.MessageID, cfg.LLMSendCount)
 	if len(window) == 0 {
 		return judgeVerdict{}, fmt.Errorf("没有可判定的聊天记录")
 	}
 
-	// 纯图片消息但一张都没读到：裁判看不到内容，只能按"不回"处理
-	if isPlaceholderOnly(cand.content) && len(images) == 0 {
+	// 纯图片消息但一张都没读到：裁判看不到内容，只能按"不回"处理（直答链路不受此限）
+	if !mention && isPlaceholderOnly(cand.content) && len(images) == 0 {
 		return judgeNo("纯图片消息未能读取到图片"), nil
 	}
 
@@ -350,7 +360,7 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 	for _, img := range images {
 		dataURLs = append(dataURLs, llm.DataURL(img.MIMEType, img.Data))
 	}
-	userText := buildJudgeText(window, cfg.BotNickname, r.proactive.lastTurn(groupID, time.Now()), len(dataURLs) > 0)
+	userText := buildJudgeText(window, cfg.BotNickname, r.proactive.lastTurn(groupID, time.Now()), len(dataURLs) > 0, mention)
 	// 裁判提示词来自 prompt_system.yaml 的 internal.proactive_judge（缺失时用内置默认值）。
 	// 内容必须逐字节稳定才能持续命中 prompt 缓存；动态内容都在 user 消息里。
 	messages := []llm.Message{
@@ -370,6 +380,28 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 		return judgeVerdict{}, err
 	}
 	return parseJudgeVerdict(resp.Content)
+}
+
+// judgeLongForm 直答（@/私聊）链路的轻量判定：只取 long_form，reply 结论一律忽略——
+// 被点名必须回，裁判说"不回"也不作数。
+//
+// 返回 true 表示这条是查资料/知识型长篇解答，生成后跳过排版（不强制 ≤N 句）。
+// 任何失败都返回 false（照常排版）：排版只是格式，不该因为它挡住回复。
+func (r *Router) judgeLongForm(ctx context.Context, event onebot.Event, groupID string, cfg *config.Config) bool {
+	// 排版已关闭时 long_form 没有消费方，省掉这次调用。
+	if cfg.LLMConfig.ReplyMaxSentences <= 0 {
+		return false
+	}
+	cand := &proactiveCandidate{event: event}
+	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, nil, true)
+	if err != nil {
+		logutil.Warn("直答 long_form 判定失败，按普通回复排版", "group", groupID, "err", err)
+		return false
+	}
+	if verdict.LongForm {
+		logutil.Info("直答判定：知识型长篇，跳过排版", "group", groupID, "reason", verdict.Reason)
+	}
+	return verdict.LongForm
 }
 
 // judgeImages 读取候选消息的图（最多 cfg.ProactiveJudgeImages 张）。
@@ -395,28 +427,22 @@ func (r *Router) judgeImages(ctx context.Context, event onebot.Event, cfg *confi
 }
 
 // judgeWindow 取"截止到候选消息、最多 limit 条"的窗口。
+// limit 用 runtime.llm_send_count，与生成阶段的重置窗口一致。
 // 以候选消息为右边界：worker 判定时缓存里可能已经有更新的消息，不能让裁判去判更晚的内容。
 func judgeWindow(msgs []cache.Message, latestID string, limit int) []cache.Message {
-	if len(msgs) == 0 {
+	window := cutAtMessage(msgs, latestID)
+	if len(window) == 0 {
 		return nil
 	}
-	end := len(msgs)
-	if latestID != "" {
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].MessageID == latestID {
-				end = i + 1
-				break
-			}
-		}
-	}
+	end := len(window)
 	if limit <= 0 || limit > end {
 		limit = end
 	}
-	return msgs[end-limit : end]
+	return window[end-limit : end]
 }
 
 // buildJudgeText 组装裁判的 user 消息。动态内容全部在这里，system prompt 保持稳定。
-func buildJudgeText(window []cache.Message, botName, lastTurn string, hasImage bool) string {
+func buildJudgeText(window []cache.Message, botName, lastTurn string, hasImage, mention bool) string {
 	var b strings.Builder
 	if botName != "" {
 		b.WriteString("【机器人】昵称：" + botName + "\n")
@@ -431,7 +457,13 @@ func buildJudgeText(window []cache.Message, botName, lastTurn string, hasImage b
 	if hasImage {
 		b.WriteString("\n【提示】最后一条消息附带图片，图片内容已随本次请求提供。\n")
 	}
-	b.WriteString("【待判定】最近聊天里的最后一条消息。判断机器人是否应该主动回复它。")
+	if mention {
+		// 直答链路：reply 结论不用（@/私聊必须回），只要 long_form/focus。
+		b.WriteString("【待判定】最后一条消息 @ 了机器人（或私聊），本条必须回复：reply 固定填 true，" +
+			"忽略\"要不要回\"的判断，只需给出 long_form 与 focus。")
+	} else {
+		b.WriteString("【待判定】最近聊天里的最后一条消息。判断机器人是否应该主动回复它。")
+	}
 	return b.String()
 }
 

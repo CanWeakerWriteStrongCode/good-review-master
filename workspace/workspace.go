@@ -268,6 +268,8 @@ func (m *Manager) load(id, platform, account string) (*Workspace, error) {
 	ws.Router.SetWorkspace(id)
 	if st != nil {
 		ws.Router.SetPersonaStore(st)
+		// 机器人自己的回复也要落库：否则重启后模型只能看到用户说过的话。
+		ws.Router.SetMessageSink(st.SaveMessage)
 	}
 
 	ws.restore(cfg)
@@ -543,6 +545,13 @@ func (w *Workspace) ObserveMember(groupID, userID string) {
 	if w.State != nil {
 		w.State.SaveMember(groupID, userID, "", "")
 	}
+}
+
+// LearnMemberName 用消息里自带的显示名（AstrBot 的 sender 字段）更新成员目录。
+// QQ 官方事件通常没有昵称，但桥接拿到时会透传；学到后本条消息的 @ 渲染、
+// 聊天记录昵称和后续反查都能直接用，不必等 get_group_member_info。
+func (w *Workspace) LearnMemberName(groupID, userID, name string) {
+	w.members.learn(groupID, userID, name)
 }
 
 // MemberCount 返回已收录的群成员数（说过话或被 @ 过的人）。
@@ -827,6 +836,35 @@ func (d *directory) rename(groupID, userID, oldName, newName string) {
 	d.mu.Unlock()
 	if d.state != nil {
 		d.state.RenameSelfMember(groupID, userID, oldName, newName)
+	}
+}
+
+// learn 用消息里直接拿到的显示名更新目录（来源：AstrBot 透传的 sender）。
+// 与 fetchAsync 共用同一套写入规则：只有名字确实变化才写内存与库，避免每条消息一次 DB 写。
+func (d *directory) learn(groupID, userID, name string) {
+	name = strings.TrimSpace(name)
+	if groupID == "" || userID == "" || name == "" {
+		return
+	}
+	d.mu.Lock()
+	if d.names[groupID][userID] == name {
+		d.mu.Unlock()
+		return
+	}
+	if d.names[groupID] == nil {
+		d.names[groupID] = make(map[string]string)
+	}
+	if d.seen[groupID] == nil {
+		d.seen[groupID] = make(map[string]struct{})
+	}
+	d.names[groupID][userID] = name
+	d.seen[groupID][userID] = struct{}{}
+	d.mu.Unlock()
+	if d.state != nil {
+		d.state.SaveMember(groupID, userID, name, name)
+	}
+	if d.onSelfName != nil {
+		d.onSelfName(groupID, userID, name)
 	}
 }
 

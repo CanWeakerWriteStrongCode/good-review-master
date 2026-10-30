@@ -401,6 +401,9 @@ func (m *Manager) CallToolImage(ctx context.Context, exposedName, argsJSON strin
 	logutil.Debug("MCP 工具返回", "server", b.server.cfg.Name, "tool", b.tool,
 		"字符数", len([]rune(text)), "图片数", len(imgs), "isError", toolErr)
 	if toolErr {
+		// 工具错误文本只在这里出现（上面只记了长度），排障时要能直接看到原因
+		// （例如“本地图片不存在”是模型改写了 url，而不是图片格式不支持）。
+		logutil.Warn("MCP 工具执行失败", "server", b.server.cfg.Name, "tool", b.tool, "错误", text)
 		span.SetStatus(codes.Error, text)
 		return text, imgs, fmt.Errorf("工具执行报错: %s", text)
 	}

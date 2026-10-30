@@ -70,6 +70,12 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 		}
 	}
 
+	// 消息自带显示名时先学进成员目录：QQ 官方一般不带，桥接拿到时会透传，
+	// 学完本条消息的 @ 渲染与缓存昵称就能立刻用上。
+	if name := event.SenderName(); name != "" {
+		ws.LearnMemberName(chatID, event.UserID, name)
+	}
+
 	nameOf := ws.DisplayNameFor(chatID)
 	content := truncate(event.RenderText(nameOf), cfg.MaxMsgRune)
 	if content == "" {
