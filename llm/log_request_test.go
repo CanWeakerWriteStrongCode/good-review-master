@@ -105,3 +105,19 @@ func TestMarshalForLog字面反斜杠不破坏JSON(t *testing.T) {
 		t.Fatalf("真正的 < 仍应还原成可读字符：%s", raw)
 	}
 }
+
+// TestCountImageContents 用来判断是否跳过完整请求 JSON 日志：
+// 只要请求里有内联图片（base64 data URL），就不该把整段正文写进日志。
+func TestCountImageContents(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleSystem, Content: "s"},
+		{Role: RoleUser, Content: "u", ImageDataURLs: []string{"data:image/png;base64,AAA"}},
+		{Role: RoleUser, Content: "u2", ImageDataURLs: []string{"data:image/png;base64,BBB", "data:image/png;base64,CCC"}},
+	}
+	if got := countImageContents(msgs); got != 3 {
+		t.Fatalf("图片数 = %d，期望 3", got)
+	}
+	if got := countImageContents(nil); got != 0 {
+		t.Fatalf("无消息应为 0，实际 %d", got)
+	}
+}

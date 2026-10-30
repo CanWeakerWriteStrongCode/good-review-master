@@ -255,7 +255,12 @@ func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Mes
 	// 字段顺序按模型 chat template 的渲染顺序排列（tools 在 messages 之前），
 	// 与 go-openai 实际发送的请求语义一致、仅键顺序不同——避免日志看着像"工具定义塞在对话后面"。
 	// Debug 默认开启；收紧到 info 及以上时这条不再输出，用于核对模型到底收到了什么。
-	if raw, err := marshalRequestForLog(req); err == nil {
+	//
+	// 带图的请求（data URL 内联 base64）不打正文：MCP 多轮查询查完图后，
+	// 每轮都会把几十 KB~几 MB 的图片整段重发一次，打出来日志就没法看了。
+	if imageCount := countImageContents(messages); imageCount > 0 {
+		logutil.Debug("发给大模型的请求含图片，跳过完整JSON日志", "messages", len(messages), "images", imageCount)
+	} else if raw, err := marshalRequestForLog(req); err == nil {
 		logutil.Debug("发给大模型的完整请求JSON", "body", json.RawMessage(raw))
 	} else {
 		logutil.Debug("发给大模型的完整请求JSON序列化失败", "err", err)
@@ -350,6 +355,16 @@ func formatRejectStatus(status int) bool {
 		return true
 	}
 	return false
+}
+
+// countImageContents 统计请求里内联的图片张数（ImageDataURLs 是 base64 data URL）。
+// 带图请求不打完整 JSON：多轮工具循环查完图后，后续每轮都会把图片重发一遍。
+func countImageContents(messages []Message) int {
+	n := 0
+	for _, msg := range messages {
+		n += len(msg.ImageDataURLs)
+	}
+	return n
 }
 
 // marshalRequestForLog 序列化调试日志用的请求体：tools 放在最前，messages 在后，
