@@ -59,7 +59,7 @@ func (r *Router) rewriteReply(ctx context.Context, cfg *config.Config, draft str
 	messages := []llm.Message{
 		{Role: llm.RoleSystem, Content: r.promptCfg.ReplyRewritePrompt()},
 		{Role: llm.RoleUser, Content: fmt.Sprintf(
-			"【上限】最多 %d 句，宁少勿多，每句尽量短。\n【原回复】\n%s", maxSentences, draft)},
+			"【上限】最多 %d 句。句数按内容长短定：短就 1~2 句，长才多拆几句；不要为了凑句数硬拆，能短则短。\n【原回复】\n%s", maxSentences, draft)},
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)
