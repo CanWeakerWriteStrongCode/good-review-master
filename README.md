@@ -206,9 +206,9 @@ rules:
 2. `internal.proactive_requirement`：主动接话时替代上一条的【要求】句
 3. `internal.persona_directive`：有人格时，人格块末尾追加的授权指令（依据情绪维度推演后再回答）
 4. `internal.focus_mention` / `internal.focus_last` / `internal.focus_context`：追加在 system prompt 末尾的回复焦点提示；群内被点名固定用 `focus_mention`（只回最后一条找机器人的消息），私聊用 `focus_last`，主动接话按裁判给出的 `focus` 二选一
-5. `internal.proactive_judge`：没有被 @ 时，判断“这条消息要不要主动回复”的裁判提示词
+5. `internal.proactive_judge`：没有被 @ 时，判断“这条消息要不要主动回复”的裁判提示词；输出 `reply / long_form / focus / background / reason`，其中 `background`（≤100 字）概括整段对话与本次关注焦点，会带进后续排版请求
 6. `internal.add_persona`：`#添加人格` 生成 prompt + persona 时发给大模型的系统提示词
-7. `internal.reply_rewrite`：模型出稿后，把回复发回来改写成最多 N 句短句（N 见 `llm.reply_max_sentences`）的排版提示词
+7. `internal.reply_rewrite`：模型出稿后，把回复发回来改写成最多 N 句短句（N 见 `llm.reply_max_sentences`）的排版提示词；请求里会附上裁判给的 `background`，并要求保持原回复的语气
 
 ### 群内动态添加指令
 

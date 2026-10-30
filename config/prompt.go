@@ -64,7 +64,11 @@ const defaultProactiveJudgePrompt = `你是群聊机器人的发言决策器，�
 - true：需要查证事实、新闻、数据、规则，或在解释概念、教程、对比等必须完整展开的问题；
 - false：日常闲聊、接梗、简短问答。
 
-只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "long_form": true 或 false, "focus": "整体上下文 或 最后一条消息", "reason": "不超过 20 字的理由"}`
+还要给出 background（给后续排版器看的对话背景，不超过 100 字）：
+- 用一两句话交代整段对话在聊什么、这次回复应该关注哪个焦点；
+- 只写背景，不要写回复内容、不要照抄原话；不回时也要给出（填这段对话的背景即可）。
+
+只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "long_form": true 或 false, "focus": "整体上下文 或 最后一条消息", "background": "不超过 100 字的对话背景与关注焦点", "reason": "不超过 20 字的理由"}`
 
 // defaultPersonaDirective 是人格块末尾授权指令的兜底：要求 LLM 依据人格维度推演各维度变化后再回答。
 // 正常从 prompt_system.yaml 的 internal.persona_directive 读取。
@@ -92,6 +96,7 @@ const defaultReplyRequirement = "【要求】发给你的内容是聊天记录�
 // 模型出稿后把它发回来，用 JSON schema 约束成最多 N 句短句（N 在 user 消息里给）。
 const defaultReplyRewrite = `你是群聊回复的排版器。把给你的回复改写成短句，总长尽量短（句数上限以用户消息为准）：
 - 句数由内容长短决定：短就 1~2 句，长才多拆几句；不要为了凑数把一句话硬拆成几句；
+- 保持原回复的语气、人称和人格色彩：只调整断句和长度，不要改成生硬的书面语、客服腔或新闻播报腔；
 - 可以适当删减，不用非要保留原意，但不要新增事实；
 - 每句尽量短（一般不超过 50 字），口语化，像真人在群里发消息；
 - 只输出 JSON，不要解释。`

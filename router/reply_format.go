@@ -24,6 +24,8 @@ import (
 //  4. 排版走 ChatStructured（= ChatJSON 同一实现），因此**关闭思考模式**
 //     （enable_thinking=false）：这一步只是格式转换，不需要推理，也不该为它多花 token。
 //  5. 短回复（不足 llm.reply_rewrite_min_runes 字，默认 60）不排版：本来就没多少可拆的，省一次调用。
+//  6. 裁判给出的 background（对话背景 + 关注焦点，≤100 字）随 user 消息一并附上，
+//     排版器据此理解上下文；system prompt 要求保持原语气，避免改写成生硬的书面语。
 
 // sentenceReplySchema 排版输出的 JSON Schema。strict 模式要求所有属性都进
 // required、additionalProperties 必须为 false。
@@ -44,9 +46,11 @@ func sentenceReplySchema(max int) json.RawMessage {
 }
 
 // rewriteReply 把最终回复改写成最多 cfg.LLMConfig.ReplyMaxSentences 句短句，返回句子数组。
+// background 是裁判给出的对话背景（≤100 字，可为空）：让排版器在改写时知道整段在聊什么、
+// 该关注哪个焦点，而不是只对着孤立的一段话断句。
 // ReplyMaxSentences<=0（关闭排版）、输入为空，或不足 ReplyRewriteMinRunes 字（0=不设下限）时，
 // 返回只含原文的单元素切片。
-func (r *Router) rewriteReply(ctx context.Context, cfg *config.Config, draft string) []string {
+func (r *Router) rewriteReply(ctx context.Context, cfg *config.Config, draft, background string) []string {
 	maxSentences := cfg.LLMConfig.ReplyMaxSentences
 	if maxSentences <= 0 || strings.TrimSpace(draft) == "" {
 		return []string{draft}
@@ -56,10 +60,15 @@ func (r *Router) rewriteReply(ctx context.Context, cfg *config.Config, draft str
 		return []string{draft}
 	}
 
+	userText := fmt.Sprintf(
+		"【上限】最多 %d 句。句数按内容长短定：短就 1~2 句，长才多拆几句；不要为了凑句数硬拆，能短则短。\n", maxSentences)
+	if bg := strings.TrimSpace(background); bg != "" {
+		userText += "【对话背景】" + bg + "\n"
+	}
+	userText += "【原回复】\n" + draft
 	messages := []llm.Message{
 		{Role: llm.RoleSystem, Content: r.promptCfg.ReplyRewritePrompt()},
-		{Role: llm.RoleUser, Content: fmt.Sprintf(
-			"【上限】最多 %d 句。句数按内容长短定：短就 1~2 句，长才多拆几句；不要为了凑句数硬拆，能短则短。\n【原回复】\n%s", maxSentences, draft)},
+		{Role: llm.RoleUser, Content: userText},
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)

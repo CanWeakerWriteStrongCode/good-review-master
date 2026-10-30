@@ -22,7 +22,7 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 	// 一次锐评是一个完整的业务动作，全程用同一份配置：
 	// 缓冲上限、超时、看图开关、成本参数若来自不同次读取，算出来的窗口就没有意义了
 	r.GoCtx(parent, func(ctx context.Context) error {
-		r.chatReplyNow(ctx, event, groupID, systemPrompt, keywordPrompt, true, nil, false)
+		r.chatReplyNow(ctx, event, groupID, systemPrompt, keywordPrompt, true, nil, nil)
 		return nil
 	})
 }
@@ -40,7 +40,9 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 //
 // longForm=true 表示这条是知识型长篇（主动链路来自裁判；直答链路会用一次轻量判定
 // 自行得出），生成后跳过"≤N 句"排版。
-func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image, longForm bool) (string, bool) {
+// verdict 是主动链路已经拿到的裁判结论（排版时把 background 传给排版器）；
+// 直答链路传 nil，由本函数自己补一次轻量判定。
+func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image, verdict *judgeVerdict) (string, bool) {
 	cfg := r.appCfg()
 	msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
 	if len(msgs) == 0 {
@@ -53,10 +55,15 @@ func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, 
 	// 否则"只回最后一条点名消息"会指到别人的新消息上。
 	msgs = cutAtMessage(msgs, event.MessageID)
 
-	// 直答链路（@/私聊）在这里补一次轻量判定，只取 long_form：
-	// 知识型长篇不再强制排版；reply 结论忽略（被点名必须回）。
+	var longForm bool
+	background := ""
 	if mention {
-		longForm = r.judgeLongForm(ctx, event, groupID, cfg)
+		// 直答链路（@/私聊）在这里补一次轻量判定，只取 long_form 与 background：
+		// 知识型长篇不再强制排版；reply 结论忽略（被点名必须回）。
+		longForm, background = r.judgeLongForm(ctx, event, groupID, cfg)
+	} else if verdict != nil {
+		longForm = verdict.LongForm
+		background = verdict.Background
 	}
 
 	// 按 token 成本决定扩展/重置，得到本次要发送的窗口
@@ -99,7 +106,7 @@ func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, 
 		logutil.Info("知识型长篇回复，跳过排版", "group", groupID)
 		sentences = []string{reply}
 	} else {
-		sentences = r.rewriteReply(baseCtx, cfg, reply)
+		sentences = r.rewriteReply(baseCtx, cfg, reply, background)
 	}
 	// 发送层决定合成一条还是逐条发（最多 5 条，QQ 被动回复上限）
 	reply = strings.Join(sentences, "\n")

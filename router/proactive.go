@@ -48,20 +48,23 @@ var proactiveVerdictSchema = json.RawMessage(`{
     "reply":  {"type": "boolean", "description": "机器人是否应该主动回复最后一条消息"},
     "long_form": {"type": "boolean", "description": "是否需要查资料或正式知识型长篇解答（允许超过排版句数上限）"},
     "focus":  {"type": "string", "enum": ["整体上下文", "最后一条消息"], "description": "回复焦点：看整体上下文，还是只聚焦最后一条消息"},
+    "background": {"type": "string", "maxLength": 100, "description": "不超过 100 字的对话背景：整段在聊什么、这次回复该关注哪个焦点"},
     "reason": {"type": "string",  "description": "不超过 20 字的理由"}
   },
-  "required": ["reply", "long_form", "focus", "reason"],
+  "required": ["reply", "long_form", "focus", "background", "reason"],
   "additionalProperties": false
 }`)
 
 // judgeVerdict 裁判结论。Reply 用指针：区分"模型明确说 false"和"字段缺失"。
 // Focus 决定生成阶段按哪种口径组织回复；缺失或无法识别时按整体上下文处理。
 // LongForm 表示这条需要查资料/正式知识型长篇解答，生成后跳过排版（不强制 ≤N 句）。
+// Background 是给排版器的对话背景（≤100 字），让改写时能看懂上下文。
 type judgeVerdict struct {
-	Reply    *bool  `json:"reply"`
-	LongForm bool   `json:"long_form"`
-	Focus    string `json:"focus"`
-	Reason   string `json:"reason"`
+	Reply      *bool  `json:"reply"`
+	LongForm   bool   `json:"long_form"`
+	Focus      string `json:"focus"`
+	Background string `json:"background"`
+	Reason     string `json:"reason"`
 }
 
 func (v judgeVerdict) shouldReply() bool { return v.Reply != nil && *v.Reply }
@@ -316,10 +319,11 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 		return
 	}
 	telemetry.ProactiveJudgeTotal.WithLabelValues(r.workspace, telemetry.ProactiveJudgeYes).Inc()
-	logutil.Info("主动判定：回复", "group", groupID, "focus", verdict.Focus, "long_form", verdict.LongForm, "reason", verdict.Reason)
+	logutil.Info("主动判定：回复", "group", groupID, "focus", verdict.Focus, "long_form", verdict.LongForm,
+		"background", verdict.Background, "reason", verdict.Reason)
 
 	systemPrompt := r.proactiveSystemPrompt(cfg, cand.event, groupID, verdict.focusLast())
-	reply, sent := r.chatReplyNow(ctx, cand.event, groupID, systemPrompt, "", false, images, verdict.LongForm)
+	reply, sent := r.chatReplyNow(ctx, cand.event, groupID, systemPrompt, "", false, images, &verdict)
 	if sent {
 		r.proactive.recordReply(groupID, reply, time.Now())
 	}
@@ -382,26 +386,27 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 	return parseJudgeVerdict(resp.Content)
 }
 
-// judgeLongForm 直答（@/私聊）链路的轻量判定：只取 long_form，reply 结论一律忽略——
-// 被点名必须回，裁判说"不回"也不作数。
+// judgeLongForm 直答（@/私聊）链路的轻量判定：只取 long_form 与 background，
+// reply 结论一律忽略——被点名必须回，裁判说"不回"也不作数。
 //
-// 返回 true 表示这条是查资料/知识型长篇解答，生成后跳过排版（不强制 ≤N 句）。
-// 任何失败都返回 false（照常排版）：排版只是格式，不该因为它挡住回复。
-func (r *Router) judgeLongForm(ctx context.Context, event onebot.Event, groupID string, cfg *config.Config) bool {
-	// 排版已关闭时 long_form 没有消费方，省掉这次调用。
+// 返回 longForm=true 表示这条是查资料/知识型长篇解答，生成后跳过排版（不强制 ≤N 句）；
+// background 是给排版器的对话背景（可能为空）。
+// 任何失败都返回 (false, "")（照常排版）：排版只是格式，不该因为它挡住回复。
+func (r *Router) judgeLongForm(ctx context.Context, event onebot.Event, groupID string, cfg *config.Config) (bool, string) {
+	// 排版已关闭时 long_form/background 没有消费方，省掉这次调用。
 	if cfg.LLMConfig.ReplyMaxSentences <= 0 {
-		return false
+		return false, ""
 	}
 	cand := &proactiveCandidate{event: event}
 	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, nil, true)
 	if err != nil {
 		logutil.Warn("直答 long_form 判定失败，按普通回复排版", "group", groupID, "err", err)
-		return false
+		return false, ""
 	}
 	if verdict.LongForm {
 		logutil.Info("直答判定：知识型长篇，跳过排版", "group", groupID, "reason", verdict.Reason)
 	}
-	return verdict.LongForm
+	return verdict.LongForm, verdict.Background
 }
 
 // judgeImages 读取候选消息的图（最多 cfg.ProactiveJudgeImages 张）。
@@ -458,9 +463,9 @@ func buildJudgeText(window []cache.Message, botName, lastTurn string, hasImage, 
 		b.WriteString("\n【提示】最后一条消息附带图片，图片内容已随本次请求提供。\n")
 	}
 	if mention {
-		// 直答链路：reply 结论不用（@/私聊必须回），只要 long_form/focus。
+		// 直答链路：reply 结论不用（@/私聊必须回），要 long_form、focus 与 background。
 		b.WriteString("【待判定】最后一条消息 @ 了机器人（或私聊），本条必须回复：reply 固定填 true，" +
-			"忽略\"要不要回\"的判断，只需给出 long_form 与 focus。")
+			"忽略\"要不要回\"的判断，只需给出 long_form、focus 与 background。")
 	} else {
 		b.WriteString("【待判定】最近聊天里的最后一条消息。判断机器人是否应该主动回复它。")
 	}
