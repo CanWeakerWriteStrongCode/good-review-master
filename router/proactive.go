@@ -77,8 +77,9 @@ func judgeNo(reason string) judgeVerdict {
 
 // proactiveCandidate 一个等待判定的消息（可能是运行期间被覆盖后剩下的最新一条）。
 type proactiveCandidate struct {
-	event   onebot.Event
-	content string
+	event    onebot.Event
+	content  string
+	snapshot []cache.Message // 提交时的冻结窗口；nil = 判定时现读缓存
 }
 
 // proactiveGroup 一个机器人在一个群里的主动插话状态。
@@ -233,11 +234,25 @@ func coolingDown(g *proactiveGroup, cfg *config.Config, now time.Time) bool {
 //
 // 必须在消息已写入缓存之后调用（缓存里才有完整窗口）。
 func (r *Router) TryProactive(ctx context.Context, event onebot.Event, groupID, content string) {
+	r.tryProactive(ctx, event, groupID, content, nil, false)
+}
+
+// TryProactiveNow 是 Stage 3 的同步入口：提交后在当前 goroutine 里处理完 latest-wins
+// 队列再返回，保证同一会话的 Agent 任务严格串行（全局并发由阶段 worker 控制）。
+func (r *Router) TryProactiveNow(ctx context.Context, event onebot.Event, groupID, content string, snapshot []cache.Message) {
+	r.tryProactive(ctx, event, groupID, content, snapshot, true)
+}
+
+func (r *Router) tryProactive(ctx context.Context, event onebot.Event, groupID, content string, snapshot []cache.Message, sync bool) {
 	// 点名（@ 本账号）必须回答，绝不经过裁判：裁判默认沉默，问它等于可能不回。
 	// handler 已在入口把 @ 分给 RouteMessage，这里再兜一层，任何调用方都不能
 	// 把点名消息送进"要不要回"的判定。
 	if event.MentionsBot() || event.AdapterAtMe() {
-		r.RouteMessage(ctx, content, event, groupID)
+		if sync {
+			r.RouteMessageNow(ctx, content, event, groupID, snapshot)
+		} else {
+			r.RouteMessage(ctx, content, event, groupID)
+		}
 		return
 	}
 	cfg := r.appCfg()
@@ -260,8 +275,12 @@ func (r *Router) TryProactive(ctx context.Context, event onebot.Event, groupID, 
 		return
 	}
 
-	cand := &proactiveCandidate{event: event, content: content}
+	cand := &proactiveCandidate{event: event, content: content, snapshot: snapshot}
 	if !r.proactive.enqueue(groupID, cand, cfg, time.Now()) {
+		return
+	}
+	if sync {
+		r.runProactive(ctx, groupID)
 		return
 	}
 	r.GoCtx(ctx, func(workerCtx context.Context) error {
@@ -320,7 +339,7 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 		"reason", verdict.Reason)
 
 	systemPrompt := r.proactiveSystemPrompt(cfg, cand.event, groupID, verdict.focusLast())
-	reply, sent := r.chatReplyNow(ctx, cand.event, groupID, systemPrompt, "", false, images, &verdict)
+	reply, sent := r.chatReplyWithSnapshot(ctx, cand.event, groupID, systemPrompt, "", false, images, cand.snapshot, &verdict)
 	if sent {
 		r.proactive.recordReply(groupID, reply, time.Now())
 	}
@@ -344,7 +363,10 @@ func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, g
 // images 是已经下载好的候选图片（handleProactive 只下载一次，生成阶段复用）。
 // mention=true 表示这条本身 @ 了机器人（或私聊）：reply 结论一律忽略，只取 long_form/focus。
 func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proactiveCandidate, cfg *config.Config, images []llm.Image, mention bool) (judgeVerdict, error) {
-	msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
+	msgs := cand.snapshot
+	if msgs == nil {
+		msgs = r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
+	}
 	// 裁判与生成看同一份窗口来源：都用 llm_send_count 条。生成阶段会按缓存命中
 	// 再实时扩展/重置，这里不再单独给裁判准备一份聊天记录。
 	window := judgeWindow(msgs, cand.event.MessageID, cfg.LLMSendCount)

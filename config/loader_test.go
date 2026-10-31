@@ -43,7 +43,7 @@ im:
   api_base: "http://127.0.0.1:6199"
 bot:
   allow_groups: "10001,10002"
-  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
 runtime:
   llm_send_count: 3
   llm_timeout_sec: 20
@@ -97,7 +97,7 @@ func TestLoad基本配置(t *testing.T) {
 	if len(cfg.AllowGroups) != 2 || cfg.AllowGroups[0] != "10001" {
 		t.Errorf("AllowGroups = %v", cfg.AllowGroups)
 	}
-	if len(cfg.WorkspaceAccounts) != 2 || cfg.WorkspaceAccounts[0] != "qq_1906xxxx" {
+	if len(cfg.WorkspaceAccounts) != 2 || cfg.WorkspaceAccounts[0] != "qq_official_bot_1906xxxx" {
 		t.Errorf("WorkspaceAccounts = %v", cfg.WorkspaceAccounts)
 	}
 	if cfg.IMToken != "im-token" {
@@ -159,8 +159,8 @@ func TestIM账号可覆盖全局地址(t *testing.T) {
 	configYAML := strings.Replace(baseConfig, `  api_base: "http://127.0.0.1:6199"`,
 		`  api_base: "http://127.0.0.1:6199"
   accounts:
-    - id: "qq_1906xxxx"
-    - id: "qq_1904xxxx"
+    - id: "qq_official_bot_1906xxxx"
+    - id: "qq_official_bot_1904xxxx"
       api_base: "http://127.0.0.1:6200"`, 1)
 	cfg, err := loadWith(t, configYAML, "")
 	if err != nil {
@@ -510,8 +510,8 @@ func TestProactive默认值(t *testing.T) {
 // TestProactive显式配置 显式写的值要原样进 Config，images=0 表示不判图（不能被默认值覆盖）。
 func TestProactive显式配置(t *testing.T) {
 	yaml := strings.Replace(baseConfig,
-		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
-		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+		`allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]`,
+		`allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
   proactive_enabled: true
   proactive_cooldown_sec: 30
   proactive_max_streak: 2
@@ -534,8 +534,8 @@ func TestProactive显式配置(t *testing.T) {
 // 只有删掉那一行才会用默认值；负数非法。
 func TestProactive显式零生效(t *testing.T) {
 	yaml := strings.Replace(baseConfig,
-		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
-		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+		`allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]`,
+		`allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
   proactive_enabled: true
   proactive_cooldown_sec: 0
   proactive_max_streak: 0
@@ -553,8 +553,8 @@ func TestProactive显式零生效(t *testing.T) {
 	}
 
 	negative := strings.Replace(baseConfig,
-		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]`,
-		`allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+		`allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]`,
+		`allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
   proactive_cooldown_sec: -1`, 1)
 	if _, err := loadWith(t, negative, ""); err == nil {
 		t.Fatal("负数应被拒绝")
@@ -618,18 +618,18 @@ func TestAllowWorkspaceAccounts兼容字符串与列表(t *testing.T) {
 	}{
 		{
 			name:     "逗号分隔字符串",
-			accounts: "  allow_workspace_accounts: \"qq_a1, qq_a2\"\n",
-			want:     []string{"qq_a1", "qq_a2"},
+			accounts: "  allow_workspace_accounts: \"qq_official_bot_a1, qq_official_bot_a2\"\n",
+			want:     []string{"qq_official_bot_a1", "qq_official_bot_a2"},
 		},
 		{
 			name:     "YAML 列表",
-			accounts: "  allow_workspace_accounts:\n    - \"qq_a1\"\n    - \"qq_a2\"\n",
-			want:     []string{"qq_a1", "qq_a2"},
+			accounts: "  allow_workspace_accounts:\n    - \"qq_official_bot_a1\"\n    - \"qq_official_bot_a2\"\n",
+			want:     []string{"qq_official_bot_a1", "qq_official_bot_a2"},
 		},
 		{
 			name:     "列表带注释与空项",
-			accounts: "  allow_workspace_accounts:\n    # 账号 A\n    - \"qq_a1\"\n    - \"\"\n    - \"qq_a2\"\n",
-			want:     []string{"qq_a1", "qq_a2"},
+			accounts: "  allow_workspace_accounts:\n    # 账号 A\n    - \"qq_official_bot_a1\"\n    - \"\"\n    - \"qq_official_bot_a2\"\n",
+			want:     []string{"qq_official_bot_a1", "qq_official_bot_a2"},
 		},
 		{
 			name:     "空值",

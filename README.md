@@ -123,7 +123,7 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | `im.echo_self_messages`     | 实现端是否回传机器人自己发的消息（NapCat 会，AstrBot 桥不会）；true 时回复靠回传事件入库、本地不再重复记录 | `false` |
 | `im.accounts`               | 可选：多实现端时按账号覆盖出站地址 `[{id, api_base}]`；`id` = `平台名_接收账号` | 一般不用配 |
 | `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群；支持逗号分隔字符串或 YAML 列表） | `123456,789012`            |
-| `bot.allow_workspace_accounts`    | 允许自动开通的工作空间 ID（如 `qq_1906xxxx`；`*` 表示全部；支持 YAML 列表或逗号分隔字符串） | `["qq_1906xxxx"]` |
+| `bot.allow_workspace_accounts`    | 允许自动开通的工作空间 ID：`平台名_账号类型_接收账号`（如 `qq_official_bot_1906xxxx`；`*` 表示全部；支持 YAML 列表或逗号分隔字符串） | `["qq_official_bot_1906xxxx"]` |
 | `bot.proactive_enabled`     | 主动插话：没被 @ 时也先由大模型判定要不要接话 | `false`                    |
 | `bot.proactive_cooldown_sec`| 主动发言后该群冷却秒数（期间不再判定；0=不冷却）        | `90`                       |
 | `bot.proactive_max_streak`  | 同一话题最多连续主动发言次数（0=不主动发言）              | `5`                        |
@@ -157,6 +157,10 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）              | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                     | `admin`                    |
 | `runtime.web_password`      | Web 面板登录密码（必填；写在 `secret.yaml`） | `"123456"`                 |
+| `pipeline.*`                | 三段流水线的批量/凑批/并发/重试/容量/空闲回收/排空；详见 `config/config_example.yaml` | 默认即可 |
+| `assets.*`                  | 后台补标签、消息描述预算、原图副本与台账保留；详见 `config/config_example.yaml` | 默认即可 |
+
+`pipeline` 与 `assets` 的大部分参数可以在运行时通过 `state.db` 的 `settings` 表覆盖（键为 `pipeline` / `assets`，值为同名字段 JSON），库里的值优先于 `config.yaml`，约 30 秒生效。
 
 ### Web 管理面板
 

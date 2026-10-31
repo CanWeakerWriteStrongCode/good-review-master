@@ -233,6 +233,7 @@ class OneBotBridge(Star):
                     "platform": self._ob12_platform(platform_id),
                     "user_id": "unknown_selfid",
                 },
+                "account_kind": self._ob12_account_kind(platform_id),
                 "message_id": message_id,
                 "message": segments,
                 "alt_message": self._render_ob12(segments, ""),
@@ -247,6 +248,7 @@ class OneBotBridge(Star):
             "detail_type": "group",
             "sub_type": "",
             "self": {"platform": self._ob12_platform(platform_id), "user_id": self_id},
+            "account_kind": self._ob12_account_kind(platform_id),
             "message_id": message_id,
             "message": segments,
             "alt_message": self._render_ob12(segments, group_id),
@@ -302,6 +304,24 @@ class OneBotBridge(Star):
             platform_id or "<empty>",
         )
         return "unknown"
+
+    def _ob12_account_kind(self, platform_id: str) -> str:
+        """账号类型：官方机器人 / 个人号 / App。
+
+        平台名只表示 IM 软件（qq），账号模式必须单独上报，Go 会把它拼进工作空间键。
+        识别不到时留空，由 Go 拒绝新开通并提示补字段；不猜 unknown。
+        """
+        ptype = self._platform_type(platform_id).strip().lower()
+        configured = str(self._cfg("account_kind", "") or "").strip().lower()
+        if configured in ("official_bot", "personal_account", "app"):
+            return configured
+        if ptype == "qq_official":
+            return "official_bot"
+        if ptype in ("aiocqhttp", "napcat", "qq"):
+            return "personal_account"
+        if ptype:
+            return "app"
+        return ""
 
     def _platform_type(self, platform_id: str) -> str:
         """平台适配器类型，如 qq_official / wecom / lark；拿不到返回空串。"""

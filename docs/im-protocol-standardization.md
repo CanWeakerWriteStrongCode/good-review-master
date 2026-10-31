@@ -130,15 +130,17 @@ QQ 官方只给 URL、不给 `file_id`，按扩展规则补 `data["qq.url"]`（�
 | @ 目标 | `mention` 段的 `user_id` | 决定是否触发回复 |
 | 发送者 | 事件 `user_id` | 不是接收账号 |
 
-**路由键 = `{platform}_{account}`**，同时是工作空间 ID（会进数据库列与面板 URL）：
+**路由键 = `{platform}_{account_kind}_{account}`**，同时是工作空间 ID
+（会进数据库列、面板 URL 和缓存键）：
 
-- `platform` 直接取 `self.platform`，按 OB12 术语表只能是小写字母、数字、连字符和点号
-  （如 `qq`、`telegram`）；**下划线不合法**（`qq_official` 不行），
-  QQ 官方与将来的 OneBot 实现统一用 `qq`。
-- ID 要把平台名里的点号替换成下划线，再套 `^[A-Za-z0-9_-]{1,64}$`（如 `qq_1906xxxx`）。
-- 同一账号在 QQ 官方和 OneBot 实现下都是 `qq`，靠 `account` 区分。
-  若将来同时接 QQ 官方与个人号，AppID 和 QQ 号仍可能撞号，届时用 `qq.official` / `qq`
-  两个平台名隔离（点号分段是术语表允许的）；当前只接官方，统一用 `qq`。
+- `platform` 直接取 `self.platform`（先归一），按 OB12 术语表只能是小写字母、数字、
+  连字符和点号（如 `qq`、`telegram`）；**下划线不合法**（`qq_official` 不行）。
+- `account_kind` 取 OB12 顶层扩展，固定为 `official_bot` / `personal_account` / `app`；
+  它**不进 platform**，而是作为工作空间键的一段，避免官方 AppID 和个人 QQ 号撞车。
+- ID 要把平台名里的点号替换成下划线，再套 `^[A-Za-z0-9_-]{1,128}$`
+  （如 `qq_official_bot_1906xxxx`）。
+- 同一平台下靠 `account_kind + account` 区分账号；账号类型在首次开通时必须知道且不再变化，
+  缺失时拒绝新开通，不用 `unknown` 猜。
 
 ### 3.2 为什么账号必须来自端点
 
@@ -330,12 +332,12 @@ im:
   api_base: "http://127.0.0.1:6199"  # 所有账号默认的出站地址
   # 可选：多套实现端时按账号覆盖；不写 api_base 表示沿用全局
   # accounts:
-  #   - id: "qq_1904xxxx"        # 工作空间 ID = platform_account
+  #   - id: "qq_official_bot_1904xxxx"   # 工作空间 ID = platform_account_kind_account
   #     api_base: "http://127.0.0.1:6200"
 
 bot:
-  # 允许自动开通工作空间的工作空间 ID（platform_account）
-  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  # 允许自动开通工作空间的工作空间 ID（platform_account_kind_account）
+  allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
 ```
 
 - `bot.workspaces`、`bot.allow_self_ids` 删除；旧 `astrbot.http_api` / `astrbot.access_token`
@@ -426,11 +428,14 @@ OB12 只定义「204/200 = 推送成功，其它 = 失败」。本项目在此�
 
 ## 8. 验证
 
-- 单测：`{platform}_{account}` 拼接与 ID 合法化；哨兵默认不触发、带 `qq.at_me` 才触发；
+- 单测：`{platform}_{account_kind}_{account}` 拼接与 ID 合法化；哨兵默认不触发、
+  带 `qq.at_me` 才触发；
   `mention.user_id == self.user_id` 才触发；`mention_all` 不触发；动作响应
   `status/retcode` 解析；`echo` 回传；4xx 视为失败。
-- E2E（mock OB12 实现端）：向 `/im/event/1906xxxx` 推两条事件——
-  1. `self={qq, openid}` + `mention={openid}` → 204、工作空间入库、Go 调 mock 的 `POST /`
+- E2E（mock OB12 实现端）：向 `/im/event/1906xxxx` 推两条事件（顶层
+  `account_kind=official_bot`）——
+  1. `self={qq, openid}` + `mention={openid}` → 204、工作空间
+     `qq_official_bot_1906xxxx` 入库、Go 调 mock 的 `POST /`
      发 `send_message{detail_type=group}`；
   2. `self={qq, openid}` + 无 mention → 204、入缓存、不发送。
 - E2E（QQ 官方，按本机日志复现）：

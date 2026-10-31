@@ -122,7 +122,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `im.echo_self_messages` | Whether the implementation echoes the bot's own messages back as events (NapCat does, AstrBot bridge does not); when true, replies are stored via those events and not recorded locally | `false` |
 | `im.accounts` | Optional per-account overrides `[{id, api_base}]`; `id` = `platform_account` | usually unset |
 | `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups; accepts a comma-separated string or a YAML list) | `123456,789012` |
-| `bot.allow_workspace_accounts` | Workspace IDs allowed to auto-provision (`qq_1906xxxx`; `*` for all; YAML list or comma-separated string) | `["qq_1906xxxx"]` |
+| `bot.allow_workspace_accounts` | Workspace IDs allowed to auto-provision: `platform_kind_account` (e.g. `qq_official_bot_1906xxxx`; `*` for all; YAML list or comma-separated string) | `["qq_official_bot_1906xxxx"]` |
 | `bot.proactive_enabled` | Proactive replies: let the LLM decide whether to join when not mentioned | `false` |
 | `bot.proactive_cooldown_sec` | Per-group cooldown after a proactive reply (0 = no cooldown) | `90` |
 | `bot.proactive_max_streak` | Max consecutive proactive replies on one topic (0 = never) | `5` |
@@ -156,6 +156,10 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
 | `runtime.web_password` | Web panel login password (required; lives in `secret.yaml`) | `"123456"` |
+| `pipeline.*` | Three-stage pipeline batching/linger/concurrency/retries/capacity/idle/drain; see `config/config_example.yaml` | defaults |
+| `assets.*` | Background backfill, per-message description budget, deferred originals and job retention; see `config/config_example.yaml` | defaults |
+
+Most `pipeline` / `assets` values can be overridden at runtime via the `settings` table in `state.db` (keys `pipeline` / `assets`, JSON with the same field names). Database values win over `config.yaml` and take effect within about 30 seconds.
 
 ### Web Management Panel
 

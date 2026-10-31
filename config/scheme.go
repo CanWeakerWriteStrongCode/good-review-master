@@ -10,11 +10,13 @@ package config
 // informer 会反复调 Load（文件一变就调，还有 resync 兜底），域实例每次都必须是新的，
 // 否则 Unmarshal/SetDefaults 会在同一批对象上反复叠加。
 type sections struct {
-	IM      *imSection
-	Bot     *botSection
-	Runtime *runtimeSection
-	LLM     *llmSection
-	MCP     *mcpSection
+	IM       *imSection
+	Bot      *botSection
+	Runtime  *runtimeSection
+	LLM      *llmSection
+	MCP      *mcpSection
+	Pipeline *pipelineSection
+	Assets   *assetsSection
 
 	// Secret 刻意不在上面那张表里，也不由 registry() 返回：
 	// 它的来源不是 config.yaml，而是 secret.yaml + 环境变量（见 section_secret.go）。
@@ -24,16 +26,18 @@ type sections struct {
 
 func newSections() *sections {
 	return &sections{
-		IM:      &imSection{},
-		Bot:     &botSection{},
-		Runtime: &runtimeSection{},
-		LLM:     &llmSection{},
-		MCP:     &mcpSection{},
-		Secret:  &secretSection{},
+		IM:       &imSection{},
+		Bot:      &botSection{},
+		Runtime:  &runtimeSection{},
+		LLM:      &llmSection{},
+		MCP:      &mcpSection{},
+		Pipeline: &pipelineSection{},
+		Assets:   &assetsSection{},
+		Secret:   &secretSection{},
 	}
 }
 
 // registry 返回全部读 config.yaml 的域，顺序即四步曲的执行顺序。
 func (s *sections) registry() []Section {
-	return []Section{s.IM, s.Bot, s.Runtime, s.LLM, s.MCP}
+	return []Section{s.IM, s.Bot, s.Runtime, s.LLM, s.MCP, s.Pipeline, s.Assets}
 }

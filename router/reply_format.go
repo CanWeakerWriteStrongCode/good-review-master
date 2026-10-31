@@ -154,52 +154,47 @@ func splitReplyMessages(sentences []string, max int) [][]string {
 	return append(out, sentences[max-1:])
 }
 
-// sendReply 发送排版后的句子。
+// sendReply 发送排版后的句子，返回未发送成功的错误。
 //
 //   - cfg.ReplySendInterval<=0：不拆分，所有句子合成一条消息（旧行为）；
 //   - >0：拆成最多 5 条逐条发送，每条间隔该时长。第一条沿用原来的引用/@ 语义，
 //     后续为纯文本（一条回复里反复 @ 人像刷屏）。
-func (r *Router) sendReply(ctx context.Context, event onebot.Event, chatID string, mention bool, sentences []string, cfg *config.Config) {
+//
+// 每个动作先查发送台账：已发（含结果不确定）直接跳过，重试只补未发的。
+func (r *Router) sendReply(ctx context.Context, event onebot.Event, chatID string, mention bool, sentences []string, cfg *config.Config) error {
 	if len(sentences) == 0 {
-		return
+		return nil
 	}
-	if cfg.ReplySendInterval <= 0 || len(sentences) == 1 {
-		text := strings.Join(sentences, "\n")
-		if mention {
-			r.reply(event, chatID, text)
-		} else {
-			r.replyQuoted(event, chatID, text)
+	if r.ledger == nil {
+		r.ledger = NewMemoryLedger()
+	}
+	actions := buildReplyActions(r.workspace, event, chatID, mention, sentences, cfg)
+	for i, action := range actions {
+		if entry, ok, err := r.ledger.Load(action.ID); err == nil && ok && entry.Sent {
+			continue
 		}
-		return
-	}
-
-	chunks := splitReplyMessages(sentences, maxReplyMessages)
-	for i, chunk := range chunks {
 		if i > 0 {
 			timer := time.NewTimer(cfg.ReplySendInterval)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
 				logutil.Info("分条发送被取消", "group", chatID, "已发", i)
-				return
+				return ctx.Err()
 			case <-timer.C:
 			}
 		}
-		text := strings.Join(chunk, "\n")
-		if i == 0 {
-			if mention {
-				r.reply(event, chatID, text)
-			} else {
-				r.replyQuoted(event, chatID, text)
-			}
-			continue
+		entry, err := r.sendAction(ctx, action)
+		r.ledger.Mark(entry)
+		if entry.Sent {
+			r.recordSelfReply(event, chatID, action.Text)
 		}
-		if event.IsPrivate() {
-			r.obClient.SendPrivateReply(event.UserID, text)
-		} else {
-			r.obClient.SendGroupMessage(chatID, text)
+		if err != nil {
+			return err
 		}
-		r.recordSelfReply(event, chatID, text)
 	}
-	logutil.Debug("分条发送完成", "group", chatID, "消息数", len(chunks), "间隔", cfg.ReplySendInterval)
+	if len(actions) > 0 {
+		r.proactive.noteDirect(chatID, actions[len(actions)-1].Text, time.Now())
+	}
+	logutil.Debug("分条发送完成", "group", chatID, "动作数", len(actions), "间隔", cfg.ReplySendInterval)
+	return nil
 }

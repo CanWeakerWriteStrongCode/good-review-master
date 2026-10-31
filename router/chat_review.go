@@ -42,8 +42,21 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 // 自行得出），生成后跳过"≤N 句"排版。
 // verdict 是主动链路已经拿到的裁判结论；直答链路传 nil，由本函数自己补一次轻量判定。
 func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image, verdict *judgeVerdict) (string, bool) {
+	return r.chatReplyWithSnapshot(ctx, event, groupID, systemPrompt, keywordPrompt, mention, images, nil, verdict)
+}
+
+// chatReplyWithSnapshot 与 chatReplyNow 相同，但使用调用方冻结好的窗口。
+// snapshot 为 nil 时退回实时读缓存（debug/旧链路）；Stage 3 一律传快照。
+func (r *Router) chatReplyWithSnapshot(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt string, mention bool, images []llm.Image, snapshot []cache.Message, verdict *judgeVerdict) (string, bool) {
 	cfg := r.appCfg()
-	msgs := r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
+	msgs := snapshot
+	if msgs == nil {
+		msgs = r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
+	}
+	if snapshot != nil && cache.FindMsgIndex(snapshot, event.MessageID) < 0 {
+		logutil.Warn("快照里找不到触发消息，放弃本次回复", "group", groupID, "message", event.MessageID)
+		return "", false
+	}
 	if len(msgs) == 0 {
 		if mention {
 			r.reply(event, groupID, "暂无群聊记录，无法锐评~")
@@ -107,9 +120,13 @@ func (r *Router) chatReplyNow(ctx context.Context, event onebot.Event, groupID, 
 	}
 	// 发送层决定合成一条还是逐条发（最多 5 条，QQ 被动回复上限）
 	reply = strings.Join(sentences, "\n")
-	r.sendReply(baseCtx, event, groupID, mention, sentences, cfg)
+	if err := r.sendReply(baseCtx, event, groupID, mention, sentences, cfg); err != nil {
+		logutil.Warn("回复未完全发送，等待重试", "group", groupID, "err", err)
+		return reply, false
+	}
 
-	// 保存锚点（窗口首条 + 末条 message_id）
+	// 保存锚点（窗口首条 + 末条 message_id）。只有整次发送完成才推进，
+	// 未发出的句子不会因为锚点前移而被跳过。
 	r.cacheStore().SetLLMAnchor(groupID, cache.LLMAnchor{
 		Start:    chatLogMsgs[0].MessageID,
 		LastSent: chatLogMsgs[len(chatLogMsgs)-1].MessageID,

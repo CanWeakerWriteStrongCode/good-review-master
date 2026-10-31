@@ -94,6 +94,8 @@ func assemble(sections *sections) *Config {
 			BreakerCooldown:   time.Duration(sections.MCP.BreakerCooldownSec) * time.Second,
 			Servers:           servers,
 		},
+		Pipeline: sections.Pipeline.convert(),
+		Assets:   sections.Assets.convert(),
 	}
 }
 

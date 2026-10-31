@@ -46,11 +46,48 @@ type Config struct {
 	OTLPEndpoint          string        // OTLP/HTTP 追踪端点（如 http://localhost:4318）；空=关闭链路追踪
 	LLMConfig             LLMConf
 	MCPConfig             MCPConf
+	Pipeline              PipelineConf
+	Assets                AssetsConf
+}
+
+// PipelineConf 三段流水线的批量、并发、容量与关停参数。
+type PipelineConf struct {
+	SyncBatch        int
+	SyncLinger       time.Duration
+	SyncConcurrency  int
+	SyncRetries      int
+	AssetBatch       int
+	AssetLinger      time.Duration
+	AssetConcurrency int
+	AssetRetries     int
+	AgentBatch       int
+	AgentLinger      time.Duration
+	AgentConcurrency int
+	AgentRetries     int
+	PerChatCapacity  int
+	GlobalCapacity   int
+	IdleTTL          time.Duration // 0 = 不回收会话 worker
+	DrainTimeout     time.Duration // 0 = 关停不等待存量
+}
+
+// AssetsConf 资产打标签与后台补标签参数。
+type AssetsConf struct {
+	BackfillEnabled     bool
+	BackfillInterval    time.Duration // 0 = 关闭扫描
+	BackfillBatch       int
+	BackfillMaxAttempts int
+	JobRetention        time.Duration // 0 = 永久保留 done/missing 台账
+	MessageBudget       time.Duration // 0 = 不设单条消息预算
+	TagConcurrency      int
+	DeferCacheDir       string
+	DeferCacheMaxBytes  int64         // 单张原图副本大小上限；0 = 不保存副本
+	DeferCacheTTL       time.Duration // 0 = 不过期
+	PromptVersion       string
 }
 
 // IMAccount 一个机器人账号的出站地址覆盖。
 //
-// ID 是工作空间 ID（platform_account）。只有多套实现端/多端口时才需要；
+// ID 是工作空间 ID（platform_account_kind_account）。只有多套实现端/多端口时才需要；
 // 常见部署只配 im.api_base，账号 ID 由入站事件自动得到。
 type IMAccount struct {
 	ID      string

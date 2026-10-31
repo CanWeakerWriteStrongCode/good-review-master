@@ -1,165 +1,148 @@
 package bot
 
 import (
-	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/onebot"
-	"good-review-master/telemetry"
+	"good-review-master/pipeline"
 	"good-review-master/workspace"
 )
 
-// job 一条入站事件与它被解析出的工作空间。
-// 两者必须成对入队：消费侧再解析一次会读到不同的账号映射（配置热更新），
-// 一条消息的缓存、路由、回复就可能落到两个账号上。
-type job struct {
-	event onebot.Event
-	ws    *workspace.Workspace
-}
-
-// Bot 机器人运行时，管理消息接收与处理
+// Bot 机器人运行时：IM 事件 → B1 → Stage 1 → B2 → Stage 2 → B3 → Stage 3。
+//
+// 每个阶段都是“每会话一个 worker、全局并发受限”的消费者（pipeline.Stage）；
+// 同一群的顺序由分区键保证，不同群之间可以并行。
 type Bot struct {
 	cfg        config.Snapshot
 	workspaces *workspace.Manager
 
-	// queue 承接实现端推来的事件。Run 是唯一的消费者，
-	// 顺序因此与平台推送顺序一致，不会因为并发处理把群聊上下文打乱。
-	queue chan job
+	b1 pipeline.Buffer // 入站 → Stage 1
+	b2 pipeline.Buffer // Stage 1 → Stage 2
+	b3 pipeline.Buffer // Stage 2 → Stage 3
+
+	stage1 *pipeline.Stage
+	stage2 *pipeline.Stage
+	stage3 *pipeline.Stage
+
+	dedup *messageDedup
+
+	closed    atomic.Bool
+	closeOnce sync.Once
+}
+
+// messageDedup 在入口做消息去重：Stage 1 的缓存去重只能看到已经走完 Stage 3 的消息，
+// 高并发补推时同一条消息可能在进入缓存前被处理两次。这里用 TTL 短表兜住这段窗口。
+type messageDedup struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+const dedupTTL = 10 * time.Minute
+
+func newMessageDedup() *messageDedup {
+	return &messageDedup{seen: make(map[string]time.Time)}
+}
+
+// claim 返回 true 表示第一次见到这条消息。
+func (d *messageDedup) claim(key string) bool {
+	if d == nil || key == "" {
+		return true
+	}
+	now := time.Now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if at, ok := d.seen[key]; ok && now.Sub(at) < dedupTTL {
+		return false
+	}
+	if len(d.seen) > 4096 {
+		for item, at := range d.seen {
+			if now.Sub(at) >= dedupTTL {
+				delete(d.seen, item)
+			}
+		}
+	}
+	d.seen[key] = now
+	return true
+}
+
+// forget 在入队失败时撤销占位，让实现端的重试能再次进入。
+func (d *messageDedup) forget(key string) {
+	if d == nil || key == "" {
+		return
+	}
+	d.mu.Lock()
+	delete(d.seen, key)
+	d.mu.Unlock()
 }
 
 // NewBot 创建机器人实例。
-// 每个工作空间有自己的 Router 与缓存，Bot 只负责解析归属并把事件交给对应的那个。
 func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
-	return &Bot{
+	// 工作空间管理器持有叠加了 settings 表的快照（库 > 文件）。
+	if workspaces != nil {
+		cfg = workspaces.Snapshot()
+	}
+	current := cfg()
+	perChat := current.Pipeline.PerChatCapacity
+	global := current.Pipeline.GlobalCapacity
+	// 直接构造 config.Config 的测试/嵌入式调用不会经过配置默认值，给安全兜底。
+	if perChat <= 0 {
+		perChat = 500
+	}
+	if global <= 0 {
+		global = 5000
+	}
+	b := &Bot{
 		cfg:        cfg,
 		workspaces: workspaces,
-		queue:      make(chan job, eventQueueSize),
+		dedup:      newMessageDedup(),
+		b1:         pipeline.NewMemoryBuffer(perChat, global),
+		b2:         pipeline.NewMemoryBuffer(perChat, global),
+		b3:         pipeline.NewMemoryBuffer(perChat, global),
+	}
+	b.stage1 = pipeline.NewStage(pipeline.StageOptions{
+		Name: pipeline.StageSync, Buffer: b.b1, Config: b.syncConfig,
+		Handler: b.handleSync, OnDeadLetter: b.deadLetter,
+	})
+	b.stage2 = pipeline.NewStage(pipeline.StageOptions{
+		Name: pipeline.StageAssets, Buffer: b.b2, Config: b.assetConfig,
+		Handler: b.handleAssets, OnDeadLetter: b.deadLetter,
+	})
+	b.stage3 = pipeline.NewStage(pipeline.StageOptions{
+		Name: pipeline.StageAgent, Buffer: b.b3, Config: b.agentConfig,
+		Handler: b.handleAgent, OnDeadLetter: b.deadLetter,
+	})
+	return b
+}
+
+func (b *Bot) syncConfig() pipeline.StageConfig {
+	p := b.cfg().Pipeline
+	return pipeline.StageConfig{
+		Batch: p.SyncBatch, Linger: p.SyncLinger,
+		Concurrency: p.SyncConcurrency, Retries: p.SyncRetries, IdleTTL: p.IdleTTL,
 	}
 }
 
-// ProcessMessage 处理单条消息（群聊或私聊）
-//
-// 开头取一次快照、全程用同一个局部变量：这样一条消息的整个处理过程
-// （白名单判定、截断长度、缓冲上限、@检测）看到的是**同一份**配置。
-//
-// 私聊按"一对一会话"处理：会话键是 private:<user_id>，缓存/人格/锚点都按它隔离；
-// 没有群白名单、群档案和 @ 语义——发给机器人就是找它，直接进路由。
-func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *workspace.Workspace) {
-	if ws == nil {
-		return
+func (b *Bot) assetConfig() pipeline.StageConfig {
+	p := b.cfg().Pipeline
+	return pipeline.StageConfig{
+		Batch: p.AssetBatch, Linger: p.AssetLinger,
+		Concurrency: p.AssetConcurrency, Retries: p.AssetRetries, IdleTTL: p.IdleTTL,
 	}
-	cfg := ws.Snapshot()()
-	private := event.IsPrivate()
-	chatID := event.ChatID()
-	// 私聊没有群可查白名单：账号被接管（workspace 已解析）即视为允许。
-	if !private && !ws.AllowsGroup(chatID) {
-		return
-	}
+}
 
-	// 发送者与本条 @ 到的成员一起收集：后面补昵称时按这批 user_id 批量处理。
-	nameIDs := make([]string, 0, len(event.Message)+1)
-	nameIDs = append(nameIDs, event.UserID)
-	if !private {
-		// 群档案与成员目录跟着消息一起积累：群只写一次，成员首次出现时写一行。
-		ws.EnsureGroup(chatID)
-		ws.ObserveMember(chatID, event.UserID)
+func (b *Bot) agentConfig() pipeline.StageConfig {
+	p := b.cfg().Pipeline
+	return pipeline.StageConfig{
+		Batch: p.AgentBatch, Linger: p.AgentLinger,
+		Concurrency: p.AgentConcurrency, Retries: p.AgentRetries, IdleTTL: p.IdleTTL,
 	}
-	for _, seg := range event.Message {
-		if seg.Type != onebot.SegmentMention {
-			continue
-		}
-		userID := seg.String("user_id")
-		if userID == "" {
-			continue
-		}
-		nameIDs = append(nameIDs, userID)
-		if !private {
-			ws.ObserveMember(chatID, userID)
-		}
-	}
-
-	// 消息自带显示名时先学进成员目录：QQ 官方一般不带，桥接拿到时会透传，
-	// 学完本条消息的 @ 渲染与缓存昵称就能立刻用上。
-	// 名字确实变化时，把该用户更早的、还没昵称的消息一起补上（只改内存缓存）。
-	if name := event.SenderName(); name != "" {
-		if ws.LearnMemberName(chatID, event.UserID, name) {
-			ws.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg).SetNickname(event.UserID, name)
-		}
-	}
-
-	// 仍有缺名的（发送者没有 sender、或 @ 到的人不在内存目录），按群批量查 members 表补；
-	// 查到会回填内存目录，后续消息不用再查。
-	resolved := ws.ResolveNames(chatID, nameIDs)
-	nameOf := func(userID string) string {
-		if name := resolved[userID]; name != "" {
-			return name
-		}
-		return ws.DisplayNameFor(chatID)(userID)
-	}
-	content := truncate(event.RenderText(nameOf), cfg.MaxMsgRune)
-	if content == "" {
-		return
-	}
-
-	// QQ 官方群消息的引用只给被引消息的 REFIDX（qq.ref_msg_idx），不给 message_id；
-	// 用已经存下的 ref_idx 反查一次，把 reply_to 补成真正的 message_id。
-	replyTo := event.QuotedMessageID()
-	if replyTo == "" {
-		replyTo = ws.State.ResolveMessageID(chatID, event.QuotedRefIdx())
-	}
-
-	msg := cache.Message{
-		MessageID: event.MessageID,
-		GroupID:   chatID,
-		SelfID:    event.Self.UserID,
-		UserID:    event.UserID,
-		Nickname:  nameOf(event.UserID),
-		Content:   content,
-		Images:    event.Images(),
-		ReplyToID: replyTo,
-		RefIdx:    event.QQMsgIdx,
-		Time:      eventTime(event),
-	}
-	// 入库图片描述：同步（用户接受因此变慢）。命中全局图库直接复用，
-	// 未命中才调一次低清描述；失败不阻塞消息入库，按"无描述"处理。
-	if ids, notes := ws.Router.EnsureImageNotes(ctx, msg.Images); len(ids) > 0 {
-		msg.ImageIDs = ids
-		msg.ImageNotes = notes
-	}
-	gc := ws.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg)
-	gc.Add(msg)
-	telemetry.CacheMessages.WithLabelValues(ws.ID, chatID).Set(float64(gc.Len()))
-	ws.State.SaveMessage(msg)
-	if !private {
-		// self.user_id 按群学习（QQ 官方是群作用域 openid），重启后仍能对 @ 做比较。
-		// 只有值变化时才写库，避免每条消息一次同步 INSERT。
-		ws.LearnIdentity(chatID, event.Self.UserID)
-		// 借本条消息的身份核对一次机器人昵称（平台侧改名后 state.db 的缓存不会自己失效）。
-		// 传 self_id + group_id：多账号共用一个实现端时，只有它们能让实现端定位到本机器人。
-		ws.SyncSelfName(event.BotID(), chatID)
-	}
-
-	// 私聊不用判 @：发给机器人就是找它。
-	// 群聊触发优先级：标准 mention > 实现端显式 @ 标记（无 openid 时）> 昵称兜底。
-	// 收到事件不等于被 @，@全体也不等于 @ 本账号。
-	if private || event.MentionsBot() || event.AdapterAtMe() ||
-		isAtBot(content, cfg, b.allowNicknameFallback(ws, cfg.BotNickname)) {
-		// 把消费循环的 ctx 传下去：一次"消息 → 路由 → 大模型 → 工具调用"
-		// 因此成为同一条链路（trace span 能串起来），关机也能取消在途调用。
-		ws.Router.RouteMessage(ctx, content, event, chatID)
-		return
-	}
-
-	// 没被点名：交给主动插话链路，由大模型裁决要不要接话。
-	// 门控、冷却、串行 worker 全在 Router 内，功能关闭时这里是空操作。
-	ws.Router.TryProactive(ctx, event, chatID, content)
 }
 
 // allowNicknameFallback 昵称兜底只在昵称唯一归属一个工作空间时可信。
-// 两个账号用同一个昵称时，"@昵称"无法区分是谁，只能用稳定 ID 判断。
 func (b *Bot) allowNicknameFallback(ws *workspace.Workspace, nickname string) bool {
 	if nickname == "" {
 		return false
@@ -168,8 +151,6 @@ func (b *Bot) allowNicknameFallback(ws *workspace.Workspace, nickname string) bo
 }
 
 // eventTime 优先使用平台事件时间；缺失时退回本地时钟。
-// 用平台时间而不是 time.Now()：缓存排序与延迟指标要反映消息真正发出的时刻，
-// 否则一次重连补推会让一堆旧消息看起来"刚刚发生"。
 func eventTime(event onebot.Event) int64 {
 	if event.Time > 0 {
 		return int64(event.Time)
@@ -177,12 +158,7 @@ func eventTime(event onebot.Event) int64 {
 	return time.Now().Unix()
 }
 
-// isAtBot 检查是否 @ 机器人。标准 mention 由调用方先用 event.MentionsBot() 判定，
-// 这里只处理两类兜底：
-//   - 适配器没有产出 mention 段，只把 @ 写进了文本（渲染成「@昵称」）；
-//   - 用户手打的 "@昵称" 文本。
-//
-// allowNickname 由调用方按"昵称是否唯一归属"给出：同名账号下 @ 无法区分是谁。
+// isAtBot 检查是否 @ 机器人（mention 段已由调用方先判）。
 func isAtBot(content string, cfg *config.Config, allowNickname bool) bool {
 	if allowNickname && cfg.BotNickname != "" && strings.HasPrefix(content, "@"+cfg.BotNickname) {
 		return true

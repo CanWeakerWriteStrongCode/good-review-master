@@ -182,12 +182,22 @@ func (c *Client) GetGroupMemberInfo(groupID, userID string) (*MemberInfo, error)
 
 // SendGroupMessage 发送纯文本群消息。
 func (c *Client) SendGroupMessage(groupID, content string) {
-	c.SendGroupMessageSegments(groupID, []Segment{TextSegment(content)})
+	_ = c.SendGroupMessageE(groupID, content)
+}
+
+// SendGroupMessageE 发送纯文本群消息并返回错误。
+func (c *Client) SendGroupMessageE(groupID, content string) error {
+	return c.SendGroupMessageSegmentsE(groupID, []Segment{TextSegment(content)})
 }
 
 // SendGroupReply 发送「引用 + @ + 文本」的群消息。
-// replyID 是触发消息的 message_id，插件据此做 QQ 被动回复；为空时退化为普通文本。
 func (c *Client) SendGroupReply(groupID, replyID, atUser, content string) {
+	_ = c.SendGroupReplyE(groupID, replyID, atUser, content)
+}
+
+// SendGroupReplyE 发送「引用 + @ + 文本」的群消息并返回错误。
+// replyID 是触发消息的 message_id，插件据此做 QQ 被动回复；为空时退化为普通文本。
+func (c *Client) SendGroupReplyE(groupID, replyID, atUser, content string) error {
 	segments := make([]Segment, 0, 3)
 	if replyID != "" {
 		segments = append(segments, ReplySegment(replyID))
@@ -197,42 +207,74 @@ func (c *Client) SendGroupReply(groupID, replyID, atUser, content string) {
 		content = " " + content
 	}
 	segments = append(segments, TextSegment(content))
-	c.SendGroupMessageSegments(groupID, segments)
+	return c.SendGroupMessageSegmentsE(groupID, segments)
 }
 
 // SendGroupMessageSegments 发送结构化群消息。失败只记日志，不阻塞业务。
 func (c *Client) SendGroupMessageSegments(groupID string, segments []Segment) {
-	c.sendMessage(map[string]any{"detail_type": "group", "group_id": groupID}, "group", groupID, segments)
+	_ = c.SendGroupMessageSegmentsE(groupID, segments)
+}
+
+// SendGroupMessageSegmentsE 发送结构化群消息并返回错误。
+func (c *Client) SendGroupMessageSegmentsE(groupID string, segments []Segment) error {
+	return c.sendMessageE(map[string]any{"detail_type": "group", "group_id": groupID}, "group", groupID, segments)
 }
 
 // SendPrivateReply 发送私聊文本（OneBot 12 detail_type=private）。
-// 私聊没有引用/@ 语义：C2C 的被动回复由实现端自己处理，这里只发正文。
 func (c *Client) SendPrivateReply(userID, content string) {
-	c.sendMessage(map[string]any{"detail_type": "private", "user_id": userID},
+	_ = c.SendPrivateReplyE(userID, content)
+}
+
+// SendPrivateReplyE 发送私聊文本并返回错误。私聊没有引用/@ 语义。
+func (c *Client) SendPrivateReplyE(userID, content string) error {
+	return c.sendMessageE(map[string]any{"detail_type": "private", "user_id": userID},
 		"user", userID, []Segment{TextSegment(content)})
 }
 
 // sendMessage 是两种会话共用的 send_message 实现：只差 detail_type 与目标字段。
 // targetKey 同时用作日志字段名（group / user），保留原有日志可 grep 性。
 func (c *Client) sendMessage(params map[string]any, targetKey, target string, segments []Segment) {
+	_ = c.sendMessageE(params, targetKey, target, segments)
+}
+
+func (c *Client) sendMessageE(params map[string]any, targetKey, target string, segments []Segment) error {
 	if c == nil || c.base == "" {
-		logutil.Error("发送消息失败：该账号没有配置出站地址", targetKey, target)
-		return
+		err := fmt.Errorf("该账号没有配置出站地址")
+		logutil.Error("发送消息失败："+err.Error(), targetKey, target)
+		return err
 	}
 	params["message"] = segments
 	payload, err := json.Marshal(params)
 	if err != nil {
 		logutil.Error("send_message 请求序列化失败", "err", err, targetKey, target)
-		return
+		return err
 	}
 	logutil.Debug("调用 OneBot API", "action", "send_message", targetKey, target,
 		"segments", len(segments), "types", segmentTypes(segments))
 	if _, err := call[struct{}](c, "send_message", params); err != nil {
 		logutil.Error("send_message 被平台拒绝", "err", err, targetKey, target, "request", string(payload))
-		return
+		return err
 	}
 	logutil.Info("send_message 成功", targetKey, target, "segments", len(segments), "request", string(payload))
+	return nil
 }
+
+// SendError 是动作请求的错误。Uncertain=true 表示请求可能已经到达实现端
+// （超时/连接中断），发送台账按“已发但未确认成功”记录，不盲目重发。
+type SendError struct {
+	Action    string
+	Uncertain bool
+	Err       error
+}
+
+func (e *SendError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Action + " 失败: " + e.Err.Error()
+}
+
+func (e *SendError) Unwrap() error { return e.Err }
 
 // segmentTypes 返回消息段类型列表，仅用于日志排查。
 func segmentTypes(segments []Segment) []string {
@@ -279,13 +321,14 @@ func call[T any](c *Client, action string, params any) (*T, error) {
 		SetResult(&result).
 		Post(c.base + "/")
 	if err != nil {
-		return nil, fmt.Errorf("%s 请求失败: %w", action, err)
+		// 网络错误/超时：请求可能已经到达实现端，结果不确定。
+		return nil, &SendError{Action: action, Uncertain: true, Err: err}
 	}
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("%s HTTP %d: %s", action, resp.StatusCode(), resp.Body())
+		return nil, &SendError{Action: action, Err: fmt.Errorf("HTTP %d: %s", resp.StatusCode(), resp.Body())}
 	}
 	if err := result.err(action); err != nil {
-		return nil, err
+		return nil, &SendError{Action: action, Err: err}
 	}
 	return &result.Data, nil
 }

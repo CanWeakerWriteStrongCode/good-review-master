@@ -1,7 +1,7 @@
 import type { FullConfig } from '@playwright/test'
 
 // 工作空间是收到第一条事件才开通的，而整套用例都依赖 /api/debug/* 指向唯一工作空间。
-// 这里在 webServer 就绪后推一条 OB12 群消息，把 qq_1906xxxx 建出来。
+// 这里在 webServer 就绪后推一条 OB12 群消息，把 qq_official_bot_1906xxxx 建出来。
 export default async function globalSetup(_config: FullConfig): Promise<void> {
   const body = JSON.stringify({
     id: 'e2e-warmup',
@@ -10,6 +10,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
     detail_type: 'group',
     sub_type: 'normal',
     self: { platform: 'qq', user_id: 'unknown_selfid' },
+    account_kind: 'official_bot',
     message_id: 'e2e-warmup',
     message: [{ type: 'text', data: { text: 'e2e warmup' } }],
     alt_message: 'e2e warmup',

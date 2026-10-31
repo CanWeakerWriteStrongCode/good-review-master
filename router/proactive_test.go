@@ -2,7 +2,10 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,7 +195,14 @@ func newProactiveTestRouter(t *testing.T, cfg *config.Config) (*Router, *testuti
 	}
 
 	fake := testutil.NewFakeLLM()
-	instance := NewRouter(staticSnapshot(cfg), promptCfg, fake, onebot.NewClient("", nil, ""), nil, context.Background())
+	// 出站用一个永远成功的假实现端：否则“发送失败”会让回复不进入历史，
+	// 与这些用例要验证的“生成/排版”行为无关。
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "retcode": 0, "data": map[string]any{}})
+	}))
+	t.Cleanup(server.Close)
+	instance := NewRouter(staticSnapshot(cfg), promptCfg, fake, onebot.NewClient(server.URL, nil, "").For("test-ws"), nil, context.Background())
 	instance.SetWorkspace("test-ws")
 	return instance, fake
 }

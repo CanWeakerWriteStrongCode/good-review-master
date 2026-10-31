@@ -35,12 +35,18 @@ type Sender struct {
 // Account 不是协议字段：它来自上报路径 /im/event/{account}，用于和 self.platform
 // 拼出工作空间 ID。事件体本身没有任何私有路由字段。
 type Event struct {
-	ID         string    `json:"id"`
-	Time       float64   `json:"time"`
-	Type       string    `json:"type"`
-	DetailType string    `json:"detail_type"`
-	SubType    string    `json:"sub_type"`
-	Self       Self      `json:"self"`
+	ID         string  `json:"id"`
+	Time       float64 `json:"time"`
+	Type       string  `json:"type"`
+	DetailType string  `json:"detail_type"`
+	SubType    string  `json:"sub_type"`
+	Self       Self    `json:"self"`
+
+	// AccountKind 是平台扩展（OB12 顶层 account_kind）：区分同一个 IM 下的
+	// 官方机器人 / 个人号 / App。平台名只表示 IM 软件，不承载账号模式；
+	// 工作空间键是 (platform, account_kind, account) 三元组。
+	AccountKind string `json:"account_kind"`
+
 	MessageID  string    `json:"message_id"`
 	Message    []Segment `json:"message"`
 	AltMessage string    `json:"alt_message"`
@@ -68,6 +74,12 @@ func (e Event) Platform() string {
 		return e.Self.Platform
 	}
 	return "qq"
+}
+
+// Kind 返回账号类型扩展字段（official_bot / personal_account / app）。
+// 空串表示实现端没有上报；由工作空间层决定能否匹配已有档案或拒绝新开通。
+func (e Event) Kind() string {
+	return strings.TrimSpace(e.AccountKind)
 }
 
 // IsSelfPlaceholder 判断 self.user_id 是否不可用于 @ 比较。

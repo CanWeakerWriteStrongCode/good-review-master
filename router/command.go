@@ -143,8 +143,8 @@ type Router struct {
 	// 机器人自己的回复也走这里；nil 时只写内存缓存，重启后丢失。
 	saveMessage func(cache.Message)
 
-	// imageNotes 全局图库（image_notes）读写；nil 时不做入库描述，保持纯工具看图。
-	imageNotes ImageNoteStore
+	// ledger 发送台账：动作编号为键，重试时跳过已发动作。
+	ledger SendLedger
 }
 
 // PersonaStore 持久化群当前人格。由工作空间的 state.Store 实现。
@@ -165,6 +165,7 @@ func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient
 		store:        cache.DefaultStore(),
 		starter:      async.New(shutdownCtx),
 		groupPersona: make(map[string]*groupPersonaBinding),
+		ledger:       NewMemoryLedger(),
 	}
 	r.handlerMap = map[string]HandlerFunc{
 		"chat_review": r.chatReview,
@@ -187,6 +188,13 @@ func (r *Router) SetWorkspace(id string) { r.workspace = id }
 // SetMessageSink 注入消息持久化入口（工作空间的 State.SaveMessage）：
 // 机器人回复也要落库，重启后聊天记录里才还有自己说过的话。
 func (r *Router) SetMessageSink(sink func(cache.Message)) { r.saveMessage = sink }
+
+// SetSendLedger 注入发送台账（state.db 实现）。nil 时保持进程内台账。
+func (r *Router) SetSendLedger(ledger SendLedger) {
+	if ledger != nil {
+		r.ledger = ledger
+	}
+}
 
 // storeOr 返回注入的 Store；未注入时退回进程级默认 Store。
 func (r *Router) cacheStore() *cache.Store {
@@ -272,6 +280,16 @@ func (r *Router) routesSnapshot() []Command {
 // ctx 由调用方传入（轮询循环的应用 ctx，或 debug trigger 的 HTTP 请求 ctx），
 // 一路传到处理器里的大模型与 MCP 调用——这条链是链路追踪的主干。
 func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.Event, groupID string) {
+	r.routeMessage(ctx, content, event, groupID, nil, false)
+}
+
+// RouteMessageNow 是 Stage 3 的同步入口：在当前 goroutine 里完成选窗/生成/发送，
+// 并只使用调用方冻结的窗口。内部指令仍走原 handler（少数内部指令自带异步）。
+func (r *Router) RouteMessageNow(ctx context.Context, content string, event onebot.Event, groupID string, snapshot []cache.Message) {
+	r.routeMessage(ctx, content, event, groupID, snapshot, true)
+}
+
+func (r *Router) routeMessage(ctx context.Context, content string, event onebot.Event, groupID string, snapshot []cache.Message, sync bool) {
 	// 路由本身也记一个 span：它是"一条群消息"与"一次大模型调用"之间的那一跳，
 	// 少了它，链路图上就看不出是哪条消息触发的、命中了哪个关键字。
 	ctx, span := telemetry.StartSpan(ctx, "router.route",
@@ -302,7 +320,12 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	if route == nil {
 		// 未命中：走普通问答（replyDefault 会视群人格再补一段）
 		// 焦点提示由 replyDefault 在人格块之后追加，保证它是最后一条指令。
-		r.replyDefault(ctx, text, event, groupID, ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement(), ""))
+		systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement(), "")
+		if sync {
+			r.replyDefaultNow(ctx, text, event, groupID, systemPrompt, snapshot)
+		} else {
+			r.replyDefault(ctx, text, event, groupID, systemPrompt)
+		}
 		return
 	}
 
@@ -317,6 +340,11 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), persona, r.promptCfg.ReplyRequirement(), r.directFocusPrompt(event))
 	span.SetAttributes(attribute.String("router.keyword", route.Keyword),
 		attribute.String("router.category", route.Category))
+	if sync && route.Category == "chat_review" {
+		logutil.InfoCtx(ctx, "触发锐评", "group", groupID, "user", r.nameOf(groupID, event.UserID), "user_id", event.UserID)
+		r.chatReplyWithSnapshot(ctx, event, groupID, systemPrompt, route.Prompt, true, nil, snapshot, nil)
+		return
+	}
 	route.Handler(ctx, event, groupID, systemPrompt, route.Prompt, r.nameOf(groupID, event.UserID), extra)
 }
 
@@ -573,6 +601,18 @@ func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Eve
 	}
 	systemPrompt += "\n" + r.directFocusPrompt(event)
 	r.chatReview(ctx, event, groupID, systemPrompt, "", r.nameOf(groupID, event.UserID), text)
+}
+
+// replyDefaultNow 是 replyDefault 的同步版本，供 Stage 3 使用。
+func (r *Router) replyDefaultNow(ctx context.Context, text string, event onebot.Event, groupID, systemPrompt string, snapshot []cache.Message) {
+	if b, ok := r.getGroupPersona(groupID); ok {
+		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
+	} else {
+		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
+	}
+	systemPrompt += "\n" + r.directFocusPrompt(event)
+	logutil.InfoCtx(ctx, "触发锐评", "group", groupID, "user", r.nameOf(groupID, event.UserID), "user_id", event.UserID)
+	r.chatReplyWithSnapshot(ctx, event, groupID, systemPrompt, "", true, nil, snapshot, nil)
 }
 
 // directFocusPrompt 直答的焦点提示：群里被点名（@ 或叫昵称）只回最后一条点名消息；

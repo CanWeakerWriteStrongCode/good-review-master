@@ -2,13 +2,15 @@
 
 状态：已实现（2026-10-28，P0/P1）。配套：[im-protocol-standardization.md](im-protocol-standardization.md)。
 
-**部署约束**：只走 QQ 官方机器人（NapCat 个人号已被封两次），没有数字 QQ 号；
-账号键用 AppID，不用 QQ 号。
+**部署约束**：当前只走 QQ 官方机器人（NapCat 个人号已被封两次），没有数字 QQ 号；
+账号键用 AppID，不用 QQ 号。键里仍预留账号类型，未来接入个人号时不会和官方号混在一起。
 
 **本版变更（相对 OneBot 11 稿）**：
 
 - 取消 `receiver_bot_account_id`：账号来自传输端点，平台来自标准字段 `self.platform`。
-- 工作空间 ID 从 `{appid}` 改为 `{platform}_{account}`，如 `qq_1906xxxx`。
+- 工作空间 ID 从 `{appid}` 改为 `{platform}_{account_kind}_{account}`，如
+  `qq_official_bot_1906xxxx`。`account_kind` 来自 OB12 顶层扩展，用来区分
+  官方机器人 / 个人号 / App，避免同一个平台、同一个账号串在不同模式下撞车。
 - 名单匹配完整工作空间 ID，而不是单独的 AppID。
 - 未接管时的 HTTP 响应从「200 ignored」改为 4xx（OB12 只认 204/200 为成功）。
 - 新增单个 SQLite 档案库（`state.db`），所有表带 `workspace_id` 列区分机器人账号，
@@ -28,37 +30,59 @@
 
 ## 3. 工作空间键
 
+工作空间的逻辑键是三元组：**平台 + 账号类型 + 账号**。只拼平台和账号不够：
+QQ 官方用 AppID、个人 QQ 用 uin，两个字符串可能撞车；一旦撞上，消息、缓存、人格、
+成员身份会串到同一个工作空间。
+
 | 来源 | 值 | 说明 |
 |---|---|---|
-| 路径 `/im/event/{account}` | `account` | 每个机器人实例一个值；AstrBot 用 AppID |
-| 事件 `self.platform` | 如 `qq` | OB12 标准字段，决定平台命名空间 |
-| 组合 | `{platform}_{account}` | **工作空间 ID（数据库列 / 面板 URL）** |
+| 事件 `self.platform` | 如 `qq` | OB12 标准字段；转换层先归一（`aiocqhttp` → `qq`） |
+| 事件 `account_kind` | `official_bot` / `personal_account` / `app` | OB12 顶层扩展；首次开通必填 |
+| 路径 `/im/event/{account}` | `1906xxxx` | 每个机器人实例一个值；官方用 AppID，个人号用 uin |
+| 组合 | `{platform}_{account_kind}_{account}` | **工作空间 ID（数据库列 / 面板 URL / 缓存键）** |
 
-- ID 约束 `^[A-Za-z0-9_-]{1,64}$`：平台名里的点号替换成下划线（`zulip.my-instance` → `zulip_my-instance`）。
+- ID 约束放宽到 `^[A-Za-z0-9_-]{1,128}$`：平台名里的点号替换成下划线
+  （`zulip.my-instance` → `zulip_my-instance`）；账号类型用固定英文枚举，不自由填写。
+- **三元组才是键，ID 只是可读的派生值**：数据库画像同时存 `platform`、
+  `account_kind`、`account` 三列，并对 `(platform, account_kind, account)` 建唯一索引；
+  代码不解析 ID 反推这三段。这样即使平台名归一后出现字符串碰撞，也能被唯一键挡住。
+- **账号类型在首次开通时必须知道，并且不再变化**：类型变了就是另一个账号/另一套凭证，
+  应该开新工作空间。不要用 `unknown` 兜底后再“纠正”，否则工作空间 ID 会中途变化、
+  历史被拆成两段。
+- 账号类型缺失时：已有工作空间按 `(platform, account)` 匹配并沿用（兼容旧桥接）；
+  新账号拒绝自动开通，入口返回 404（不接管），日志写清楚“请在桥接端补
+  `account_kind`”。不提供猜测兜底。
 - `account` 不合法（含 `/`、空格等）时返回 400，并写清楚怎么改：
   检查插件的 `go_event_url` / 平台实例的 AppID，或 sidecar 的账号配置。
 - `self.user_id` 不参与工作空间键；它只用于 @ 判定（见协议文档 3.2）。
 
 例：
 
-| 平台 | account | 工作空间 ID | 档案 |
+| 平台 | 账号类型 | account | 工作空间 ID |
 |---|---|---|---|
-| `qq`（官方） | `1906xxxx` | `qq_1906xxxx` | `state.db` 中 `workspace_id = qq_1906xxxx` |
-| `qq`（Koishi/Satori） | `123456789` | `qq_123456789` | `state.db` 中 `workspace_id = qq_123456789` |
-| `telegram` | `foobar` | `telegram_foobar` | `state.db` 中 `workspace_id = telegram_foobar` |
+| `qq` | `official_bot` | `1906xxxx`（AppID） | `qq_official_bot_1906xxxx` |
+| `qq` | `personal_account` | `123456789`（uin） | `qq_personal_account_123456789` |
+| `telegram` | `app` | `foobar` | `telegram_app_foobar` |
+
+**迁移**：开发阶段直接重建 `state.db`，配置名单和 `im.accounts[].id` 同步改成新 ID。
+正式上线前如需保留旧数据，按“当前部署只有官方机器人”的事实，把旧 ID
+`qq_<appid>` 一次性改写成 `qq_official_bot_<appid>`，所有带 `workspace_id` 的表一起改；
+迁移脚本用旧库副本验证后再执行。
 
 ## 4. 生命周期
 
 ```
-POST /im/event/{account}  + 事件 self.platform
+POST /im/event/{account} + 事件 self.platform + account_kind
    │
-   ├─ 拼出 id = platform_account
+   ├─ 拼出 id = platform_account_kind_account
    │
    ├─ 已加载？──────────是──▶ 直接投递
    │
+   ├─ 账号类型缺失且无已有档案？──是──▶ 404（不猜；请在桥接端补 account_kind）
+   │
    ├─ 名单允许？────────否──▶ 404（推送失败，插件不接管，AstrBot 自己兜底）
    │
-   └─ 是 ──▶ 建 Router + 写 meta(platform/account) + 注册 ──▶ 204
+   └─ 是 ──▶ 建 Router + 写画像(platform/account_kind/account) + 注册 ──▶ 204
 ```
 
 - 同步部分只做本地操作：取 DB Scope、建 Router。`AcceptEvent` 必须快速返回。
@@ -67,8 +91,8 @@ POST /im/event/{account}  + 事件 self.platform
 
 ## 5. 启动时恢复已有工作空间
 
-启动时从 `state.db` 的 `meta` 表读出 `(workspace_id, platform, account)`，逐个重建
-Router 并挂上自己的 `Scope`。原因：
+启动时从 `state.db` 的画像表读出 `(workspace_id, platform, account_kind, account)`，
+逐个重建 Router 并挂上自己的 `Scope`。原因：
 
 - 消息、锚点、人格、身份都在库里，重启后必须能继续用。
 - 面板能直接看到全部已开通的工作空间，而不是等消息来了才出现。
@@ -84,13 +108,13 @@ im:
   api_base: "http://127.0.0.1:6199"    # 所有账号默认的出站地址；token 在 secret.yaml 的 im_token
   # 可选：多套实现端时按账号覆盖；不写 api_base 表示沿用全局
   # accounts:
-  #   - id: "qq_1904xxxx"
+  #   - id: "qq_official_bot_1904xxxx"
   #     api_base: "http://127.0.0.1:6200"
 
 bot:
-  # 允许自动开通的工作空间 ID；"*" 表示全部。
+  # 允许自动开通的工作空间 ID（platform_account_kind_account）；"*" 表示全部。
   # 空列表 = 不允许自动开通（安全默认，启动时打一条提示）。
-  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
+  allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
 ```
 
 - 精确匹配工作空间 ID，不做前缀/昵称/账号部分匹配。
@@ -205,12 +229,13 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 每个工作空间通过 `Store.Scope(workspaceID)` 拿到一个视图，所有读写自动带上
 `workspace_id`；同一个群、同一个 `message_id` 在不同账号下互不冲突。
 
-- **写路径**：内存缓存仍是读路径；入站消息先入内存，再异步批量写库（有界 channel，
-  满了丢 DB 写并记 warn，不影响回复）。锚点/人格/身份变更即时写。
+- **写路径**：内存缓存仍是读路径；入站消息在 Stage 3 内先写库、再更新内存缓存（同步）。
+  写库失败记 error 并继续走缓存（降级），不影响本轮回复；锚点/人格/身份变更同样同步写。
+  「异步」只用于 `get_self_info` / 成员资料这类网络补全，不用于消息落盘。
 - **保留策略**：**不自动清理**，消息全部留在库里；内存环形缓冲仍按 `runtime.max_cache_msg`
   封顶，两者互不影响（DB 是档案，内存是工作窗口）。
 - **启动**：打开库 → `PRAGMA user_version` 做幂等建表/迁移 → 从 `meta` 读出
-  `(workspace_id, platform, account)` 恢复工作空间（不依赖目录或第一条事件）→ 每个
+  `(workspace_id, platform, account_kind, account)` 恢复工作空间（不依赖目录或第一条事件）→ 每个
   工作空间把各群最近 `max_cache_msg` 条读回内存 → 恢复锚点、身份、人格关键字
   （关键字在配置里找不到时降级为默认人格并告警）。同时统计一次「消息总条数 +
   库文件大小（含 `-wal`）」并按 `workspace_id` 打印各账号条数；超过
@@ -227,7 +252,7 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 |---|---|---|---|
 | S1 | 驱动 | `modernc.org/sqlite`（纯 Go） | `mattn/go-sqlite3`（CGO） |
 | S2 | 库的粒度 | 全局单库 + `workspace_id` 列（已采用） | 每工作空间一个 `state.db` |
-| S3 | 写盘方式 | 异步批量写，失败降级 | 同步写（阻塞入站） |
+| S3 | 写盘方式 | 同步写（Stage 3 内完成），失败降级为纯内存 | 异步批量写 |
 | S4 | 清理策略 | 不自动删；启动打印条数/大小，超阈值 warn | 按条数或天数自动清理 |
 | S5 | 群人格 | 存源关键字，启动重新绑定 | 不持久化（现状） |
 
@@ -235,7 +260,7 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 
 | 编号 | 决策 | 推荐默认 | 备选 |
 |---|---|---|---|
-| D1 | 工作空间键 | `{self.platform}_{路径 account}`；不合法拒绝 | 只用 account |
+| D1 | 工作空间键 | `{platform}_{account_kind}_{路径 account}`；账号类型缺失拒绝新开通 | 只用 platform+account |
 | D2 | 创建时机 | 第一条事件到达时同步创建（仅本地 IO），昵称异步 | 启动预创建 |
 | D3 | 允许名单 | `bot.allow_workspace_accounts` 存完整 ID，空 = 不创建，`*` = 全部 | 只存 account |
 | D4 | 已有工作空间 | 启动从 `state.db` 的 `meta` 全部恢复，名单只管新建 | 纯懒加载 |
@@ -251,30 +276,38 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
   `allow_self_ids`、`astrbot.http_api`、`astrbot.access_token`；新增
   `im.api_base`、可选的 `im.accounts[{id, api_base}]`、
   `AllowWorkspaceAccounts []string`（完整 ID）；token 移到 `secret.yaml` 的 `im_token`。
-- `workspace.Manager`：新增 `byID` 索引、`ResolveOrCreate(platform, account)`、互斥锁、
-  启动扫描；删除 `byPlatform` / `bySelfID` / `byNickname` / `single`。
+- `workspace.Manager`：新增 `byID` 索引、`ResolveOrCreate(platform, accountKind, account)`、
+  互斥锁、启动扫描；删除 `byPlatform` / `bySelfID` / `byNickname` / `single`。
+  画像同时保存 `platform`、`account_kind`、`account`，并对三者建唯一索引。
 - `onebot.Event`：换成 OB12 结构（`Self{Platform,UserID}`、字符串 `MessageID`、
-  `AltMessage`）；不新增任何私有路由字段。
-- `im`：路径参数 `account` + 事件 `self.platform` 拼 ID；未知/未授权账号返回 4xx；
-  合法事件返回 204。
+  `AltMessage`），新增顶层 `account_kind` 字段；平台名先归一（`aiocqhttp` → `qq`）；
+  不新增任何私有路由字段。
+- `im`：路径参数 `account` + 事件 `self.platform` + `account_kind` 拼 ID；
+  未知/未授权账号返回 4xx；合法事件返回 204。`account_kind` 缺失时，
+  已有工作空间按 `(platform, account)` 匹配并沿用；新工作空间拒绝开通（404），
+  日志提示在桥接端补字段。
 - AstrBot 插件：`go_event_url` 模板 `.../im/event`；`self.platform` 取平台实例的
-  `meta().name`（`qq_official` → `qq`，`wecom` / `lark` 等原样）；`self.user_id`
+  `meta().name`（`qq_official` → `qq`，`wecom` / `lark` 等原样）；`account_kind`
+  按适配器类型填 `official_bot` / `personal_account` / `app`；`self.user_id`
   按群学习或发哨兵；实现 OB12 动作服务；删除 `platform_id` / `mentioned` /
   `display_message`。账号优先取事件所属平台实例的 AppID（`platform.appid`），
   这样一份插件配置能同时服务多个 QQ 官方账号；`account` 仅作其它平台的兜底。
 - 提示词监听：只监听根目录固定的 `prompt_system.yaml` + `prompt_custom.yaml`；
   提示词变化后重读一次并重建每个工作空间的 Router。
 - 面板/调试：`App.Router`、`App.Prompt` 不再保证非空；调试接口按 `workspace_id` 解析。
-- 指标：`workspace_resolve_total{result=created|loaded|denied|invalid}`。
+- 指标：`workspace_resolve_total{result=created|loaded|denied|invalid|missing_kind}`。
 - 持久化：新增 `workspace/state` 包，封装单库 `state.db` 的打开、迁移、按
-  `workspace_id` 隔离的视图、异步写队列与启动恢复；`cache.Message.MessageID`、
+  `workspace_id` 隔离的视图、同步写与启动恢复；`cache.Message.MessageID`、
   锚点 ID 改成 string；`go.mod` 新增 `modernc.org/sqlite`。
 - 人格：`router` 需要暴露「当前群人格关键字」的读写，用于持久化与启动重绑。
 
 ## 10. 迁移
 
 1. 从 `config.yaml` 删除 `bot.workspaces`；在 `bot.allow_workspace_accounts` 里填
-   `qq_<A 的 AppID>`、`qq_<B 的 AppID>`。
+   `qq_official_bot_<A 的 AppID>`、`qq_official_bot_<B 的 AppID>`。
+   开发阶段直接重建 `state.db`；正式环境需把旧 `qq_<AppID>` 一次性改写成
+   `qq_official_bot_<AppID>`（所有带 `workspace_id` 的表 + 画像表），并在插件里开始上报
+   `account_kind`。
 2. 删除旧目录 `workspaces/haoping`、`workspaces/bushi`：工作空间不再使用目录或
    `prompt_system.yaml` / `prompt_custom.yaml` 私有副本；提示词统一用根目录那份。
    删除前先备份目录里的自定义指令，需要保留的内容手工合并进根 `prompt_custom.yaml`。
@@ -294,11 +327,13 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
   创建时打一条 info 日志（平台、account），便于发现。
 - **卡片基数**：工作空间 ID 会进指标/面板，数量由名单与档案约束；
   名单用 `*` 时建议同时在网关层限制来源。
-- **哨兵 `self.user_id` 不影响归属**：路由用 `{platform}_{account}`，`self.user_id` 只用于 @ 判定；
+- **哨兵 `self.user_id` 不影响归属**：路由用 `{platform}_{account_kind}_{account}`，
+  `self.user_id` 只用于 @ 判定；
   哨兵且实现端没有 `qq.at_me` 标记时只入缓存、不触发回复。哨兵本身多是群内权限
   （「查看群所有信息」）缺失导致 `mentions` 不下发，授权后恢复真实 openid。
-- **`account` 必须稳定**：同一账号跨群、跨重启必须得到同一个值；不要用群内 openid
-  或机器人昵称，优先 AppID。它变了会导致同一账号被开通成两个工作空间。
+- **`account` 与 `account_kind` 必须稳定**：同一账号跨群、跨重启必须得到同一组值；
+  不要用群内 openid 或机器人昵称，优先 AppID。任一值变了都会把同一账号开通成
+  两个工作空间，历史、缓存和成员身份会断开。
 - **平台名变化**：`self.platform` 从 `qq` 改成别的值会变成另一个工作空间；
   适配器要固定映射，不要透传可能变化的适配器名（`qq_official` 也不合法）。
 - **AppID 暴露**：AppID 会进 URL、日志、指标和工作空间 ID。它不是密钥；不想暴露就统一用短哈希，
@@ -329,7 +364,7 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 - 持久化：
   - 单测：建表幂等（重复启动不报错）；DB 不删历史（插入超过 `max_cache_msg` 后库里仍全在，
     内存只留最近 N 条）；启动统计能拿到条数与文件大小、超阈值走 warn；启动只把尾部读回内存；
-    异步队列满时不阻塞入站；DB 打不开/写失败时降级为纯内存且不 panic。
+    写库失败时不阻塞消息链路（降级继续用内存缓存）；DB 打不开时降级为纯内存且不 panic。
   - E2E：发 3 条消息 → 重启 Go → 同群缓存仍有 3 条、锚点与人格关键字恢复；
     两个账号向 `state.db` 写同一个群、同一个 `message_id` 时互不覆盖；
     清空允许名单后重启，档案里的工作空间仍按 `workspace_id` 恢复且不报错。

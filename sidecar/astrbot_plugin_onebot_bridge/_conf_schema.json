@@ -9,6 +9,11 @@
     "type": "string",
     "default": ""
   },
+  "account_kind": {
+    "description": "账号类型兜底值（可选）：official_bot / personal_account / app；通常自动识别，读不到时才填。留空且无法识别时 Go 会拒绝新工作空间",
+    "type": "string",
+    "default": ""
+  },
   "platform_id": {
     "description": "AstrBot 平台实例 ID（可选）：动作请求没有小组件时用它定位账号；多账号部署建议填",
     "type": "string",

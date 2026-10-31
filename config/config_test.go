@@ -26,8 +26,8 @@ func TestHasGroup(t *testing.T) {
 }
 
 func TestHasWorkspaceAccount(t *testing.T) {
-	explicit := &Config{WorkspaceAccounts: []string{"qq_1906xxxx", "qq_1904xxxx"}}
-	if !explicit.HasWorkspaceAccount("qq_1906xxxx") || !explicit.HasWorkspaceAccount("qq_1904xxxx") {
+	explicit := &Config{WorkspaceAccounts: []string{"qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"}}
+	if !explicit.HasWorkspaceAccount("qq_official_bot_1906xxxx") || !explicit.HasWorkspaceAccount("qq_official_bot_1904xxxx") {
 		t.Fatal("explicit workspace accounts should match")
 	}
 	if explicit.HasWorkspaceAccount("qq_9999") {
@@ -43,7 +43,7 @@ func TestHasWorkspaceAccount(t *testing.T) {
 	}
 
 	empty := &Config{}
-	if empty.HasWorkspaceAccount("qq_1906xxxx") || empty.AllowsAllWorkspaceAccounts() {
+	if empty.HasWorkspaceAccount("qq_official_bot_1906xxxx") || empty.AllowsAllWorkspaceAccounts() {
 		t.Fatal("empty list must allow nothing")
 	}
 }

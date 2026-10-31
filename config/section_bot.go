@@ -49,10 +49,10 @@ func (g groupList) String() string { return string(g) }
 // workspaceIDList 是 allow_workspace_accounts 的解码类型，与 groupList 同理：
 // 同时接受逗号分隔字符串和 YAML 列表，两种写法归一成同一个切片。
 //
-//	allow_workspace_accounts: "qq_1906xxxx,qq_1904xxxx"
+//	allow_workspace_accounts: "qq_official_bot_1906xxxx,qq_official_bot_1904xxxx"
 //	allow_workspace_accounts:
-//	  - "qq_1906xxxx"
-//	  - "qq_1904xxxx"
+//	  - "qq_official_bot_1906xxxx"
+//	  - "qq_official_bot_1904xxxx"
 type workspaceIDList []string
 
 func (l *workspaceIDList) UnmarshalYAML(node *yaml.Node) error {
@@ -84,7 +84,7 @@ type botSection struct {
 	// 填 "*" 表示允许所有群；空串/空列表表示不响应任何群。
 	AllowGroups groupList `yaml:"allow_groups"`
 
-	// AllowWorkspaceAccounts 允许**自动开通**的工作空间 ID（platform_account），
+	// AllowWorkspaceAccounts 允许**自动开通**的工作空间 ID（platform_account_kind_account），
 	// 填 "*" 表示全部；空列表表示一个都不自动开通（安全默认）。
 	// 支持逗号分隔字符串与 YAML 列表两种写法（见 workspaceIDList）。
 	//
@@ -164,7 +164,7 @@ func (s *botSection) Validate() error {
 			return fmt.Errorf("bot.allow_workspace_accounts[%d] 不能为空", i)
 		}
 		if account != "*" && !workspaceIDPattern.MatchString(account) {
-			return fmt.Errorf("bot.allow_workspace_accounts[%d]=%q 不是合法的工作空间 ID（字母/数字/_/-，最多 64 字符，例如 qq_1906xxxx）", i, account)
+			return fmt.Errorf("bot.allow_workspace_accounts[%d]=%q 不是合法的工作空间 ID（字母/数字/_/-，最多 128 字符，例如 qq_official_bot_1906xxxx）", i, account)
 		}
 		if _, ok := seen[account]; ok {
 			return fmt.Errorf("bot.allow_workspace_accounts 中重复：%s", account)

@@ -72,10 +72,8 @@ type SyncedMessage struct {
     WorkspaceID string
     ChatID      string
     Private     bool
-    Trigger     InboundTrigger // 原始事件的可序列化部分：message_id、user_id、self_id、mention、ref_idx、time
-    Message     cache.Message  // content、reply_to、images、time 等
-    Participants map[string]Participant
-    Group       GroupInfo
+    Event       onebot.Event  // 原始事件：Stage 3 的路由/引用/@ 判定要用
+    Message     cache.Message // content、reply_to、images、time 等
 }
 ```
 
@@ -86,29 +84,23 @@ type SyncedMessage struct {
 ```go
 type EnrichedMessage struct {
     SyncedMessage
-    Assets      []Asset // 每个资产：kind(image/video/file)、sha256、size、url、标签、状态
-    AssetStatus string  // ok | degraded | deferred | failed（deferred=已落库，等后台补标签）
+    ImageIDs    []cache.ImageID   // sha256 + size
+    ImageNotes  []cache.ImageNote // 全局图库里的描述（可能为空）
+    Assets      []Asset           // 每个资产：kind、url、id、标签、状态、本地副本
+    AssetStatus string            // ok | degraded | deferred | failed
 }
 ```
 
+`cache.Message.ImageNotes` 带 `json:"-"`（只在本进程窗口里用），所以要单独放一份才能过缓冲。
+
 Stage 2 完成标签后，把资产结果更新到该消息（消息本体在 Stage 1 已同步入库），再提交窗口缓存并投递到 B3，保证 Agent 看不到“半成品”消息。标签失败时仍然提交，并带 `AssetStatus`。
 
-### 3.3 Stage 3 输入：`AgentTask` 与冻结快照
+### 3.3 Stage 3 输入：`EnrichedMessage` 与冻结快照
+
+Stage 3 的缓冲载荷就是 `EnrichedMessage`（每条消息一个 `Item`），没有单独的 `AgentTask` 结构：批量 `Take` 只用于出队效率，处理器逐条执行。
 
 ```go
-type AgentTask struct {
-    WorkspaceID string
-    ChatID      string
-    Items       []ItemRef // 本批出队的消息；当前逐条执行，以后按批执行
-}
-
-type ItemRef struct {
-    MessageID string // 保留每条消息 ID
-    Mention   bool   // 是否 @ 本账号
-    Proactive bool   // 是否主动接话候选
-    FreezeID  string // 以哪条消息为快照边界（当前=本条 message_id）
-}
-
+// 处理一条消息时在进程内构造，不进入缓冲/消息队列。
 type Snapshot struct {
     Messages     []cache.Message // 已冻结的窗口
     Participants map[string]Participant
@@ -119,9 +111,11 @@ type Snapshot struct {
 }
 ```
 
-快照在 **Agent 出队后、逐条执行前** 冻结：当前每条 `Item` 以自己的消息 ID 为边界从窗口缓存复制；运行期间新到的消息继续进入窗口缓存与队列，但不会改变本次快照。以后按批执行时，才改成整批最后一条为边界。
+快照在 **Agent 出队后、逐条执行前** 冻结：每条消息以自己的 `message_id` 为边界从窗口缓存复制；运行期间新到的消息继续进入窗口缓存与队列，但不会改变本次快照。以后按批执行时，才改成整批最后一条为边界。
 
-出队后先确认 `ItemRef.MessageID` 仍在窗口缓存里：找不到（环形缓冲已淘汰、窗口配置偏小）就放弃这条回复任务，调用 `Alerter.Record` 记录“窗口小了，要调大”，并保存原始事件、窗口首尾、当前配置和完整快照。消息本身早已同步入库，不会因为放弃回复而丢失。这是本项目“极端出错也要记录现场、便于补救”的原则。
+出队后先确认该消息仍在窗口缓存里：找不到（环形缓冲已淘汰、窗口配置偏小）就放弃这条回复任务，写 `alerts` 表并记错误日志“窗口小了，要调大”，同时保存原始事件、窗口首尾与当前配置。消息本身早已同步入库，不会因为放弃回复而丢失。
+
+“只回最后一条点名消息”也在这一层实现：同一会话的主动任务按 latest-wins 覆盖，队列空时才执行最新任务，旧任务直接丢弃。
 
 裁判（是否值得主动接话）**不是独立阶段**，它是 Stage 3 内部的一步：同一条消息先由裁判判定，再由同一个 Agent 执行体决定是否生成回复，共用同一份快照与队列。
 
@@ -138,9 +132,14 @@ type Snapshot struct {
 }
 ```
 
-- 取值：`official_bot` / `personal_account` / `app` / `unknown`；
+- 取值：`official_bot` / `personal_account` / `app`；`unknown` 只用于读取历史档案，不用于新开通；
+- **工作空间键 = `{platform}_{account_kind}_{account}`**：三元组一起决定归属，ID 如
+  `qq_official_bot_1906xxxx`、`qq_personal_account_123456789`。只拼 platform+account
+  不够：官方 AppID 和个人 uin 可能撞号，撞上会让消息、缓存、人格和成员身份串台；
+- 账号类型在首次开通时必须知道，且此后不变；缺失时拒绝新开通，不猜 `unknown`。
+  画像表同时存 `platform` / `account_kind` / `account`，并对三者建唯一索引；代码不解析 ID 反推；
 - **platform 归一**：转换层应把个人 QQ（AstrBot 的 `aiocqhttp`）也映射成 `platform=qq`，用 `account_kind=personal_account` 区分；不要用 `aiocqhttp` 当平台名，否则同一个 IM 会拆成两个平台、workspace ID 和指标都对不上；
-- Go 在首次事件或开通工作空间时把它写入 `workspace_profile.account_kind`；
+- Go 在首次事件或开通工作空间时把它写入 `workspace_profile.account_kind`，并作为工作空间键的一部分；
 - `identity_scheme` 可由它推导（`official_bot` → `qq_openid`，`personal_account` → `qq_uin`），但正式的 `capabilities` / `limits` 建议由转换层通过一次性 `POST /im/profile/{account}` 上报，事件里只带 `account_kind` 作为兜底；
 - 转换层（AstrBot、以后的 Koishi）都填同一个字段，业务层不按平台名或实现名硬编码。
 
@@ -166,7 +165,8 @@ type Buffer interface {
 ```
 
 - `Body` 用 `[]byte` 而不是泛型对象：保证契约天然可序列化，换成 MQ 时不需要改业务代码；聊天消息量下 JSON 开销可忽略。
-- `Key` 统一为 `workspaceID + "|" + chatID`，同一群的顺序由分区键保证。
+- `Key` 统一为 `workspaceID + "|" + chatID`，同一群的顺序由分区键保证；
+  `workspaceID` 本身是 `{platform}_{account_kind}_{account}`，账号类型不同天然分到不同分区。
 - **分区单位是会话，不是工作空间**：一个工作空间（机器人账号）下面有多个群和私聊，每个 `Key` 有自己的有序队列和按需 worker；工作空间只是共享缓存、Router、数据库视图和配置的容器。如果按工作空间只开一个 worker，一个群的大模型调用会把同账号下所有群都堵住。
 - `Take` 是批量语义：**Stage 1 / 2 / 3 的消费者都按批取数**，一次取走当前待处理项，即“从缓存区拿下一批”。
 - `Ack` 现在可以是空操作，但接口保留；MQ 实现用提交位点/可见性超时，配合 `Item.ID` 做幂等。
@@ -220,6 +220,24 @@ B1 取代现在的全局事件 channel：HTTP 入站 `Put`，Stage 1 按 `worksp
 
 配置优先级：内置默认 → `config.yaml` → 全局 `settings` 表（运行时可调）。以后需要时再加“工作空间覆盖 > 全局设置 > 文件 > 默认”。
 
+实际字段名（`config.yaml` 的 `pipeline:` / `assets:` 段，`settings` 表用同名 JSON 键）：
+
+| 旋钮 | 文件键 | 运行时可覆盖 |
+|---|---|---|
+| 各段批量 | `sync_batch` / `asset_batch` / `agent_batch` | 是（仅正数） |
+| 各段凑批等待 | `sync_linger_ms` / `asset_linger_ms` / `agent_linger_ms` | 是 |
+| 各段并发 | `sync_concurrency` / `asset_concurrency` / `agent_concurrency` | 是（仅正数） |
+| 各段重试 | `sync_retries` / `asset_retries` / `agent_retries` | 是 |
+| 单会话容量 | `per_chat_capacity` | 否（结构性参数，重启生效） |
+| 全局容量 | `global_capacity` | 否（结构性参数，重启生效） |
+| 空闲回收 | `idle_ttl_sec` | 是 |
+| 关停排空 | `drain_timeout_sec` | 是 |
+| 补标签 | `assets.backfill_*`、`job_retention_days` | 是 |
+| 消息描述预算 | `assets.message_budget_sec` | 是 |
+| 描述并发 | `assets.tag_concurrency` | 是（仅正数） |
+| 原图副本 | `defer_cache_dir` / `defer_cache_max_bytes` / `defer_cache_ttl_days` | 目录否，其余是 |
+| 描述提示词版本 | `assets.prompt_version` | 是 |
+
 | 旋钮 | 人话 | 范围 | 建议默认 | 显式 0 的含义 |
 |---|---|---|---|---|
 | 批量大小（每段） | 一次取几条 | 每段 | 同步 20 / 资产 4 / Agent 1 | 非法（至少 1） |
@@ -241,7 +259,7 @@ B1 取代现在的全局事件 channel：HTTP 入站 `Put`，Stage 1 按 `worksp
 - **“没写”和“写了 0”必须区分**：外部配置用指针/可选值，未写才套默认；写了 0 就按上表含义生效，不再被默认值覆盖。
 - **负数一律启动失败**，并给出具体字段和允许范围，不静默纠正。
 - 批量大小、容量这类“0 会让流水线停摆”的旋钮，0 视为非法；等待、重试、保留天数这类“0 有明确业务含义”的旋钮，0 必须生效。
-- M0 用“保持现状”的一组值跑：批量 1、全局并发 1、凑批等待 0、全局容量 1024、单会话容量 1024（暂不隔离）、不重试、空闲不回收。M1 起再把生产默认值切过来。
+- M0 曾用“保持现状”的一组值跑（批量 1、全局并发 1、凑批等待 0、容量 1024、不重试、空闲不回收）；M4 起已切到上表的生产默认值，上面的文件键与 settings 覆盖都已生效。
 
 必须在 M0 前定的原因：缓冲接口的 `Take(key, max)`、内存实现的容量/等待/回收/排空都要读这些值；先写死再改，等于把配置语义和测试一起返工。
 
@@ -482,8 +500,12 @@ CREATE TABLE IF NOT EXISTS workspace_profile (
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_profile_identity
+    ON workspace_profile(platform, account_kind, account);
 ```
 
+- `account_kind` 不只是画像字段，而是**工作空间键的一段**：ID 为
+  `{platform}_{account_kind}_{account}`，三元组唯一；代码不解析 ID 反推三段。
 - 常用/需要查询的字段（`platform`、`account`、`name`、`impl`、`account_kind`、`identity_scheme`、`identity_scope`）做成列；
 - 能力、限制及其他低频画像字段放 `extra` JSON，增加字段不用改表；
 - 不再使用 `meta` 这种任意 key-value；以后如果出现零散配置，也进 `extra` 或独立的全局 `settings` 表，不回到 KV 形式。
@@ -511,6 +533,10 @@ DROP TABLE meta;
 - `Workspace` 启动时读一次画像并缓存到内存，改名/能力变化时先比对再写，避免每条消息写库；
 - MySQL 方言下把 `strftime('%s','now')` 换成 `UNIX_TIMESTAMP()`，其余结构不变。
 - **开发阶段允许直接重建 `state.db`**（旧数据不保留），上面的数据透视迁移可以等正式上线前再补；迁移逻辑届时用旧库副本验证。
+- 旧 ID `qq_<appid>` 迁移时按当前部署全部是官方机器人，改写为
+  `qq_official_bot_<appid>`，并同步写入 `account_kind=official_bot`；所有带
+  `workspace_id` 的表一起改。改完后 `(platform, account_kind, account)` 唯一索引应无冲突；
+  若出现冲突，停下来人工确认，不要自动合并两个账号的档案。
 
 ### 8.3 通用 KV 缓存（Ristretto）
 
@@ -530,32 +556,43 @@ type KV interface {
 - 键带命名空间：`ws:<id>:member:<uid>`、`ws:<id>:group:<gid>`、`img:<sha>:<size>` 等。
 - 首个消费方建议：图片描述读缓存（包一层现有 `ImageNoteStore`），验证抽象可用。
 
-### 8.4 全局配置入库（后续）
+### 8.4 全局配置入库
 
 - 启动配置（监听地址、DB DSN、日志级别）必须留在 `config.yaml`/环境变量，避免“读库配置需要先连库”的循环。
 - 业务全局参数放全局 `settings` 表（`key / value(JSON) / updated_at`），`config.yaml` 作为默认值，数据库作为动态覆盖（库 > 文件）。
+- 当前支持两个键：`pipeline`、`assets`，值是与 YAML 段同名的 JSON 对象（字段名见 [4.6](#46-配置面m0-前必须定)）。
+- 覆盖在 `Workspace.Manager` 侧每 30 秒拉一次 `settings` 表并重算快照；非法 JSON/负数保留文件值并记 warn，不中断运行。
+- 批量、并发、容量这类“0 会停摆”的字段不接受运行时 0；其余字段显式 0 在库里同样生效。
 - `settings` 保留 key-value 是因为它的键是开放集合；workspace 画像是固定字段集合，所以用列 + `extra` JSON，两者不混用。
-- 热更新仍由现有配置监听负责；DB 参数变更后续再加通知/轮询。
 
 ## 9. 代码结构
 
 ```
-bot/                 入口：IM 事件 → 全局背压队列 → Stage 1
+bot/                 入口：IM 事件 → B1；Stage 1/2/3 的处理器与生命周期
+  ingest.go          接收、去重、全局背压、Run/Shutdown/排空
+  stages.go          三段处理器：同步 → 资产 → Agent（含 latest-wins 与老化报警）
 workspace/           工作空间、身份目录、Stage 1 同步与历史
-  sync.go            Stage 1：补全、变更检测、同步入库
+  sync.go            Stage 1：批量补名、变更检测、同步入库、引用补全
+  settings.go        settings 表覆盖：30 秒轮询重算快照
+  ledger.go          发送台账适配（router.LedgerEntry ↔ state.SendRecord）
 assets/              Stage 2：Tagger、图片标签（从 router 拆出）
-pipeline/            阶段契约、缓冲层接口与编排
-  buffer.go          Buffer 接口
-  memory_buffer.go   进程内实现
-  item.go            Item / SyncedMessage / EnrichedMessage / AgentTask
-agentqueue/          Stage 3：每 chat 串行队列、冻结快照、调用 Router
+  image.go           sha256 标识、探测/降采样/描述解析
+  tagger.go          单条消息内并发描述、预算、欠条
+  jobs.go            后台补标签 worker、原图副本、台账清理
+pipeline/            阶段契约、缓冲层接口、每会话 worker
+  contracts.go       阶段载荷（InboundEvent / SyncedMessage / EnrichedMessage）
+  buffer.go          进程内 Buffer 实现
+  worker.go          每 key 串行 worker：批量、凑批、重试、死信、空闲回收、排空
 router/              Agent 执行体：选窗、prompt、LLM、工具、回复动作
+  actions.go         回复动作化 + 发送台账
 cache/               消息窗口缓存（不动）
 cache/kv/            通用 KV 接口 + Ristretto 实现
-workspace/state/     全局 DB、Scope、GORM、迁移、同步写路径
+workspace/state/     全局 DB、Scope、GORM、迁移、同步写路径、KV
 ```
 
-依赖方向保持单向：`bot` → `pipeline` → `workspace` / `assets` / `agentqueue` → `router` / `state` / `cache`。
+依赖方向保持单向：`bot` → `pipeline` / `workspace` / `assets` → `router` / `state` / `cache`。
+`agentqueue` 没有再单独建包：Stage 3 的“每 chat 串行 + 冻结快照”由 `pipeline.Stage` 的
+worker 加 `bot/stages.go` 的 latest-wins 逻辑承担，避免只包一层的空壳。
 
 ## 10. 演进到消息队列
 
@@ -573,14 +610,14 @@ workspace/state/     全局 DB、Scope、GORM、迁移、同步写路径
 
 ## 11. 实施顺序
 
-| 里程碑 | 内容 | 验收 |
-|---|---|---|
-| **M0 缓冲层** | `pipeline` 契约、`Buffer` 接口、内存实现、把现有链路改成 IM→B1→Stage1→B2→Stage2→B3→Stage3 | 行为不变，现有 e2e 测试全绿 |
-| **M1 存储底座** | GORM(SQLite)、消息同步写路径、`cache/kv` + Ristretto、契约测试 | `state` 测试全绿；开发期可重建 `state.db`，正式迁移用旧库副本验证 |
-| **M2 阶段一** | 抽 `workspace/sync.go`、变更检测、成员/群信息历史表（通用列 + `extra` JSON）、缓存读、同步写 | 改名/信息变化产生历史记录；缺名能批量补全；消息与身份信息落库可验证 |
-| **M3 阶段二** | `assets` 包、`Tagger`、图片实现、标签回填、`asset_tag_jobs` + 后台补标签 worker | 超时/容量满落库不丢消息；后台能补标签、失败可重试 |
-| **M4 阶段三** | `agentqueue`、批量取数、**逐条执行**、冻结快照、动作化回复；按批执行留待后续 | 每条消息独立路由/快照/回复；运行期间新消息进入下一轮；无重复回复 |
-| **M5（可选）** | MQ 适配器 | 同一套缓冲契约测试在内存与 MQ 上通过 |
+| 里程碑 | 内容 | 验收 | 状态 |
+|---|---|---|---|
+| **M0 缓冲层** | `pipeline` 契约、`Buffer` 接口、内存实现、把现有链路改成 IM→B1→Stage1→B2→Stage2→B3→Stage3 | 行为不变，现有 e2e 测试全绿 | 已完成 |
+| **M1 存储底座** | GORM(SQLite)、消息同步写路径、`cache/kv` + Ristretto、契约测试 | `state` 测试全绿；开发期可重建 `state.db`，正式迁移用旧库副本验证 | 已完成（schema v8） |
+| **M2 阶段一** | 抽 `workspace/sync.go`、变更检测、成员/群信息历史表（通用列 + `extra` JSON）、缓存读、同步写 | 改名/信息变化产生历史记录；缺名能批量补全；消息与身份信息落库可验证 | 已完成 |
+| **M3 阶段二** | `assets` 包、`Tagger`、图片实现、标签回填、`asset_tag_jobs` + 后台补标签 worker | 超时/容量满落库不丢消息；后台能补标签、失败可重试 | 已完成 |
+| **M4 阶段三** | `pipeline.Stage` 每会话 worker、**逐条执行**、冻结快照、动作化回复；按批执行留待后续 | 每条消息独立路由/快照/回复；运行期间新消息进入下一轮；无重复回复 | 已完成 |
+| **M5（可选，未做）** | MQ 适配器 | 同一套缓冲契约测试在内存与 MQ 上通过 | 按需求暂缓 |
 
 M0 与 M1 相互独立，可以并行；M2 依赖 M1，M3/M4 依赖 M0。
 
@@ -612,9 +649,19 @@ M0 与 M1 相互独立，可以并行；M2 依赖 M1，M3/M4 依赖 M0。
 
 ## 13. 待办
 
-- [ ] M0：缓冲层（B1/B2/B3）接口与内存实现，三段拆分（行为不变）
-- [ ] M1：GORM + Ristretto + 通用异步写队列
-- [ ] M2：Stage 1 同步、历史表、变更检测
-- [ ] M3：Stage 2 `assets` 抽取
-- [ ] M4：Stage 3 Agent 队列与动作化回复
-- [ ] M5：MQ 适配（按需）
+- [x] M0：缓冲层（B1/B2/B3）接口与内存实现，三段拆分
+- [x] 4.6 配置面：`pipeline` / `assets` 段 + `settings` 表运行时覆盖（30 秒轮询）
+- [x] M1：GORM + Ristretto + 同步写路径（消息/身份信息；不再有通用异步写队列）
+  - schema v8：`workspace_profile`、成员/群信息历史、`asset_tag_jobs`、`send_ledger`、`alerts`、`settings`
+  - 消息与身份信息按表 upsert 同步入库；缓存只做读走加速，miss 回源
+- [x] M2：Stage 1 同步、历史表、变更检测、按群批量补名
+- [x] M3：Stage 2 `assets` 抽取、欠条落库、后台补标签、原图副本
+- [x] M4：Stage 3 每会话 worker、冻结快照、动作化回复与发送台账
+- [ ] M5：MQ 适配（按需，本次不做）
+
+已知边界：
+
+- 旧库（v5 之前）里的 `qq_<appid>` 工作空间记录没有 `account_kind`，新键 `platform_kind_account`
+  不会自动认领它们；需要人工确认后再迁移/清理，程序不会自动删除旧记录。
+- Stage 3 目前仍是“逐条执行”，批量只用于出队；按批合并成一次 Agent 运行留待以后。
+- `per_chat_capacity` / `global_capacity` 是结构性参数，只认文件，运行时改库不生效。

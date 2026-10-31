@@ -11,6 +11,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"good-review-master/assets"
 	"good-review-master/cache"
 	"good-review-master/config"
 	"good-review-master/llm"
@@ -32,47 +34,66 @@ import (
 // platformPattern 是 OneBot 12 对平台名的约束（不允许下划线，所以不能用 qq_official）。
 var platformPattern = regexp.MustCompile(`^[a-z][-a-z0-9]*(\.[-a-z0-9]+)*$`)
 
-// idPattern 约束工作空间 ID：它会进数据库列与面板 URL。
-var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+// accountPattern 约束路径里的接收账号：它会进数据库列与面板 URL。
+var accountPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// idPattern 约束工作空间 ID：platform + account_kind + account，比账号多两段。
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// 账号类型：平台只表示 IM 软件，账号模式必须单独表达，并进入工作空间键。
+const (
+	AccountKindOfficialBot     = "official_bot"
+	AccountKindPersonalAccount = "personal_account"
+	AccountKindApp             = "app"
+)
+
+// ErrAccountKindRequired 表示事件没有 account_kind，且找不到可匹配的已有工作空间。
+var ErrAccountKindRequired = errors.New("缺少 account_kind")
+
+// ValidAccountKind 判断账号类型是否为受支持的枚举值。
+func ValidAccountKind(kind string) bool {
+	switch kind {
+	case AccountKindOfficialBot, AccountKindPersonalAccount, AccountKindApp:
+		return true
+	}
+	return false
+}
 
 // nameSyncInterval 是「入站时核对机器人昵称」的最小间隔：改名不常见，
 // 每条消息都去问实现端没有意义，但也不能像缓存那样永远不失效。
 const nameSyncInterval = 10 * time.Minute
 
-// WorkspaceID 把平台名与接收账号拼成工作空间 ID。
+// WorkspaceID 把平台、账号类型与接收账号拼成工作空间 ID。
 //
-// 平台名里的点号替换成下划线（`zulip.my-instance` → `zulip_my-instance`），
-// 因为点号在 ID 里没有额外语义；ID 会进面板 URL 和数据库列，保持字符集简单。
-func WorkspaceID(platform, account string) (string, error) {
+// 逻辑键是 (platform, account_kind, account) 三元组；ID 只是可读的派生值，
+// 代码不解析 ID 反推三段。平台名里的点号替换成下划线（`zulip.my-instance`
+// → `zulip_my-instance`），因为点号在 ID 里没有额外语义。
+func WorkspaceID(platform, accountKind, account string) (string, error) {
 	platform = strings.ToLower(strings.TrimSpace(platform))
+	accountKind = strings.ToLower(strings.TrimSpace(accountKind))
 	account = strings.TrimSpace(account)
 	if !platformPattern.MatchString(platform) {
 		return "", fmt.Errorf("平台名 %q 不合法：必须匹配 [a-z][-a-z0-9]*", platform)
 	}
-	if !idPattern.MatchString(account) {
+	if !ValidAccountKind(accountKind) {
+		return "", fmt.Errorf("账号类型 %q 不合法：必须是 official_bot、personal_account 或 app", accountKind)
+	}
+	if !accountPattern.MatchString(account) {
 		return "", fmt.Errorf("账号 %q 不合法：只能包含字母、数字、下划线和短横线（最多 64 字符）", account)
 	}
-	id := strings.ReplaceAll(platform, ".", "_") + "_" + account
+	id := strings.ReplaceAll(platform, ".", "_") + "_" + accountKind + "_" + account
 	if !idPattern.MatchString(id) {
-		return "", fmt.Errorf("工作空间 ID %q 超过 64 字符", id)
+		return "", fmt.Errorf("工作空间 ID %q 不合法：最多 128 字符", id)
 	}
 	return id, nil
 }
 
-// splitID 从 ID 反推平台与账号（平台名不能含下划线，所以第一个下划线是分隔符）。
-func splitID(id string) (platform, account string, ok bool) {
-	platform, account, ok = strings.Cut(id, "_")
-	if !ok || platform == "" || account == "" {
-		return "", "", false
-	}
-	return platform, account, true
-}
-
 // Workspace 一个接收账号的运行时。
 type Workspace struct {
-	ID       string
-	Platform string
-	Account  string
+	ID          string
+	Platform    string
+	AccountKind string
+	Account     string
 
 	Router *router.Router
 	// Prompt 是所有工作空间共享的同一份提示词配置（全局 prompt_system.yaml +
@@ -101,13 +122,14 @@ type Workspace struct {
 
 // View 是面板用的只读视图（不含 Router/Prompt 等运行时对象）。
 type View struct {
-	ID       string
-	Name     string
-	Platform string
-	Account  string
-	Groups   []string
-	Store    *cache.Store
-	HasState bool
+	ID          string
+	Name        string
+	Platform    string
+	AccountKind string
+	Account     string
+	Groups      []string
+	Store       *cache.Store
+	HasState    bool
 }
 
 // Manager 持有全部工作空间，并负责按事件自动开通。
@@ -119,6 +141,8 @@ type Manager struct {
 	shutdownCtx context.Context
 	stateStore  *state.Store
 	prompt      *config.PromptConfig
+	tagger      *assets.ImageTagger
+	backfiller  *assets.Backfiller
 
 	mu   sync.RWMutex
 	list []*Workspace
@@ -146,6 +170,7 @@ func New(appCfg config.Snapshot, systemPromptPath, customPromptPath string,
 		prompt:      promptCfg,
 		byID:        make(map[string]*Workspace),
 	}
+
 	// 所有工作空间共用一个 state.db（同表、按 workspace_id 隔离）。
 	// 打不开就整体降级为纯内存，不拦住启动。
 	statePath := filepath.Join(filepath.Dir(systemPromptPath), state.FileName)
@@ -154,6 +179,28 @@ func New(appCfg config.Snapshot, systemPromptPath, customPromptPath string,
 	} else {
 		m.stateStore = opened
 		opened.Report()
+	}
+
+	// 全局 settings 表覆盖 config.yaml（库 > 文件）；只影响运行时参数。
+	m.appCfg = newSettingsOverlay(appCfg, m.stateStore, shutdownCtx).Snapshot
+
+	if m.stateStore != nil {
+		m.tagger = assets.NewImageTagger(m.appCfg, llmClient, promptCfg.ImageDescribePrompt, m.stateStore)
+		m.backfiller = assets.NewBackfiller(m.stateStore, m.tagger, func() *assets.BackfillConfig {
+			cfg := m.appCfg()
+			return &assets.BackfillConfig{
+				Enabled:     cfg.Assets.BackfillEnabled,
+				Interval:    cfg.Assets.BackfillInterval,
+				Batch:       cfg.Assets.BackfillBatch,
+				MaxAttempts: cfg.Assets.BackfillMaxAttempts,
+				Retention:   cfg.Assets.JobRetention,
+				CacheDir:    cfg.Assets.DeferCacheDir,
+				CacheTTL:    cfg.Assets.DeferCacheTTL,
+			}
+		})
+		if shutdownCtx != nil {
+			go m.backfiller.Run(shutdownCtx)
+		}
 	}
 
 	if err := m.restoreExisting(); err != nil {
@@ -176,16 +223,17 @@ func (m *Manager) restoreExisting() error {
 		return fmt.Errorf("读取工作空间档案失败：%w", err)
 	}
 	for _, meta := range metas {
-		if _, _, ok := splitID(meta.ID); !ok || !idPattern.MatchString(meta.ID) {
-			logutil.Warn("跳过不是工作空间 ID 的档案", "workspace", meta.ID)
+		if !idPattern.MatchString(meta.ID) {
+			logutil.Warn("跳过不是合法工作空间 ID 的档案", "workspace", meta.ID)
 			continue
 		}
-		if meta.Platform == "" || meta.Account == "" {
-			logutil.Warn("跳过缺少平台或账号的档案", "workspace", meta.ID,
-				"platform", meta.Platform, "account", meta.Account)
+		if meta.Platform == "" || meta.AccountKind == "" || meta.Account == "" {
+			logutil.Warn("跳过缺少平台、账号类型或账号的档案",
+				"workspace", meta.ID, "platform", meta.Platform,
+				"account_kind", meta.AccountKind, "account", meta.Account)
 			continue
 		}
-		ws, err := m.load(meta.ID, meta.Platform, meta.Account)
+		ws, err := m.load(meta.ID, meta.Platform, meta.AccountKind, meta.Account)
 		if err != nil {
 			logutil.Error("加载工作空间失败，跳过该档案", "id", meta.ID, "err", err)
 			continue
@@ -198,16 +246,29 @@ func (m *Manager) restoreExisting() error {
 	return nil
 }
 
-// ResolveOrCreate 按 (platform, account) 找到或开通工作空间。
+// ResolveOrCreate 按 (platform, account_kind, account) 找到或开通工作空间。
 //
 // 返回 nil 且无错误 = Go 不接管：不在 bot.allow_workspace_accounts 名单里。
 // 已有工作空间由 state.db 在启动时恢复，不受名单影响；入站层据 nil 回 404，
 // 让实现端把消息交回自己的 Agent。
 //
+// 事件没带 account_kind 时，只按 (platform, account) 找已有工作空间；
+// 找到就沿用（兼容旧桥接），找不到返回 ErrAccountKindRequired，不猜账号类型。
+//
 // 同步部分只做本地 IO（开 SQLite、建 Router）；昵称与成员名是网络调用，
 // 异步补，绝不阻塞入站。
-func (m *Manager) ResolveOrCreate(platform, account string) (*Workspace, error) {
-	id, err := WorkspaceID(platform, account)
+func (m *Manager) ResolveOrCreate(platform, accountKind, account string) (*Workspace, error) {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	accountKind = strings.ToLower(strings.TrimSpace(accountKind))
+	account = strings.TrimSpace(account)
+	if accountKind == "" {
+		if ws, ok := m.Find(platform, account); ok {
+			return ws, nil
+		}
+		telemetry.WorkspaceResolveTotal.WithLabelValues("missing_kind").Inc()
+		return nil, fmt.Errorf("%w：platform=%s account=%s", ErrAccountKindRequired, platform, account)
+	}
+	id, err := WorkspaceID(platform, accountKind, account)
 	if err != nil {
 		telemetry.WorkspaceResolveTotal.WithLabelValues("invalid").Inc()
 		return nil, err
@@ -223,41 +284,70 @@ func (m *Manager) ResolveOrCreate(platform, account string) (*Workspace, error) 
 		return nil, nil
 	}
 
-	ws, err := m.load(id, platform, account)
+	ws, err := m.load(id, platform, accountKind, account)
 	if err != nil {
 		return nil, err
 	}
-	logutil.Info("已自动开通工作空间", "id", id, "platform", platform, "account", account)
+	logutil.Info("已自动开通工作空间", "id", id, "platform", platform,
+		"account_kind", accountKind, "account", account)
 	telemetry.WorkspaceResolveTotal.WithLabelValues("created").Inc()
 	m.list = append(m.list, ws)
 	m.byID[id] = ws
 	return ws, nil
 }
 
-// load 构造一个工作空间并登记到 state.db 的 meta（platform/account）。
-func (m *Manager) load(id, platform, account string) (*Workspace, error) {
+// Find 按 (platform, account) 找一个已有工作空间；命中多个时返回 false。
+// 只用于兼容不带 account_kind 的旧事件，不参与新开通。
+func (m *Manager) Find(platform, account string) (*Workspace, bool) {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	account = strings.TrimSpace(account)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var found *Workspace
+	for _, ws := range m.list {
+		if ws.Platform != platform || ws.Account != account {
+			continue
+		}
+		if found != nil {
+			return nil, false
+		}
+		found = ws
+	}
+	return found, found != nil
+}
+
+// load 构造一个工作空间并登记到 state.db 的 meta（platform/account_kind/account）。
+func (m *Manager) load(id, platform, accountKind, account string) (*Workspace, error) {
 	cfg := m.appCfg()
 
 	st := m.stateStore.Scope(id)
 	// 平台名里的点号在 ID 中被替换成下划线，从 ID 反推会丢信息；
-	// meta 里存的是原始 (platform, account)，已有记录以它为准。
-	if saved := st.Meta("platform"); saved != "" {
-		platform = saved
-	}
-	if saved := st.Meta("account"); saved != "" {
-		account = saved
+	// 画像里存的是原始 (platform, account_kind, account)，已有记录以它为准。
+	if profile, ok, err := st.LoadProfile(); err != nil {
+		logutil.Warn("读取工作空间画像失败，按事件参数继续", "workspace", id, "err", err)
+	} else if ok {
+		if profile.Platform != "" {
+			platform = profile.Platform
+		}
+		if profile.AccountKind != "" {
+			accountKind = profile.AccountKind
+		}
+		if profile.Account != "" {
+			account = profile.Account
+		}
 	}
 
 	ws := &Workspace{
-		ID:         id,
-		Platform:   platform,
-		Account:    account,
-		Prompt:     m.prompt,
-		Cache:      cache.NewStore(),
-		State:      st,
-		ob:         m.obClient.For(id),
-		identities: make(map[string]string),
-		groups:     make(map[string]string),
+		ID:          id,
+		Platform:    platform,
+		AccountKind: accountKind,
+		Account:     account,
+		Prompt:      m.prompt,
+		Cache:       cache.NewStore(),
+		State:       st,
+		ob:          m.obClient.For(id),
+		identities:  make(map[string]string),
+		groups:      make(map[string]string),
 	}
 	ws.members = newDirectory(ws.ob, st)
 	ws.members.onSelfName = ws.onChangeMemberName
@@ -270,15 +360,16 @@ func (m *Manager) load(id, platform, account string) (*Workspace, error) {
 		ws.Router.SetPersonaStore(st)
 		// 机器人自己的回复也要落库：否则重启后模型只能看到用户说过的话。
 		ws.Router.SetMessageSink(st.SaveMessage)
-		// 全局图库（image_notes）不分工作空间：直接注入共享 Store，按内容哈希跨账号复用。
-		if m.stateStore != nil {
-			ws.Router.SetImageNoteStore(m.stateStore)
-		}
+		ws.Router.SetSendLedger(sendLedger{scope: st})
 	}
 
 	ws.restore(cfg)
-	st.SetMeta("platform", platform)
-	st.SetMeta("account", account)
+	if err := st.SaveProfile(state.WorkspaceProfile{
+		Platform: platform, AccountKind: accountKind, Account: account,
+		Name: ws.Name(), Impl: "astrbot-bridge",
+	}); err != nil {
+		logutil.Warn("保存工作空间画像失败", "workspace", id, "err", err)
+	}
 	ws.scheduleNameLookup(st)
 	return ws, nil
 }
@@ -342,8 +433,26 @@ func (w *Workspace) restore(cfg *config.Config) {
 	} else {
 		w.Router.RestorePersonas(personas)
 	}
-	if name := w.State.Meta("name"); name != "" {
-		w.setName(name)
+	if profile, ok, err := w.State.LoadProfile(); err != nil {
+		logutil.Warn("读取工作空间画像失败", "workspace", w.ID, "err", err)
+	} else if ok && profile.Name != "" {
+		w.setName(profile.Name)
+	}
+}
+
+// saveName 把展示名同步到画像；失败只记日志（内存里的名字仍然生效）。
+func (w *Workspace) saveName(name string) {
+	if w.State == nil || name == "" {
+		return
+	}
+	profile, _, err := w.State.LoadProfile()
+	if err != nil {
+		logutil.Warn("读取工作空间画像失败", "workspace", w.ID, "err", err)
+		return
+	}
+	profile.Name = name
+	if err := w.State.SaveProfile(profile); err != nil {
+		logutil.Warn("更新工作空间画像失败", "workspace", w.ID, "err", err)
 	}
 }
 
@@ -369,9 +478,7 @@ func (w *Workspace) scheduleNameLookup(st *state.Scope) {
 			return
 		}
 		w.setName(name)
-		if st != nil {
-			st.SetMeta("name", name)
-		}
+		w.saveName(name)
 		logutil.Info("已补全工作空间昵称", "workspace", w.ID, "name", name)
 	}()
 }
@@ -414,9 +521,7 @@ func (w *Workspace) SyncSelfName(selfID, groupID string) {
 			return
 		}
 		w.setName(name)
-		if w.State != nil {
-			w.State.SetMeta("name", name)
-		}
+		w.saveName(name)
 		logutil.Info("机器人昵称已更新", "workspace", w.ID, "old", old, "name", name)
 	}()
 }
@@ -443,6 +548,15 @@ func (w *Workspace) renameSelfInMembers(oldName, newName string) {
 // Snapshot 返回带上本工作空间昵称的配置快照。
 // 每次调用都从最新全局快照取，因此全局白名单的修改可以热生效。
 func (w *Workspace) Snapshot() config.Snapshot { return w.appCfg }
+
+// Snapshot 返回叠加了 settings 表的全局配置快照（不含工作空间昵称）。
+func (m *Manager) Snapshot() config.Snapshot { return m.appCfg }
+
+// Tagger 返回共享的图片标签器（所有工作空间共用全局图库与模型）。
+func (m *Manager) Tagger() *assets.ImageTagger { return m.tagger }
+
+// StateStore 返回共享档案（报警、补标签欠条等跨工作空间操作使用）。
+func (m *Manager) StateStore() *state.Store { return m.stateStore }
 
 func (w *Workspace) snapshot(global *config.Config) *config.Config {
 	cp := *global
@@ -533,6 +647,11 @@ func (w *Workspace) ResolveNames(groupID string, userIDs []string) map[string]st
 // 群名在 QQ 官方通常拿不到，所以先落一条空名记录，再异步向实现端补；
 // 补到后更新同一行。失败不影响消息处理。
 func (w *Workspace) EnsureGroup(groupID string) {
+	w.EnsureGroupFrom(groupID, "")
+}
+
+// EnsureGroupFrom 保证群有档案，并把触发消息编号带进群信息历史。
+func (w *Workspace) EnsureGroupFrom(groupID, sourceMessageID string) {
 	if groupID == "" {
 		return
 	}
@@ -545,12 +664,23 @@ func (w *Workspace) EnsureGroup(groupID string) {
 	w.groupMu.Unlock()
 
 	if w.State != nil {
-		w.State.SaveGroup(groupID, "")
+		if _, err := w.State.SaveGroupInfo(groupID, "", "group_info", sourceMessageID, "{}"); err != nil {
+			logutil.Warn("保存群档案失败", "workspace", w.ID, "group", groupID, "err", err)
+		}
 	}
 	w.lookupGroupName(groupID)
 }
 
 func (w *Workspace) lookupGroupName(groupID string) {
+	// 先看档案：上次启动已经查到的群名不必每次再问实现端。
+	if w.State != nil {
+		if name := w.State.GroupName(groupID); name != "" {
+			w.groupMu.Lock()
+			w.groups[groupID] = name
+			w.groupMu.Unlock()
+			return
+		}
+	}
 	if w.ob == nil || w.ob.Base() == "" {
 		return
 	}
@@ -569,7 +699,7 @@ func (w *Workspace) lookupGroupName(groupID string) {
 		w.groups[groupID] = name
 		w.groupMu.Unlock()
 		if w.State != nil {
-			w.State.SaveGroup(groupID, name)
+			_, _ = w.State.SaveGroupInfo(groupID, name, "group_info", "", "{}")
 		}
 	}()
 }
@@ -586,11 +716,18 @@ func (w *Workspace) GroupName(groupID string) string {
 // QQ 官方只给 openid、不给昵称，行里的 name 可能一直为空；但它仍然是
 // “已收录的人”，不能因为没有名字就丢掉。
 func (w *Workspace) ObserveMember(groupID, userID string) {
+	w.ObserveMemberFrom(groupID, userID, "")
+}
+
+// ObserveMemberFrom 记录消息里出现过的成员，并把触发消息编号写进成员历史。
+func (w *Workspace) ObserveMemberFrom(groupID, userID, sourceMessageID string) {
 	if !w.members.observe(groupID, userID) {
 		return
 	}
 	if w.State != nil {
-		w.State.SaveMember(groupID, userID, "", "")
+		_, _ = w.State.SaveMemberInfo(state.MemberInfo{
+			GroupID: groupID, UserID: userID, Source: "observed", SourceMessageID: sourceMessageID,
+		})
 	}
 }
 
@@ -599,7 +736,12 @@ func (w *Workspace) ObserveMember(groupID, userID string) {
 // 聊天记录昵称和后续反查都能直接用，不必等 get_group_member_info。
 // 返回值表示名字是否变化：变化时调用方可以顺手补全该用户更早的消息。
 func (w *Workspace) LearnMemberName(groupID, userID, name string) bool {
-	return w.members.learn(groupID, userID, name)
+	return w.members.learn(groupID, userID, name, "")
+}
+
+// LearnMemberNameFrom 用消息自带的显示名更新成员目录，并记录触发消息编号。
+func (w *Workspace) LearnMemberNameFrom(groupID, userID, name, sourceMessageID string) bool {
+	return w.members.learn(groupID, userID, name, sourceMessageID)
 }
 
 // MemberCount 返回已收录的群成员数（说过话或被 @ 过的人）。
@@ -676,13 +818,14 @@ func (m *Manager) Views() []View {
 	views := make([]View, 0, len(list))
 	for _, ws := range list {
 		views = append(views, View{
-			ID:       ws.ID,
-			Name:     displayName(ws),
-			Platform: ws.Platform,
-			Account:  ws.Account,
-			Groups:   append([]string(nil), ws.Snapshot()().AllowGroups...),
-			Store:    ws.Cache,
-			HasState: ws.State != nil,
+			ID:          ws.ID,
+			Name:        displayName(ws),
+			Platform:    ws.Platform,
+			AccountKind: ws.AccountKind,
+			Account:     ws.Account,
+			Groups:      append([]string(nil), ws.Snapshot()().AllowGroups...),
+			Store:       ws.Cache,
+			HasState:    ws.State != nil,
 		})
 	}
 	return views
@@ -921,7 +1064,7 @@ func (d *directory) rename(groupID, userID, oldName, newName string) {
 // learn 用消息里直接拿到的显示名更新目录（来源：AstrBot 透传的 sender）。
 // 与 fetchAsync 共用同一套写入规则：只有名字确实变化才写内存与库，避免每条消息一次 DB 写。
 // 返回是否真的写入了一个新名字（调用方据此决定要不要补全历史消息的昵称）。
-func (d *directory) learn(groupID, userID, name string) bool {
+func (d *directory) learn(groupID, userID, name, sourceMessageID string) bool {
 	name = strings.TrimSpace(name)
 	if groupID == "" || userID == "" || name == "" {
 		return false
@@ -941,7 +1084,10 @@ func (d *directory) learn(groupID, userID, name string) bool {
 	d.seen[groupID][userID] = struct{}{}
 	d.mu.Unlock()
 	if d.state != nil {
-		d.state.SaveMember(groupID, userID, name, name)
+		_, _ = d.state.SaveMemberInfo(state.MemberInfo{
+			GroupID: groupID, UserID: userID, Name: name, DisplayName: name,
+			Source: "sender", SourceMessageID: sourceMessageID,
+		})
 	}
 	if d.onSelfName != nil {
 		d.onSelfName(groupID, userID, name)
@@ -1015,9 +1161,7 @@ func (w *Workspace) onChangeMemberName(groupID, userID, name string) {
 	}
 	old := w.Name()
 	w.setName(name)
-	if w.State != nil {
-		w.State.SetMeta("name", name)
-	}
+	w.saveName(name)
 	w.renameSelfInMembers(old, name)
 	logutil.Info("机器人昵称已更新", "workspace", w.ID, "old", old, "name", name)
 }

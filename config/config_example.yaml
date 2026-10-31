@@ -12,12 +12,13 @@ bot:
   # 列表写法等价：allow_groups:
   #   - "123456"
   #   - "789012"
-  # 允许自动开通的工作空间 ID（完整 ID = 平台名_接收账号），填 "*" 表示全部。
+  # 允许自动开通的工作空间 ID（完整 ID = 平台名_账号类型_接收账号），填 "*" 表示全部。
   # 支持两种写法：逗号分隔字符串，或 YAML 列表（逐项也可写注释）。
   # 空列表 = 不自动开通（安全默认）；已记录在 state.db 里的工作空间不受名单影响，
-  # 重启会直接恢复。QQ 官方机器人的账号填 AppID，平台名固定 qq，所以是 qq_<AppID>。
-  allow_workspace_accounts: ["qq_1906xxxx", "qq_1904xxxx"]
-  # 字符串写法等价：allow_workspace_accounts: "qq_1906xxxx,qq_1904xxxx"
+  # 重启会直接恢复。QQ 官方机器人：平台 qq，类型 official_bot，账号填 AppID，
+  # 所以是 qq_official_bot_<AppID>。
+  allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
+  # 字符串写法等价：allow_workspace_accounts: "qq_official_bot_1906xxxx,qq_official_bot_1904xxxx"
   # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
   # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
   # 裁判看的窗口与生成一致（runtime.llm_send_count 条），不再单独配置。
@@ -43,7 +44,7 @@ im:
   echo_self_messages: false
   # 可选：多套实现端/多端口时按账号覆盖；不写 api_base 表示沿用上面的默认地址。
   # accounts:
-  #   - id: "qq_1904xxxx"
+  #   - id: "qq_official_bot_1904xxxx"
   #     api_base: "http://127.0.0.1:6200"
 
 # ===== 运行时参数 =====
@@ -163,6 +164,55 @@ llm:
   breaker_failures: 5
   # 熔断后的冷却秒数（不写默认 30）
   breaker_cooldown_sec: 30
+
+# ===== 三段流水线（B1 → Stage1 → B2 → Stage2 → B3 → Stage3） =====
+# 旋钮规则：不写 = 用默认值；显式写 0 按下面的注释生效；负数启动失败。
+# 其中大部分参数可以在运行时通过 state.db 的 settings 表覆盖（键为 "pipeline"，
+# 值为同样字段名的 JSON 对象），库里的覆盖优先于本文件。批量/并发/容量不允许运行时改 0。
+pipeline:
+  # Stage 1（同步/补全）：一次取几条、凑批最多等多久、同时几个会话在跑、失败重试次数
+  sync_batch: 20
+  sync_linger_ms: 20              # 0 = 不等，来一条处理一条
+  sync_concurrency: 4
+  sync_retries: 3                 # 0 = 不重试，直接进问题件
+  # Stage 2（资产打标签）：一批消息一起打标签，便于统一限流
+  asset_batch: 4
+  asset_linger_ms: 20             # 0 = 不等
+  asset_concurrency: 2
+  asset_retries: 3                # 0 = 不重试
+  # Stage 3（Agent）：当前逐条执行，批量只用于出队效率
+  agent_batch: 1
+  agent_linger_ms: 0              # 0 = 不等
+  agent_concurrency: 2
+  agent_retries: 3                # 0 = 不重试
+  # 单群/单私聊最多积压多少条；整个进程最多积压多少条（0 会让流水线停摆，非法）
+  per_chat_capacity: 500
+  global_capacity: 5000
+  # 一个会话多久没消息就让它的处理协程休眠（秒）；0 = 永不回收（不推荐）
+  # 休眠只结束按需创建的协程；下次来消息会重新拉起，不丢状态（状态都在库里）。
+  idle_ttl_sec: 600
+  # 优雅关闭时最多等多久把存量处理完（秒）；0 = 不等待，直接落库
+  drain_timeout_sec: 10
+
+# ===== 资产（图片描述与后台补标签） =====
+# 同样支持运行时用 settings 表的 "assets" 键覆盖；值为同名字段 JSON。
+assets:
+  # Stage 2 超时/容量满时把欠条写入 asset_tag_jobs，这个开关控制后台是否去补
+  backfill_enabled: true
+  backfill_interval_sec: 60       # 0 = 关闭扫描（等同开关关）
+  backfill_batch: 20              # 一次补多少张（0 非法）
+  backfill_max_attempts: 3        # 一张欠条最多补几次；0 = 不重试
+  job_retention_days: 30          # 已完成/已消失台账保留天数；0 = 永久保留
+  # 一条消息内所有图片描述共用的总预算（秒）；0 = 不限制
+  message_budget_sec: 30
+  # 同一时刻最多描述几张图（跨消息）；0 非法
+  tag_concurrency: 3
+  # 延后打标签时原图副本的本地目录（相对程序工作目录）；URL 过期后靠它重试
+  defer_cache_dir: "asset-cache"
+  defer_cache_max_bytes: 268435456 # 256MB；0 = 不保存原图副本
+  defer_cache_ttl_days: 7          # 副本保留天数；0 = 不过期
+  # 写进图库记录的提示词版本；换描述提示词时改它，便于按版本重刷
+  prompt_version: "1"
 
 # ===== MCP 工具服务配置 =====
 # 开启后：启动时自动连接下面列出的每个服务，自动拉取其工具清单（tools/list），

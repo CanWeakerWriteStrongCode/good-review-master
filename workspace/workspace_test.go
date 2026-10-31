@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,51 +66,93 @@ func allowedConfig(accounts ...string) *config.Config {
 
 func TestWorkspaceID(t *testing.T) {
 	cases := []struct {
-		platform, account, want string
-		wantErr                 bool
+		platform, kind, account, want string
+		wantErr                       bool
 	}{
-		{"qq", "1906xxxx", "qq_1906xxxx", false},
-		{"zulip.my-instance", "abc", "zulip_my-instance_abc", false},
-		{"qq_official", "1", "", true}, // 下划线不符合 OB12 平台名
-		{"qq", "bad/account", "", true},
-		{"qq", "", "", true},
+		{"qq", AccountKindOfficialBot, "1906xxxx", "qq_official_bot_1906xxxx", false},
+		{"qq", AccountKindPersonalAccount, "1906xxxx", "qq_personal_account_1906xxxx", false},
+		{"zulip.my-instance", AccountKindApp, "abc", "zulip_my-instance_app_abc", false},
+		{"qq_official", AccountKindOfficialBot, "1", "", true}, // 下划线不符合 OB12 平台名
+		{"qq", "unknown", "1", "", true},                       // 账号类型必须是枚举值
+		{"qq", AccountKindOfficialBot, "bad/account", "", true},
+		{"qq", AccountKindOfficialBot, "", "", true},
 	}
 	for _, tc := range cases {
-		got, err := WorkspaceID(tc.platform, tc.account)
+		got, err := WorkspaceID(tc.platform, tc.kind, tc.account)
 		if tc.wantErr {
 			if err == nil {
-				t.Fatalf("WorkspaceID(%q,%q) 应失败，得到 %q", tc.platform, tc.account, got)
+				t.Fatalf("WorkspaceID(%q,%q,%q) 应失败，得到 %q", tc.platform, tc.kind, tc.account, got)
 			}
 			continue
 		}
 		if err != nil || got != tc.want {
-			t.Fatalf("WorkspaceID(%q,%q) = %q, %v; want %q", tc.platform, tc.account, got, err, tc.want)
+			t.Fatalf("WorkspaceID(%q,%q,%q) = %q, %v; want %q",
+				tc.platform, tc.kind, tc.account, got, err, tc.want)
 		}
 	}
 }
 
 func TestResolveOrCreate按名单开通(t *testing.T) {
-	m := testManager(t, allowedConfig("qq_1906xxxx"))
+	m := testManager(t, allowedConfig("qq_official_bot_1906xxxx"))
 
-	ws, err := m.ResolveOrCreate("qq", "1906xxxx")
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "1906xxxx")
 	if err != nil || ws == nil {
 		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
 	}
-	if ws.ID != "qq_1906xxxx" || ws.Platform != "qq" || ws.Account != "1906xxxx" {
+	if ws.ID != "qq_official_bot_1906xxxx" || ws.Platform != "qq" ||
+		ws.AccountKind != AccountKindOfficialBot || ws.Account != "1906xxxx" {
 		t.Fatalf("workspace = %+v", ws)
 	}
 	if ws.State == nil {
 		t.Fatal("工作空间应挂上 state.db 的 Scope")
 	}
 
-	again, err := m.ResolveOrCreate("qq", "1906xxxx")
+	again, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "1906xxxx")
 	if err != nil || again != ws {
 		t.Fatalf("同一账号应复用同一个工作空间")
 	}
 
-	denied, err := m.ResolveOrCreate("qq", "9999")
+	denied, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "9999")
 	if err != nil || denied != nil {
 		t.Fatalf("不在名单里的账号应返回 nil（不接管），得到 %v, %v", denied, err)
+	}
+}
+
+func TestResolveOrCreate缺少类型时匹配已有档案(t *testing.T) {
+	m := testManager(t, allowedConfig("qq_official_bot_1906"))
+
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "1906")
+	if err != nil || ws == nil {
+		t.Fatalf("首次开通失败：%v, %v", ws, err)
+	}
+	// 旧桥接不带 account_kind：按 (platform, account) 找到已有档案，沿用原类型。
+	got, err := m.ResolveOrCreate("qq", "", "1906")
+	if err != nil || got != ws {
+		t.Fatalf("缺少类型时应复用已有工作空间，得到 %v, %v", got, err)
+	}
+	// 新账号没有类型：不猜，直接拒绝。
+	if _, err := m.ResolveOrCreate("qq", "", "9999"); !errors.Is(err, ErrAccountKindRequired) {
+		t.Fatalf("新账号缺类型应返回 ErrAccountKindRequired，得到 %v", err)
+	}
+}
+
+func TestResolveOrCreate同账号不同类型分开(t *testing.T) {
+	m := testManager(t, allowedConfig("qq_official_bot_1", "qq_personal_account_1"))
+
+	official, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "1")
+	if err != nil || official == nil {
+		t.Fatalf("official 开通失败：%v, %v", official, err)
+	}
+	personal, err := m.ResolveOrCreate("qq", AccountKindPersonalAccount, "1")
+	if err != nil || personal == nil {
+		t.Fatalf("personal 开通失败：%v, %v", personal, err)
+	}
+	if official == personal || official.ID == personal.ID {
+		t.Fatalf("同一平台同一账号的不同类型必须是两个工作空间：%q vs %q", official.ID, personal.ID)
+	}
+	// 两个候选同时存在时，旧事件缺类型无法判断归属，必须拒绝而不是猜。
+	if _, err := m.ResolveOrCreate("qq", "", "1"); !errors.Is(err, ErrAccountKindRequired) {
+		t.Fatalf("存在多个类型时应拒绝缺类型事件，得到 %v", err)
 	}
 }
 
@@ -130,8 +173,8 @@ func Test档案里的工作空间无需名单(t *testing.T) {
 		return m
 	}
 
-	first := newManager(allowedConfig("qq_existing"))
-	if ws, err := first.ResolveOrCreate("qq", "existing"); err != nil || ws == nil {
+	first := newManager(allowedConfig("qq_official_bot_existing"))
+	if ws, err := first.ResolveOrCreate("qq", AccountKindOfficialBot, "existing"); err != nil || ws == nil {
 		t.Fatalf("首次开通失败：%v, %v", ws, err)
 	}
 	first.Close()
@@ -139,7 +182,7 @@ func Test档案里的工作空间无需名单(t *testing.T) {
 	// 重启时名单为空：工作空间已在档案里，仍应被加载
 	restarted := newManager(allowedConfig())
 	t.Cleanup(restarted.Close)
-	if _, ok := restarted.ByID("qq_existing"); !ok {
+	if _, ok := restarted.ByID("qq_official_bot_existing"); !ok {
 		t.Fatalf("档案里的工作空间应被恢复，实际 %+v", restarted.List())
 	}
 }
@@ -156,8 +199,12 @@ func Test启动恢复时跳过不完整档案(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	// 只有 platform、没有 account：无法重建工作空间，应跳过而不是报错退出
-	first.stateStore.Scope("qq_bad").SetMeta("platform", "qq")
-	first.stateStore.Scope("not-a-workspace!").SetMeta("platform", "qq")
+	if err := first.stateStore.Scope("qq_official_bot_bad").SaveProfile(state.WorkspaceProfile{Platform: "qq"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.stateStore.Scope("not-a-workspace!").SaveProfile(state.WorkspaceProfile{Platform: "qq"}); err != nil {
+		t.Fatal(err)
+	}
 	first.Close()
 
 	m, err := New(func() *config.Config { return &config.Config{} }, system,
@@ -172,7 +219,7 @@ func Test启动恢复时跳过不完整档案(t *testing.T) {
 }
 
 func Test并发开通只创建一次(t *testing.T) {
-	m := testManager(t, allowedConfig("qq_1"))
+	m := testManager(t, allowedConfig("qq_official_bot_1"))
 
 	var wg sync.WaitGroup
 	results := make([]*Workspace, 16)
@@ -180,7 +227,7 @@ func Test并发开通只创建一次(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ws, err := m.ResolveOrCreate("qq", "1")
+			ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "1")
 			if err != nil {
 				t.Errorf("ResolveOrCreate: %v", err)
 			}
@@ -196,9 +243,9 @@ func Test并发开通只创建一次(t *testing.T) {
 }
 
 func Test缓存隔离而提示词共享(t *testing.T) {
-	m := testManager(t, allowedConfig("qq_a", "qq_b"))
-	wsA, _ := m.ResolveOrCreate("qq", "a")
-	wsB, _ := m.ResolveOrCreate("qq", "b")
+	m := testManager(t, allowedConfig("qq_official_bot_a", "qq_official_bot_b"))
+	wsA, _ := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
+	wsB, _ := m.ResolveOrCreate("qq", AccountKindOfficialBot, "b")
 
 	wsA.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: "1", Content: "a", Time: 1})
 	wsB.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: "1", Content: "b", Time: 1})
@@ -220,9 +267,9 @@ func Test缓存隔离而提示词共享(t *testing.T) {
 }
 
 func TestManager识别昵称唯一性(t *testing.T) {
-	m := testManager(t, allowedConfig("qq_a", "qq_b"))
-	wsA, _ := m.ResolveOrCreate("qq", "a")
-	wsB, _ := m.ResolveOrCreate("qq", "b")
+	m := testManager(t, allowedConfig("qq_official_bot_a", "qq_official_bot_b"))
+	wsA, _ := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
+	wsB, _ := m.ResolveOrCreate("qq", AccountKindOfficialBot, "b")
 
 	wsA.setName("同名")
 	wsB.setName("同名")
@@ -239,15 +286,15 @@ func TestManager识别昵称唯一性(t *testing.T) {
 }
 
 func TestDefault只在单工作空间时返回(t *testing.T) {
-	m := testManager(t, allowedConfig("qq_a", "qq_b"))
+	m := testManager(t, allowedConfig("qq_official_bot_a", "qq_official_bot_b"))
 	if m.Default() != nil {
 		t.Fatal("没有工作空间时 Default 应为 nil")
 	}
-	wsA, _ := m.ResolveOrCreate("qq", "a")
+	wsA, _ := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
 	if m.Default() != wsA {
 		t.Fatal("只有一个工作空间时应返回它")
 	}
-	m.ResolveOrCreate("qq", "b")
+	m.ResolveOrCreate("qq", AccountKindOfficialBot, "b")
 	if m.Default() != nil {
 		t.Fatal("多个工作空间时不能猜默认账号")
 	}
@@ -264,7 +311,7 @@ func Test多账号共用一个档案库(t *testing.T) {
 	}
 	cfg := &config.Config{
 		AllowGroups:       []string{"g1"},
-		WorkspaceAccounts: []string{"qq_a", "qq_b"},
+		WorkspaceAccounts: []string{"qq_official_bot_a", "qq_official_bot_b"},
 		MaxCacheMsg:       10,
 	}
 
@@ -273,11 +320,11 @@ func Test多账号共用一个档案库(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	wsA, err := m.ResolveOrCreate("qq", "a")
+	wsA, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
 	if err != nil || wsA == nil {
 		t.Fatalf("ResolveOrCreate(a) = %v, %v", wsA, err)
 	}
-	wsB, err := m.ResolveOrCreate("qq", "b")
+	wsB, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "b")
 	if err != nil || wsB == nil {
 		t.Fatalf("ResolveOrCreate(b) = %v, %v", wsB, err)
 	}
@@ -302,7 +349,7 @@ func Test多账号共用一个档案库(t *testing.T) {
 	}
 	defer m2.Close()
 
-	for id, want := range map[string]string{"qq_a": "from-a", "qq_b": "from-b"} {
+	for id, want := range map[string]string{"qq_official_bot_a": "from-a", "qq_official_bot_b": "from-b"} {
 		ws, ok := m2.ByID(id)
 		if !ok || ws == nil {
 			t.Fatalf("%s 重启后应被扫描加载", id)
@@ -324,7 +371,7 @@ func Test群档案与成员随消息入库(t *testing.T) {
 	}
 	cfg := &config.Config{
 		AllowGroups:       []string{"g1"},
-		WorkspaceAccounts: []string{"qq_a"},
+		WorkspaceAccounts: []string{"qq_official_bot_a"},
 		MaxCacheMsg:       10,
 	}
 	newManager := func() *Manager {
@@ -337,7 +384,7 @@ func Test群档案与成员随消息入库(t *testing.T) {
 	}
 
 	m := newManager()
-	ws, err := m.ResolveOrCreate("qq", "a")
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
 	if err != nil || ws == nil {
 		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
 	}
@@ -351,13 +398,13 @@ func Test群档案与成员随消息入库(t *testing.T) {
 
 	m2 := newManager()
 	defer m2.Close()
-	if got := m2.MemberCount("qq_a", "g1"); got != 1 {
+	if got := m2.MemberCount("qq_official_bot_a", "g1"); got != 1 {
 		t.Fatalf("重启后已收录成员数 = %d, want 1", got)
 	}
-	if got := m2.GroupName("qq_a", "g1"); got != "" {
+	if got := m2.GroupName("qq_official_bot_a", "g1"); got != "" {
 		t.Fatalf("没有群名时应为空串，得到 %q", got)
 	}
-	ws2, ok := m2.ByID("qq_a")
+	ws2, ok := m2.ByID("qq_official_bot_a")
 	if !ok || ws2 == nil {
 		t.Fatal("工作空间应从档案恢复")
 	}
@@ -380,10 +427,12 @@ func TestWorkspace入站时核对昵称改名(t *testing.T) {
 	if err != nil {
 		t.Fatalf("打开 state.db：%v", err)
 	}
-	scope := store.Scope("qq_100")
-	scope.SetMeta("platform", "qq")
-	scope.SetMeta("account", "100")
-	scope.SetMeta("name", "旧名")
+	scope := store.Scope("qq_official_bot_100")
+	if err := scope.SaveProfile(state.WorkspaceProfile{
+		Platform: "qq", AccountKind: "official_bot", Account: "100", Name: "旧名",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	// 机器人自己在两个群里的成员行：g1 没设群名片（显示名等于账号名），
 	// g2 设了独立名片——改名时前者要跟着改，后者不能被覆盖。
 	scope.SaveIdentity("g1", "openid-100")
@@ -415,7 +464,7 @@ func TestWorkspace入站时核对昵称改名(t *testing.T) {
 	}))
 	defer server.Close()
 
-	obClient := onebot.NewClient(server.URL, nil, "").For("qq_100")
+	obClient := onebot.NewClient(server.URL, nil, "").For("qq_official_bot_100")
 	m, err := New(func() *config.Config { return &config.Config{} }, system,
 		filepath.Join(dir, "prompt_custom.yaml"), nil, obClient, nil, context.Background())
 	if err != nil {
@@ -441,8 +490,8 @@ func TestWorkspace入站时核对昵称改名(t *testing.T) {
 	if got := ws.Name(); got != "新名" {
 		t.Fatalf("内存昵称应更新为新名，实际 %q", got)
 	}
-	if got := ws.State.Meta("name"); got != "新名" {
-		t.Fatalf("meta.name 应更新为新名，实际 %q", got)
+	if profile, ok, err := ws.State.LoadProfile(); err != nil || !ok || profile.Name != "新名" {
+		t.Fatalf("画像里的名字应更新为新名，实际 %+v, %v, %v", profile, ok, err)
 	}
 
 	// members 表也要跟着改：g1 跟随账号名，g2 的独立群名片保留
@@ -486,10 +535,12 @@ func TestWorkspace成员名先写members再镜像meta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("打开 state.db：%v", err)
 	}
-	scope := store.Scope("qq_100")
-	scope.SetMeta("platform", "qq")
-	scope.SetMeta("account", "100")
-	scope.SetMeta("name", "旧名")
+	scope := store.Scope("qq_official_bot_100")
+	if err := scope.SaveProfile(state.WorkspaceProfile{
+		Platform: "qq", AccountKind: "official_bot", Account: "100", Name: "旧名",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	scope.SaveIdentity("g1", "openid-100")
 	store.Close()
 
@@ -512,7 +563,7 @@ func TestWorkspace成员名先写members再镜像meta(t *testing.T) {
 	}))
 	defer server.Close()
 
-	obClient := onebot.NewClient(server.URL, nil, "").For("qq_100")
+	obClient := onebot.NewClient(server.URL, nil, "").For("qq_official_bot_100")
 	m, err := New(func() *config.Config { return &config.Config{} }, system,
 		filepath.Join(dir, "prompt_custom.yaml"), nil, obClient, nil, context.Background())
 	if err != nil {
@@ -553,8 +604,8 @@ func TestWorkspace成员名先写members再镜像meta(t *testing.T) {
 	if got := members["g1"]["openid-100"]; got != "群里的机器人名" {
 		t.Fatalf("members 行应为新名，实际 %q", got)
 	}
-	if got := ws.State.Meta("name"); got != "群里的机器人名" {
-		t.Fatalf("meta.name 应为新名，实际 %q", got)
+	if profile, ok, err := ws.State.LoadProfile(); err != nil || !ok || profile.Name != "群里的机器人名" {
+		t.Fatalf("画像里的名字应为新名，实际 %+v, %v, %v", profile, ok, err)
 	}
 }
 
@@ -568,7 +619,7 @@ func TestLearnMemberName消息自带名字(t *testing.T) {
 	}
 	cfg := &config.Config{
 		AllowGroups:       []string{"g1"},
-		WorkspaceAccounts: []string{"qq_a"},
+		WorkspaceAccounts: []string{"qq_official_bot_a"},
 		MaxCacheMsg:       10,
 	}
 	newManager := func() *Manager {
@@ -581,7 +632,7 @@ func TestLearnMemberName消息自带名字(t *testing.T) {
 	}
 
 	m := newManager()
-	ws, err := m.ResolveOrCreate("qq", "a")
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
 	if err != nil || ws == nil {
 		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
 	}
@@ -598,7 +649,7 @@ func TestLearnMemberName消息自带名字(t *testing.T) {
 
 	m2 := newManager()
 	defer m2.Close()
-	ws2, ok := m2.ByID("qq_a")
+	ws2, ok := m2.ByID("qq_official_bot_a")
 	if !ok || ws2 == nil {
 		t.Fatal("工作空间应从档案恢复")
 	}
@@ -617,7 +668,7 @@ func TestResolveNames内存优先查库兜底(t *testing.T) {
 	}
 	cfg := &config.Config{
 		AllowGroups:       []string{"g1"},
-		WorkspaceAccounts: []string{"qq_a"},
+		WorkspaceAccounts: []string{"qq_official_bot_a"},
 		MaxCacheMsg:       10,
 	}
 	m, err := New(func() *config.Config { return cfg }, system,
@@ -626,7 +677,7 @@ func TestResolveNames内存优先查库兜底(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer m.Close()
-	ws, err := m.ResolveOrCreate("qq", "a")
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
 	if err != nil || ws == nil {
 		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
 	}
@@ -667,7 +718,7 @@ func Test重启恢复历史消息昵称(t *testing.T) {
 	}
 	cfg := &config.Config{
 		AllowGroups:       []string{"g1"},
-		WorkspaceAccounts: []string{"qq_a"},
+		WorkspaceAccounts: []string{"qq_official_bot_a"},
 		MaxCacheMsg:       10,
 	}
 	newManager := func() *Manager {
@@ -680,7 +731,7 @@ func Test重启恢复历史消息昵称(t *testing.T) {
 	}
 
 	m := newManager()
-	ws, err := m.ResolveOrCreate("qq", "a")
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
 	if err != nil || ws == nil {
 		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
 	}
@@ -690,7 +741,7 @@ func Test重启恢复历史消息昵称(t *testing.T) {
 
 	m2 := newManager()
 	defer m2.Close()
-	ws2, ok := m2.ByID("qq_a")
+	ws2, ok := m2.ByID("qq_official_bot_a")
 	if !ok || ws2 == nil {
 		t.Fatal("工作空间应从档案恢复")
 	}

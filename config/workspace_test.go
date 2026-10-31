@@ -12,11 +12,11 @@ func TestWorkspaceAccounts校验(t *testing.T) {
 		wantErr  bool
 	}{
 		{"空名单可运行", nil, false},
-		{"合法 ID", []string{"qq_1906xxxx", "telegram_foobar"}, false},
+		{"合法 ID", []string{"qq_official_bot_1906xxxx", "telegram_app_foobar"}, false},
 		{"通配符", []string{"*"}, false},
-		{"空项", []string{"qq_1", ""}, true},
+		{"空项", []string{"qq_official_bot_1", ""}, true},
 		{"非法字符", []string{"../etc"}, true},
-		{"重复", []string{"qq_1", "qq_1"}, true},
+		{"重复", []string{"qq_official_bot_1", "qq_official_bot_1"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

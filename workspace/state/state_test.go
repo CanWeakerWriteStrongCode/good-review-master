@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"good-review-master/cache"
 	"good-review-master/logutil"
@@ -45,18 +44,17 @@ func openTemp(t *testing.T) (*Store, *Scope) {
 	return st, st.Scope("qq_test")
 }
 
+// waitQueue 保留旧调用点：消息现在是同步写入，无需等待。
 func waitQueue(t *testing.T, st *Store) {
 	t.Helper()
-	// 异步写是后台 goroutine；测试里用一个同步查询等它排空（单连接串行执行）。
-	deadline := time.Now().Add(2 * time.Second)
-	for len(st.queue) > 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("写队列未排空")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	// channel 空了不代表最后一条已执行，借一次同步查询等它完成。
 	_, _ = st.Stats()
+}
+
+func execDB(t *testing.T, st *Store, statement string) {
+	t.Helper()
+	if err := st.db.Exec(statement).Error; err != nil {
+		t.Fatalf("执行 %q 失败：%v", statement, err)
+	}
 }
 
 func Test消息持久化与按群截断(t *testing.T) {
@@ -160,7 +158,9 @@ func Test锚点成员人格与元信息(t *testing.T) {
 	scope.SaveIdentity("g1", "openid-a")
 	scope.SaveMember("g1", "u1", "张三", "老张")
 	scope.SaveGroupPersona("g1", "锐评下")
-	scope.SetMeta("name", "小助理")
+	if err := scope.SaveProfile(WorkspaceProfile{Name: "小助理"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -188,11 +188,11 @@ func Test锚点成员人格与元信息(t *testing.T) {
 	if err != nil || personas["g1"] != "锐评下" {
 		t.Fatalf("personas = %+v, %v", personas, err)
 	}
-	if got := scope.Meta("name"); got != "小助理" {
-		t.Fatalf("meta name = %q", got)
+	if profile, ok, err := scope.LoadProfile(); err != nil || !ok || profile.Name != "小助理" {
+		t.Fatalf("profile = %+v, %v, %v", profile, ok, err)
 	}
-	if got := st.Scope("qq_other").Meta("name"); got != "" {
-		t.Fatalf("meta 不应跨工作空间泄漏，得到 %q", got)
+	if _, ok, err := st.Scope("qq_other").LoadProfile(); err != nil || ok {
+		t.Fatalf("profile 不应跨工作空间泄漏，ok=%v err=%v", ok, err)
 	}
 
 	scope.DeleteGroupPersona("g1")
@@ -231,15 +231,9 @@ func Test旧结构迁移(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	// 手工退回 v1 的表结构（无 workspace_id），模拟旧库。
-	if _, err := st.db.Exec(`DROP TABLE messages`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.db.Exec(`CREATE TABLE messages (group_id TEXT, message_id TEXT, user_id TEXT, content TEXT, images TEXT, reply_to TEXT, ts INTEGER)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.db.Exec(`PRAGMA user_version = 1`); err != nil {
-		t.Fatal(err)
-	}
+	execDB(t, st, `DROP TABLE messages`)
+	execDB(t, st, `CREATE TABLE messages (group_id TEXT, message_id TEXT, user_id TEXT, content TEXT, images TEXT, reply_to TEXT, ts INTEGER)`)
+	execDB(t, st, `PRAGMA user_version = 1`)
 	_ = st.Close()
 
 	st, err = Open(path)
@@ -284,12 +278,8 @@ func TestV2升级保留消息(t *testing.T) {
 	waitQueue(t, st)
 
 	// 手动退回 v2：没有 groups 表。
-	if _, err := st.db.Exec(`DROP TABLE groups`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.db.Exec(`PRAGMA user_version = 2`); err != nil {
-		t.Fatal(err)
-	}
+	execDB(t, st, `DROP TABLE groups`)
+	execDB(t, st, `PRAGMA user_version = 2`)
 	_ = st.Close()
 
 	st, err = Open(path)
@@ -309,13 +299,19 @@ func TestV2升级保留消息(t *testing.T) {
 	}
 }
 
-func TestWorkspaces返回平台与账号(t *testing.T) {
+func TestWorkspaces返回平台类型与账号(t *testing.T) {
 	st, scope := openTemp(t)
-	scope.SetMeta("platform", "qq")
-	scope.SetMeta("account", "1906")
+	if err := scope.SaveProfile(WorkspaceProfile{
+		Platform: "qq", AccountKind: "official_bot", Account: "1906",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	other := st.Scope("qq_b")
-	other.SetMeta("platform", "qq")
-	other.SetMeta("account", "b")
+	if err := other.SaveProfile(WorkspaceProfile{
+		Platform: "qq", AccountKind: "personal_account", Account: "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	metas, err := st.Workspaces()
 	if err != nil {
@@ -328,7 +324,8 @@ func TestWorkspaces返回平台与账号(t *testing.T) {
 	for _, meta := range metas {
 		byID[meta.ID] = meta
 	}
-	if got := byID["qq_test"]; got.Platform != "qq" || got.Account != "1906" {
+	if got := byID["qq_test"]; got.Platform != "qq" ||
+		got.AccountKind != "official_bot" || got.Account != "1906" {
 		t.Fatalf("qq_test meta = %+v", got)
 	}
 }
@@ -481,15 +478,9 @@ func TestV4升级补图片字段(t *testing.T) {
 	scope.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", Content: "旧消息", Time: 1})
 	waitQueue(t, st)
 	// 退回 v4：去掉 image_ids 列与图库表。
-	if _, err := st.db.Exec(`ALTER TABLE messages DROP COLUMN image_ids`); err != nil {
-		t.Fatalf("退回 v4 失败：%v", err)
-	}
-	if _, err := st.db.Exec(`DROP TABLE image_notes`); err != nil {
-		t.Fatalf("删除图库表失败：%v", err)
-	}
-	if _, err := st.db.Exec(`PRAGMA user_version = 4`); err != nil {
-		t.Fatal(err)
-	}
+	execDB(t, st, `ALTER TABLE messages DROP COLUMN image_ids`)
+	execDB(t, st, `DROP TABLE image_notes`)
+	execDB(t, st, `PRAGMA user_version = 4`)
 	_ = st.Close()
 
 	st, err = Open(path)

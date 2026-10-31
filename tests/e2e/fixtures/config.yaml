@@ -1,11 +1,12 @@
 # 测试专用配置：GOOD_REVIEW_TEST=1 启动时使用
 # 注意：im.api_base 指向死地址，出站调用失败仅 warn；数据由 /api/debug/inject 直接种入。
-# global-setup 会先推一条 OB12 事件，让 qq_1906xxxx 工作空间开通，debug 接口才有对象可操作。
+# global-setup 会先推一条 OB12 事件，让 qq_official_bot_1906xxxx 工作空间开通，
+# debug 接口才有对象可操作。
 im:
   api_base: "http://127.0.0.1:1"
 bot:
   allow_groups: "10001,10002"
-  allow_workspace_accounts: ["qq_1906xxxx"]
+  allow_workspace_accounts: ["qq_official_bot_1906xxxx"]
 runtime:
   llm_send_count: 3   # 小重置窗口：便于缓存成本用例用少量消息触发重置/扩展
   llm_timeout_sec: 20

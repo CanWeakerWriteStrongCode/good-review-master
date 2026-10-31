@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-const testAccount = "qq_1906xxxx"
+const testAccount = "qq_official_bot_1906xxxx"
 
 func newClientFor(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
@@ -174,7 +174,7 @@ func TestGetGroupMemberInfo参数(t *testing.T) {
 // 全局和账号覆盖都没配时，动作必须报错而不是静默成功。
 func TestFor完全没有地址时调用失败(t *testing.T) {
 	root := NewClient("", nil, "")
-	other := root.For("qq_other")
+	other := root.For("qq_official_bot_other")
 	if other.Base() != "" {
 		t.Fatalf("没配地址时不应有 base，实际 %q", other.Base())
 	}
@@ -185,15 +185,15 @@ func TestFor完全没有地址时调用失败(t *testing.T) {
 
 func TestFor优先账号覆盖其次全局地址(t *testing.T) {
 	client := NewClient("http://default:6199/", []Account{
-		{ID: "qq_a", APIBase: "http://a:6199/"},
+		{ID: "qq_official_bot_a", APIBase: "http://a:6199/"},
 	}, "")
-	if got := client.For("qq_a").Base(); got != "http://a:6199" {
+	if got := client.For("qq_official_bot_a").Base(); got != "http://a:6199" {
 		t.Fatalf("账号覆盖地址 = %q", got)
 	}
-	if got := client.For("qq_b").Base(); got != "http://default:6199" {
+	if got := client.For("qq_official_bot_b").Base(); got != "http://default:6199" {
 		t.Fatalf("未覆盖账号应回退全局地址，实际 %q", got)
 	}
-	if got := NewClient("", nil, "").For("qq_a").Base(); got != "" {
+	if got := NewClient("", nil, "").For("qq_official_bot_a").Base(); got != "" {
 		t.Fatalf("都没配时应返回空地址，实际 %q", got)
 	}
 }

@@ -41,16 +41,17 @@ type ImageID struct {
 // 候选列表展示的 url 始终取当前消息自己的 Images。
 type ImageNote struct {
 	ImageID
-	MIME      string `json:"mime,omitempty"`
-	Width     int    `json:"width,omitempty"`
-	Height    int    `json:"height,omitempty"`
-	Animated  bool   `json:"animated,omitempty"`
-	Note      string `json:"note,omitempty"`
-	InfoLevel string `json:"info_level,omitempty"` // high|medium|low|none|unknown
-	HasText   bool   `json:"has_text,omitempty"`
-	Status    string `json:"status,omitempty"`   // ok|failed
-	Attempts  int    `json:"attempts,omitempty"` // 描述尝试次数（失败重试上限用）
-	Model     string `json:"model,omitempty"`    // 生成描述用的模型名
+	MIME          string `json:"mime,omitempty"`
+	Width         int    `json:"width,omitempty"`
+	Height        int    `json:"height,omitempty"`
+	Animated      bool   `json:"animated,omitempty"`
+	Note          string `json:"note,omitempty"`
+	InfoLevel     string `json:"info_level,omitempty"` // high|medium|low|none|unknown
+	HasText       bool   `json:"has_text,omitempty"`
+	Status        string `json:"status,omitempty"`         // ok|failed
+	Attempts      int    `json:"attempts,omitempty"`       // 描述尝试次数（失败重试上限用）
+	Model         string `json:"model,omitempty"`          // 生成描述用的模型名
+	PromptVersion string `json:"prompt_version,omitempty"` // 描述提示词版本；换版不自动重刷
 }
 
 // GroupMsgCache 群消息环形缓存（零拷贝实现）

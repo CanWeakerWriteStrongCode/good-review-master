@@ -504,3 +504,41 @@ func TestSendReply不拆分(t *testing.T) {
 		t.Fatalf("interval=0 应合成一条，实际 %v", texts)
 	}
 }
+
+// TestSendReply台账幂等 同一组动作重试时只补未发的：已发动作直接跳过。
+func TestSendReply台账幂等(t *testing.T) {
+	var mu sync.Mutex
+	sends := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sends++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "retcode": 0, "data": map[string]any{}})
+	}))
+	defer server.Close()
+
+	cfg := proactiveTestConfig()
+	ledger := NewMemoryLedger()
+	instance := &Router{
+		workspace: "w1",
+		obClient:  onebot.NewClient(server.URL, nil, "").For("w1"),
+		appCfg:    staticSnapshot(cfg),
+		ledger:    ledger,
+	}
+	event := onebot.Event{
+		Type: "message", DetailType: "group", GroupID: "g1", UserID: "u1", MessageID: "m1",
+		Self: onebot.Self{Platform: "qq", UserID: "bot-openid"},
+	}
+	if err := instance.sendReply(context.Background(), event, "g1", true, []string{"一", "二"}, cfg); err != nil {
+		t.Fatalf("首次发送：%v", err)
+	}
+	if err := instance.sendReply(context.Background(), event, "g1", true, []string{"一", "二"}, cfg); err != nil {
+		t.Fatalf("重试：%v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sends != 1 {
+		t.Fatalf("已发动作不应重发，实际发送 %d 次", sends)
+	}
+}

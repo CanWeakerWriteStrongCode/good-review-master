@@ -21,7 +21,7 @@ test('cache-cost：无锚点走重置，锚点命中走扩展（Start 不变、�
 
   // 2. 第一次触发：无锚点 → 重置，窗口 = 最近 3 条 = msgs[2:5]（第一条消息2/3/4）
   await request.post('/api/debug/trigger', {
-    data: { group_id: groupId, content: '[CQ:at,qq=123456] 锐评下' },
+    data: { group_id: groupId, content: '@锐评大师(test_self) 锐评下' },
   })
   const callsAfterFirst = await waitForLLMCalls(request, 1)
   const firstCall = callsAfterFirst[0]
@@ -42,7 +42,7 @@ test('cache-cost：无锚点走重置，锚点命中走扩展（Start 不变、�
 
   // 5. 第二次触发：锚点仍在缓存、扩展成本（命中0.033×旧窗口+1.0×新增）≪ 重置成本 → 扩展
   await request.post('/api/debug/trigger', {
-    data: { group_id: groupId, content: '[CQ:at,qq=123456] 锐评下' },
+    data: { group_id: groupId, content: '@锐评大师(test_self) 锐评下' },
   })
   const callsAfterSecond = await waitForLLMCalls(request, 2)
   const secondCall = callsAfterSecond[1]

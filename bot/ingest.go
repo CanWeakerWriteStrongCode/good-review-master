@@ -2,48 +2,84 @@ package bot
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"good-review-master/logutil"
 	"good-review-master/onebot"
-	"good-review-master/telemetry"
+	"good-review-master/pipeline"
+	"good-review-master/workspace"
 )
 
 const (
-	// eventQueueSize 是入站事件队列容量。群聊消息量很低，这个值足够吸收
-	// 一次重连风暴；真正的背压由 AcceptEvent 的等待超时给出。
-	eventQueueSize = 1024
-
 	// enqueueTimeout HTTP 处理器最多等这么久。超过就回 503，
-	// 让实现端把"下游处理不过来"显式暴露出来，而不是悄悄丢掉消息。
+	// 让实现端把“下游处理不过来”显式暴露出来，而不是悄悄丢消息。
 	enqueueTimeout = 2 * time.Second
+
+	// drainPollInterval 关停排空时的轮询间隔。
+	drainPollInterval = 20 * time.Millisecond
 )
 
-// Run 启动消息消费循环。历史由共享 state.db 按 workspace_id 提供，启动时不再回填。
+// Run 启动三段消费 worker，并阻塞到生命周期结束。
+//
+// 关闭时先停止接收新事件，给存量队列 DrainTimeout 排空；到期后关闭缓冲，
+// 各 worker 退出。消息本体在 Stage 1 已同步入库，排空失败不会丢正文。
 func (b *Bot) Run(ctx context.Context) {
 	logutil.Info("🤖 机器人已就绪，等待 IM 事件推送")
 
-	for {
-		select {
-		case <-ctx.Done():
-			logutil.Info("消息分发循环正常退出")
-			return
-		case item := <-b.queue:
-			b.dispatch(ctx, item)
-		}
-	}
+	// worker 使用独立 ctx：应用 ctx 取消后仍允许把存量处理完（排空预算由
+	// DrainTimeout 控制），而不是让在途消息半途而废。
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	b.stage1.Run(workerCtx)
+	b.stage2.Run(workerCtx)
+	b.stage3.Run(workerCtx)
+
+	<-ctx.Done()
+	logutil.Info("消息处理开始排空", "超时", b.cfg().Pipeline.DrainTimeout)
+	b.drain(b.cfg().Pipeline.DrainTimeout)
+	b.closeBuffers()
+	b.stage1.Close()
+	b.stage2.Close()
+	b.stage3.Close()
+	b.stage1.Wait()
+	b.stage2.Wait()
+	b.stage3.Wait()
+	logutil.Info("消息分发循环已退出")
 }
 
-// AcceptEvent 把一条事件放进队列后立即返回。
-//
-// 不在 HTTP 处理器里直接处理：一次 @ 会触发大模型调用，让实现端等上几十秒没有任何好处。
-// 工作空间的归属在这里判定：既没有目录、又不在 bot.allow_workspace_accounts 名单里时
-// 返回 accepted=false，入站层回 404，实现端把消息交回自己的 Agent。
+func (b *Bot) drain(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if b.pending() == 0 && b.stage1.Active() == 0 && b.stage2.Active() == 0 && b.stage3.Active() == 0 {
+			return
+		}
+		time.Sleep(drainPollInterval)
+	}
+	logutil.Warn("关停排空超时，仍有消息未处理完", "pending", b.pending(),
+		"active", b.stage1.Active()+b.stage2.Active()+b.stage3.Active())
+}
+
+func (b *Bot) pending() int {
+	return b.b1.Total() + b.b2.Total() + b.b3.Total()
+}
+
+// AcceptEvent 把一条事件放进 B1 后立即返回。
 func (b *Bot) AcceptEvent(ctx context.Context, account string, event onebot.Event) (bool, error) {
-	ws, err := b.workspaces.ResolveOrCreate(event.Platform(), account)
+	if b.closed.Load() {
+		return false, pipeline.ErrClosed
+	}
+	ws, err := b.workspaces.ResolveOrCreate(event.Platform(), event.Kind(), account)
 	if err != nil {
-		// 平台名不合法属于请求内容错误；账号路径已在 im 层校验过。
+		if errors.Is(err, workspace.ErrAccountKindRequired) {
+			logutil.Warn("事件缺少 account_kind，且找不到已有工作空间，已拒绝接管",
+				"platform", event.Platform(), "account", account,
+				"group", event.GroupID, "user", event.UserID)
+			return false, nil
+		}
 		logutil.Warn("无法解析事件所属工作空间，已拒绝接管",
 			"platform", event.Self.Platform, "account", account,
 			"group", event.GroupID, "user", event.UserID, "err", err)
@@ -55,37 +91,26 @@ func (b *Bot) AcceptEvent(ctx context.Context, account string, event onebot.Even
 		return false, nil
 	}
 
-	timer := time.NewTimer(enqueueTimeout)
-	defer timer.Stop()
-
-	select {
-	case b.queue <- job{event: event, ws: ws}:
-		return true, nil
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-timer.C:
-		return false, fmt.Errorf("消息队列已满（容量 %d）", eventQueueSize)
+	key := pipeline.ChatKey(ws.ID, event.ChatID())
+	dedupKey := key + "\x00" + event.MessageID
+	if !b.dedup.claim(dedupKey) {
+		logutil.Debug("入站去重：同一条消息已在处理中", "workspace", ws.ID, "msgID", event.MessageID)
+		return false, nil
 	}
-}
-
-// dispatch 做消费侧的最后一层过滤：白名单与重复消息。
-// 私聊没有群白名单可查，按一对一会话（private:<user_id>）进缓存与去重。
-func (b *Bot) dispatch(ctx context.Context, item job) {
-	event, ws := item.event, item.ws
-	cfg := ws.Snapshot()()
-	chatID := event.ChatID()
-	if !event.IsPrivate() && !ws.AllowsGroup(chatID) {
-		return
+	item, err := pipeline.NewItem(pipeline.StageIngest, key, event.MessageID,
+		pipeline.InboundEvent{WorkspaceID: ws.ID, Event: event})
+	if err != nil {
+		logutil.Error("编码入站事件失败", "workspace", ws.ID, "msgID", event.MessageID, "err", err)
+		return false, nil
 	}
 
-	gc := ws.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg)
-	if gc.HasSeen(event.Self.UserID, event.MessageID) {
-		logutil.Debug("跳过重复消息", "chat", chatID, "self", event.Self.UserID, "msgID", event.MessageID)
-		return
+	putCtx, cancel := context.WithTimeout(ctx, enqueueTimeout)
+	defer cancel()
+	if err := b.b1.Put(putCtx, item); err != nil {
+		b.dedup.forget(dedupKey)
+		logutil.Warn("入站缓冲已满或已关闭", "workspace", ws.ID, "msgID", event.MessageID, "err", err)
+		return false, err
 	}
-
-	if event.Time > 0 {
-		telemetry.PollLagSeconds.Observe(time.Since(time.Unix(int64(event.Time), 0)).Seconds())
-	}
-	b.ProcessMessage(ctx, event, ws)
+	b.stage1.Submit(key)
+	return true, nil
 }

@@ -5,8 +5,9 @@
 > **注意：本文描述的是 `platform_id` + OneBot 11 时代的实现，正在被
 > [im-protocol-standardization.md](im-protocol-standardization.md) 与
 > [workspace-auto-provisioning-design.md](workspace-auto-provisioning-design.md) 取代；
-> 冲突时以后者为准（契约改 OneBot 12，账号键为 `{self.platform}_{路径 account}`，
-> `self.user_id` 只做 @ 判定，工作空间自动开通；**提示词改为全局共享，工作空间不再有
+> 冲突时以后者为准（契约改 OneBot 12，账号键为
+> `{platform}_{account_kind}_{路径 account}`，`self.user_id` 只做 @ 判定，
+> 工作空间自动开通；**提示词改为全局共享，工作空间不再有
 > 目录或私有配置文件，私有数据统一进 `state.db`**）。**
 
 ## 1. 目标与边界
