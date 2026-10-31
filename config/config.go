@@ -79,9 +79,6 @@ type AssetsConf struct {
 	JobRetention        time.Duration // 0 = 永久保留 done/missing 台账
 	MessageBudget       time.Duration // 0 = 不设单条消息预算
 	TagConcurrency      int
-	DeferCacheDir       string
-	DeferCacheMaxBytes  int64         // 单张原图副本大小上限；0 = 不保存副本
-	DeferCacheTTL       time.Duration // 0 = 不过期
 	PromptVersion       string
 }
 

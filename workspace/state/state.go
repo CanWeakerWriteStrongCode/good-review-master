@@ -275,7 +275,6 @@ func migrate(db *gorm.DB, path string) error {
 			asset_index  INTEGER NOT NULL DEFAULT 0,
 			kind         TEXT NOT NULL DEFAULT 'image',
 			url          TEXT NOT NULL DEFAULT '',
-			local_path   TEXT NOT NULL DEFAULT '',
 			status       TEXT NOT NULL DEFAULT 'pending',
 			attempts     INTEGER NOT NULL DEFAULT 0,
 			last_error   TEXT NOT NULL DEFAULT '',
@@ -1153,7 +1152,7 @@ func (s *Store) SaveAssetTagJob(job AssetTagJob) error {
 			{Name: "workspace_id"}, {Name: "group_id"}, {Name: "message_id"}, {Name: "asset_index"},
 		},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"kind", "url", "local_path", "status", "attempts", "last_error", "updated_at",
+			"kind", "url", "status", "attempts", "last_error", "updated_at",
 		}),
 	}).Create(&job).Error
 }
@@ -1180,7 +1179,7 @@ func (s *Store) UpdateAssetTagJob(job AssetTagJob) error {
 			job.WorkspaceID, job.GroupID, job.MessageID, job.AssetIndex).
 		Updates(map[string]any{
 			"status": job.Status, "attempts": job.Attempts,
-			"last_error": job.LastError, "local_path": job.LocalPath,
+			"last_error": job.LastError,
 			"updated_at": job.UpdatedAt,
 		}).Error
 }

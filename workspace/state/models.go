@@ -122,7 +122,6 @@ type AssetTagJob struct {
 	AssetIndex  int    `gorm:"column:asset_index;primaryKey"`
 	Kind        string `gorm:"column:kind"`
 	URL         string `gorm:"column:url"`
-	LocalPath   string `gorm:"column:local_path"`
 	Status      string `gorm:"column:status"`
 	Attempts    int    `gorm:"column:attempts"`
 	LastError   string `gorm:"column:last_error"`

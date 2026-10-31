@@ -49,12 +49,12 @@ func NewImageTagger(cfg config.Snapshot, client llm.Client, prompt func() string
 }
 
 // DeferredAsset 本次没来得及打标签、需要后台补的资产。
-// Data 是已经取到的原始字节，Stage 2 会尽量复制到本地缓存；为空表示只能靠 URL。
+// 只记原始地址：后台按这个 URL（或本地临时文件路径）重新取一次，
+// 取不到就把欠条记成 missing，不再另存原图副本。
 type DeferredAsset struct {
 	Index int
 	Kind  string
 	URL   string
-	Data  []byte
 	Error string
 }
 
@@ -134,7 +134,7 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 		result.Assets[i].Status = pipeline.AssetStatusFailed
 		result.Assets[i].Error = "图片描述失败且已达重试上限"
 		result.Deferred = append(result.Deferred, DeferredAsset{
-			Index: i, Kind: "image", URL: urls[i], Data: datas[i], Error: result.Assets[i].Error,
+			Index: i, Kind: "image", URL: urls[i], Error: result.Assets[i].Error,
 		})
 	}
 
@@ -169,7 +169,7 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 					result.Assets[i].Status = pipeline.AssetStatusDeferred
 					result.Assets[i].Error = "标签时间预算耗尽"
 					result.Deferred = append(result.Deferred, DeferredAsset{
-						Index: i, Kind: "image", URL: urls[i], Data: datas[i], Error: "标签时间预算耗尽",
+						Index: i, Kind: "image", URL: urls[i], Error: "标签时间预算耗尽",
 					})
 				}
 				mu.Unlock()
@@ -192,7 +192,7 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 					result.Assets[i].Status = status
 					result.Assets[i].Error = err.Error()
 					result.Deferred = append(result.Deferred, DeferredAsset{
-						Index: i, Kind: "image", URL: urls[i], Data: datas[i], Error: err.Error(),
+						Index: i, Kind: "image", URL: urls[i], Error: err.Error(),
 					})
 				}
 			}

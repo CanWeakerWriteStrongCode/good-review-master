@@ -169,8 +169,8 @@ func TestTagger时间预算耗尽进入欠条(t *testing.T) {
 	if result.Status != pipeline.AssetStatusDeferred {
 		t.Fatalf("预算耗尽应为 deferred，实际 %q", result.Status)
 	}
-	if len(result.Deferred) != 1 || len(result.Deferred[0].Data) == 0 {
-		t.Fatalf("欠条应带已经取到的原图：%+v", result.Deferred)
+	if len(result.Deferred) != 1 || result.Deferred[0].URL != path {
+		t.Fatalf("欠条应记下原始地址：%+v", result.Deferred)
 	}
 }
 
@@ -201,20 +201,5 @@ func TestDownscaleImage(t *testing.T) {
 	}
 	if _, err := jpeg.Decode(bytes.NewReader(out)); err != nil {
 		t.Fatalf("JPEG 解码失败：%v", err)
-	}
-}
-
-func TestDeferredBytes保存与过期清理(t *testing.T) {
-	dir := t.TempDir()
-	path, err := SaveDeferredBytes(dir, cache.ImageID{SHA: "abc", Size: 3}, []byte("img"), 1<<20)
-	if err != nil || path == "" {
-		t.Fatalf("保存副本失败：%q, %v", path, err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("副本不存在：%v", err)
-	}
-	time.Sleep(10 * time.Millisecond)
-	if removed := CleanupDeferredBytes(dir, 5*time.Millisecond, time.Now()); removed != 1 {
-		t.Fatalf("应清理 1 个过期副本，实际 %d", removed)
 	}
 }

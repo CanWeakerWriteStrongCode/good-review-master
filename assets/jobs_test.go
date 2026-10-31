@@ -78,7 +78,7 @@ func TestBackfiller补标签并标记完成(t *testing.T) {
 			Kind: "image", URL: path, Status: "pending",
 		}},
 	}
-	cfg := &BackfillConfig{Enabled: true, Interval: time.Second, Batch: 10, MaxAttempts: 3, CacheDir: dir}
+	cfg := &BackfillConfig{Enabled: true, Interval: time.Second, Batch: 10, MaxAttempts: 3}
 	worker := NewBackfiller(store, tagger, func() *BackfillConfig { return cfg })
 	worker.tick(context.Background(), cfg)
 
@@ -90,27 +90,48 @@ func TestBackfiller补标签并标记完成(t *testing.T) {
 	}
 }
 
-func TestBackfiller本地副本消失记终态(t *testing.T) {
+func TestBackfiller原始地址取不到记终态(t *testing.T) {
 	fake := testutil.NewFakeLLM()
 	notes := newFakeNoteStore()
 	tagger := testTagger(t, t.TempDir(), fake, notes)
-	missing := filepath.Join(t.TempDir(), "gone.png")
+	gone := filepath.Join(t.TempDir(), "gone.png")
 
 	store := &fakeJobStore{
 		notes: notes,
 		jobs: []state.AssetTagJob{{
 			WorkspaceID: "ws", GroupID: "g1", MessageID: "m1", AssetIndex: 0,
-			Kind: "image", LocalPath: missing, Status: "pending",
+			Kind: "image", URL: gone, Status: "pending",
 		}},
 	}
 	cfg := &BackfillConfig{Enabled: true, Batch: 10, MaxAttempts: 3}
 	worker := NewBackfiller(store, tagger, func() *BackfillConfig { return cfg })
 	worker.tick(context.Background(), cfg)
 
-	if got := store.jobs[0]; got.Status != "missing" {
-		t.Fatalf("本地副本和 URL 都没了应记 missing 终态：%+v", got)
+	if got := store.jobs[0]; got.Status != "missing" || got.Attempts != 1 {
+		t.Fatalf("原始地址取不到应记 missing 终态：%+v", got)
 	}
 	if calls := len(fake.StructuredCalls()); calls != 0 {
 		t.Fatalf("终态不应再调模型，实际 %d 次", calls)
+	}
+}
+
+func TestBackfiller没有原始地址记终态(t *testing.T) {
+	fake := testutil.NewFakeLLM()
+	notes := newFakeNoteStore()
+	tagger := testTagger(t, t.TempDir(), fake, notes)
+
+	store := &fakeJobStore{
+		notes: notes,
+		jobs: []state.AssetTagJob{{
+			WorkspaceID: "ws", GroupID: "g1", MessageID: "m1", AssetIndex: 0,
+			Kind: "image", Status: "pending",
+		}},
+	}
+	cfg := &BackfillConfig{Enabled: true, Batch: 10, MaxAttempts: 3}
+	worker := NewBackfiller(store, tagger, func() *BackfillConfig { return cfg })
+	worker.tick(context.Background(), cfg)
+
+	if got := store.jobs[0]; got.Status != "missing" || got.Attempts != 0 {
+		t.Fatalf("没有原始地址应直接记 missing：%+v", got)
 	}
 }

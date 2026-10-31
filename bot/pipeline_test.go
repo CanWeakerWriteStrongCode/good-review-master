@@ -146,7 +146,6 @@ func Test图片消息在Stage2生成描述并入库(t *testing.T) {
 		LLMTimeout:        2 * time.Second,
 		Assets: config.AssetsConf{
 			MessageBudget: 5 * time.Second, TagConcurrency: 1, PromptVersion: "test",
-			DeferCacheDir: filepath.Join(dir, "cache"), DeferCacheMaxBytes: 1 << 20,
 		},
 	}
 	cfg.LLMConfig.ImageNoteMaxSide = 640

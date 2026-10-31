@@ -207,10 +207,6 @@ assets:
   message_budget_sec: 30
   # 同一时刻最多描述几张图（跨消息）；0 非法
   tag_concurrency: 3
-  # 延后打标签时原图副本的本地目录（相对程序工作目录）；URL 过期后靠它重试
-  defer_cache_dir: "asset-cache"
-  defer_cache_max_bytes: 268435456 # 256MB；0 = 不保存原图副本
-  defer_cache_ttl_days: 7          # 副本保留天数；0 = 不过期
   # 写进图库记录的提示词版本；换描述提示词时改它，便于按版本重刷
   prompt_version: "1"
 

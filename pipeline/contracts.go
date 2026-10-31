@@ -54,14 +54,13 @@ const (
 
 // Asset 一条消息里的一个资产（当前只有图片）。
 type Asset struct {
-	Index     int             `json:"index"`
-	Kind      string          `json:"kind"`
-	URL       string          `json:"url"`
-	ImageID   cache.ImageID   `json:"image_id,omitempty"`
-	Note      cache.ImageNote `json:"note,omitempty"`
-	Status    string          `json:"status"`
-	LocalPath string          `json:"local_path,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	Index   int             `json:"index"`
+	Kind    string          `json:"kind"`
+	URL     string          `json:"url"`
+	ImageID cache.ImageID   `json:"image_id,omitempty"`
+	Note    cache.ImageNote `json:"note,omitempty"`
+	Status  string          `json:"status"`
+	Error   string          `json:"error,omitempty"`
 }
 
 // EnrichedMessage 是 Stage 2 的输出，也是 Stage 3 的输入。

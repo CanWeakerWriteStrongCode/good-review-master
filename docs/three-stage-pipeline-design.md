@@ -86,7 +86,7 @@ type EnrichedMessage struct {
     SyncedMessage
     ImageIDs    []cache.ImageID   // sha256 + size
     ImageNotes  []cache.ImageNote // 全局图库里的描述（可能为空）
-    Assets      []Asset           // 每个资产：kind、url、id、标签、状态、本地副本
+    Assets      []Asset           // 每个资产：kind、url、id、标签、状态
     AssetStatus string            // ok | degraded | deferred | failed
 }
 ```
@@ -235,7 +235,6 @@ B1 取代现在的全局事件 channel：HTTP 入站 `Put`，Stage 1 按 `worksp
 | 补标签 | `assets.backfill_*`、`job_retention_days` | 是 |
 | 消息描述预算 | `assets.message_budget_sec` | 是 |
 | 描述并发 | `assets.tag_concurrency` | 是（仅正数） |
-| 原图副本 | `defer_cache_dir` / `defer_cache_max_bytes` / `defer_cache_ttl_days` | 目录否，其余是 |
 | 描述提示词版本 | `assets.prompt_version` | 是 |
 
 | 旋钮 | 人话 | 范围 | 建议默认 | 显式 0 的含义 |
@@ -374,7 +373,6 @@ CREATE TABLE IF NOT EXISTS asset_tag_jobs (
     asset_index  INTEGER NOT NULL DEFAULT 0, -- 消息里第几个资产
     kind         TEXT NOT NULL DEFAULT 'image',
     url          TEXT NOT NULL DEFAULT '',
-    local_path   TEXT NOT NULL DEFAULT '', -- 延后时尽量保存的原图副本；空=只能靠 url
     status       TEXT NOT NULL DEFAULT 'pending', -- pending | failed | missing | done
     attempts     INTEGER NOT NULL DEFAULT 0,
     last_error   TEXT NOT NULL DEFAULT '',
@@ -386,16 +384,16 @@ CREATE INDEX IF NOT EXISTS idx_asset_tag_jobs_pending
     ON asset_tag_jobs(status, updated_at);
 ```
 
-- 配置：单条消息的标签时间预算、打标签并发上限、待办队列上限、`assets.backfill_enabled`、`assets.backfill_interval_sec`、`assets.backfill_batch`、`assets.backfill_max_attempts`、`assets.job_retention_days`、`assets.defer_cache_max_bytes`、`assets.defer_cache_ttl_days`、当前 `prompt_version`；这些阈值统一放全局配置表，运行时可调，沿用显式 0 语义（缺省才用默认，负数非法）。
-- **欠条尽量保留原图**：QQ 官方的图常是本地临时文件，只存地址的话，后台补标签时文件可能已被清理。延后时把已经取到的字节按内容指纹复制到本地临时缓存（单张大小上限、保留天数可配），欠条记本地路径；复制失败才退回只存 URL。补不到就等同一张图下次出现时重新描述。
+- 配置：单条消息的标签时间预算、打标签并发上限、待办队列上限、`assets.backfill_enabled`、`assets.backfill_interval_sec`、`assets.backfill_batch`、`assets.backfill_max_attempts`、`assets.job_retention_days`、当前 `prompt_version`；这些阈值统一放全局配置表，运行时可调，沿用显式 0 语义（缺省才用默认，负数非法）。
+- **欠条只记原始地址**：QQ 官方的图常是本地临时文件，欠条就把这个地址记下来，后台补标签时按它重新读一次；读不到直接把欠条记成 `missing`，不另存原图副本。补不到就等同一张图下次出现时重新描述。
 - **回填只写全局图库，不改已经进入窗口的旧消息**：窗口里的消息在 Stage 2 提交时冻结“图片描述快照”；否则后台补好描述后再塞回旧消息，会改变 prompt 前缀、破坏缓存命中，省下的调用费又被抵消。
-- 后台任务只补标签，不重放消息。**文件消失是终态**：后台发现 URL 过期或本地副本不存在，直接标记 `missing`、记录“文件已消失”，不再重试、不再管它；等同一内容以后再次出现时，按新消息/新资产重新建欠条并正常描述。
+- 后台任务只补标签，不重放消息。**文件消失是终态**：后台发现原始地址取不到（链接过期、本地临时文件被清），直接标记 `missing`、记录“文件已消失”，不再重试、不再管它；等同一内容以后再次出现时，按新消息/新资产重新建欠条并正常描述。
 - 同一内容再次出现时，全局图库里的 `failed` 记录**不永久阻止**重新描述：每次出现都有独立的欠条和尝试次数，由本次出现的重试上限兜住成本。
 - 后台 worker：启动后常驻，按间隔扫描 `status in (pending, failed)` 且 `attempts < max` 的任务，批量调用 `Tagger`；成功 upsert `image_notes` 并把任务标记 `done`（已有成功记录也直接 done），失败 `attempts+1` 并记录 `last_error`，超过上限标记 failed 并报警。指标包括 pending 数、最老任务年龄、补标签成功率。
 - **生命周期与清理**：
   - `pending`：这次没来得及打标签，绝不因此丢消息，交给后台补；
   - `failed`：尝试过但出错（模型超时等临时问题），`attempts` 累加，到上限停止并报警；
-  - `missing`：文件已经没了（链接过期、本地副本不存在），终态，不重试、不报警，只计数；
+  - `missing`：文件已经没了（链接过期、本地临时文件被清），终态，不重试、不报警，只计数；
   - `done`：描述已写进 `image_notes`，台账保留 `assets.job_retention_days` 后清理；
   - 待补任务不清理（还没完成），到上限的失败任务保留供排查；`done` 和 `missing` 按保留天数清理，不动全局图库。
 - **描述版本**：`image_notes` 现有的 `model` 列记录生成模型，再新增 `prompt_version` 记录提示词版本；换模型/提示词后默认不自动重刷（费钱且可能大面积改写），需要时按版本号手动触发批量重刷。同一张图按 `(sha256, byte_size)` 去重，重刷只更新这一条。
@@ -578,7 +576,7 @@ workspace/           工作空间、身份目录、Stage 1 同步与历史
 assets/              Stage 2：Tagger、图片标签（从 router 拆出）
   image.go           sha256 标识、探测/降采样/描述解析
   tagger.go          单条消息内并发描述、预算、欠条
-  jobs.go            后台补标签 worker、原图副本、台账清理
+  jobs.go            后台补标签 worker、台账清理
 pipeline/            阶段契约、缓冲层接口、每会话 worker
   contracts.go       阶段载荷（InboundEvent / SyncedMessage / EnrichedMessage）
   buffer.go          进程内 Buffer 实现
@@ -655,7 +653,7 @@ M0 与 M1 相互独立，可以并行；M2 依赖 M1，M3/M4 依赖 M0。
   - schema v8：`workspace_profile`、成员/群信息历史、`asset_tag_jobs`、`send_ledger`、`alerts`、`settings`
   - 消息与身份信息按表 upsert 同步入库；缓存只做读走加速，miss 回源
 - [x] M2：Stage 1 同步、历史表、变更检测、按群批量补名
-- [x] M3：Stage 2 `assets` 抽取、欠条落库、后台补标签、原图副本
+- [x] M3：Stage 2 `assets` 抽取、欠条落库、后台补标签
 - [x] M4：Stage 3 每会话 worker、冻结快照、动作化回复与发送台账
 - [ ] M5：MQ 适配（按需，本次不做）
 

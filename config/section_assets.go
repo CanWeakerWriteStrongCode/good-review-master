@@ -21,10 +21,6 @@ type assetsSection struct {
 	MessageBudgetSec *int `yaml:"message_budget_sec"`
 	TagConcurrency   *int `yaml:"tag_concurrency"`
 
-	DeferCacheDir      string `yaml:"defer_cache_dir"`
-	DeferCacheMaxBytes *int64 `yaml:"defer_cache_max_bytes"`
-	DeferCacheTTLDays  *int   `yaml:"defer_cache_ttl_days"`
-
 	PromptVersion string `yaml:"prompt_version"`
 }
 
@@ -36,9 +32,6 @@ const (
 	defaultJobRetentionDays    = 30
 	defaultMessageBudgetSec    = 30
 	defaultTagConcurrency      = 3
-	defaultDeferCacheDir       = "asset-cache"
-	defaultDeferCacheMaxBytes  = 256 << 20
-	defaultDeferCacheTTLDays   = 7
 	defaultPromptVersion       = "1"
 )
 
@@ -65,15 +58,6 @@ func (s *assetsSection) SetDefaults() {
 	set(&s.JobRetentionDays, defaultJobRetentionDays)
 	set(&s.MessageBudgetSec, defaultMessageBudgetSec)
 	set(&s.TagConcurrency, defaultTagConcurrency)
-	set(&s.DeferCacheTTLDays, defaultDeferCacheTTLDays)
-	if s.DeferCacheMaxBytes == nil {
-		v := int64(defaultDeferCacheMaxBytes)
-		s.DeferCacheMaxBytes = &v
-	}
-	s.DeferCacheDir = strings.TrimSpace(s.DeferCacheDir)
-	if s.DeferCacheDir == "" {
-		s.DeferCacheDir = defaultDeferCacheDir
-	}
 	s.PromptVersion = strings.TrimSpace(s.PromptVersion)
 	if s.PromptVersion == "" {
 		s.PromptVersion = defaultPromptVersion
@@ -95,16 +79,11 @@ func (s *assetsSection) Validate() error {
 		{"assets.backfill_max_attempts", s.BackfillMaxAttempts},
 		{"assets.job_retention_days", s.JobRetentionDays},
 		{"assets.message_budget_sec", s.MessageBudgetSec},
-		{"assets.defer_cache_ttl_days", s.DeferCacheTTLDays},
 	} {
 		if *item.val < 0 {
 			return fmt.Errorf("%s 不能为负（当前 %d）：0 有明确含义（关闭/不重试/永久保留/不限制/不过期）",
 				item.name, *item.val)
 		}
-	}
-	if *s.DeferCacheMaxBytes < 0 {
-		return fmt.Errorf("assets.defer_cache_max_bytes 不能为负（当前 %d）：0 表示不保存原图副本",
-			*s.DeferCacheMaxBytes)
 	}
 	return nil
 }
@@ -118,9 +97,6 @@ func (s *assetsSection) convert() AssetsConf {
 		JobRetention:        time.Duration(*s.JobRetentionDays) * 24 * time.Hour,
 		MessageBudget:       time.Duration(*s.MessageBudgetSec) * time.Second,
 		TagConcurrency:      *s.TagConcurrency,
-		DeferCacheDir:       s.DeferCacheDir,
-		DeferCacheMaxBytes:  *s.DeferCacheMaxBytes,
-		DeferCacheTTL:       time.Duration(*s.DeferCacheTTLDays) * 24 * time.Hour,
 		PromptVersion:       s.PromptVersion,
 	}
 }

@@ -2,9 +2,9 @@ package assets
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"strings"
 	"time"
 
 	"good-review-master/cache"
@@ -25,7 +25,7 @@ func (t *ImageTagger) TagOne(ctx context.Context, url string, attempts int) (cac
 	cfg := t.cfg()
 	data, mime, err := t.fetcher().FetchImage(ctx, url)
 	if err != nil {
-		return cache.ImageNote{}, err
+		return cache.ImageNote{}, fmt.Errorf("%w: %v", ErrSourceGone, err)
 	}
 	id := imageID(data)
 	if existing, err := t.notes.GetImageNotes([]cache.ImageID{id}); err == nil {
@@ -36,47 +36,9 @@ func (t *ImageTagger) TagOne(ctx context.Context, url string, attempts int) (cac
 	return t.describeImage(ctx, cfg, data, mime, id, attempts)
 }
 
-// SaveDeferredBytes 把已经取到的原图复制到本地缓存，返回欠条要记的路径。
-// maxBytes<=0 表示不保存副本。
-func SaveDeferredBytes(dir string, id cache.ImageID, data []byte, maxBytes int64) (string, error) {
-	if dir == "" || len(data) == 0 || maxBytes <= 0 || int64(len(data)) > maxBytes {
-		return "", nil
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, fmt.Sprintf("%s_%d.img", id.SHA, id.Size))
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-// CleanupDeferredBytes 删除超过 TTL 的原图副本；ttl<=0 表示不过期。
-func CleanupDeferredBytes(dir string, ttl time.Duration, now time.Time) int {
-	if dir == "" || ttl <= 0 {
-		return 0
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	cutoff := now.Add(-ttl)
-	removed := 0
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || info.ModTime().After(cutoff) {
-			continue
-		}
-		if err := os.Remove(filepath.Join(dir, entry.Name())); err == nil {
-			removed++
-		}
-	}
-	return removed
-}
+// ErrSourceGone 表示原始地址已经取不到（本地临时文件被清掉、链接过期）。
+// 重试没意义，后台直接把欠条记成 missing 终态。
+var ErrSourceGone = errors.New("原始地址取不到")
 
 // Backfiller 常驻后台补标签：定期扫描 pending/failed 欠条。
 type Backfiller struct {
@@ -92,8 +54,6 @@ type BackfillConfig struct {
 	Batch       int
 	MaxAttempts int
 	Retention   time.Duration
-	CacheDir    string
-	CacheTTL    time.Duration
 }
 
 // NewBackfiller 创建补标签 worker。
@@ -142,27 +102,27 @@ func (b *Backfiller) tick(ctx context.Context, cfg *BackfillConfig) {
 	if removed, err := b.store.CleanupAssetTagJobs(time.Now(), cfg.Retention); err == nil && removed > 0 {
 		logutil.Debug("清理已完成标签台账", "removed", removed)
 	}
-	if removed := CleanupDeferredBytes(cfg.CacheDir, cfg.CacheTTL, time.Now()); removed > 0 {
-		logutil.Debug("清理过期原图副本", "removed", removed)
-	}
 }
 
 func (b *Backfiller) process(ctx context.Context, job state.AssetTagJob, cfg *BackfillConfig) {
-	url := job.URL
-	if job.LocalPath != "" {
-		if _, err := os.Stat(job.LocalPath); err == nil {
-			url = job.LocalPath
-		} else if url == "" {
-			// 本地副本与 URL 都没了：文件消失是终态。
-			job.Status = "missing"
-			job.LastError = "本地副本不存在，且没有可重试的 URL"
-			_ = b.store.UpdateAssetTagJob(job)
-			return
-		}
+	url := strings.TrimSpace(job.URL)
+	if url == "" {
+		// 欠条没记下原始地址，没地方去看：直接记终态，免得每轮都捞出来空转。
+		job.Status = "missing"
+		job.LastError = "没有原始地址，文件已消失"
+		_ = b.store.UpdateAssetTagJob(job)
+		return
 	}
 	note, err := b.tagger.TagOne(ctx, url, job.Attempts)
 	if err != nil {
 		job.Attempts++
+		if errors.Is(err, ErrSourceGone) {
+			// 原始地址打不开了：文件消失是终态，不再重试。
+			job.Status = "missing"
+			job.LastError = err.Error()
+			_ = b.store.UpdateAssetTagJob(job)
+			return
+		}
 		job.Status = "failed"
 		job.LastError = err.Error()
 		if job.Attempts >= cfg.MaxAttempts {

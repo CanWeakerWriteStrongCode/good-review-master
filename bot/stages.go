@@ -85,13 +85,13 @@ func (b *Bot) handleAssets(ctx context.Context, key string, items []pipeline.Ite
 	return failed
 }
 
-// persistDeferred 把没打完标签的资产写成欠条；原图尽量复制到本地缓存。
+// persistDeferred 把没打完标签的资产写成欠条，只记原始地址。
+// 原图不另存副本：后台补标签时直接按这个地址再看一眼。
 func (b *Bot) persistDeferred(synced pipeline.SyncedMessage, result assets.TagResult) {
 	store := b.workspaces.StateStore()
 	if store == nil || len(result.Deferred) == 0 {
 		return
 	}
-	cfg := b.cfg()
 	now := time.Now().Unix()
 	for _, deferred := range result.Deferred {
 		job := state.AssetTagJob{
@@ -105,15 +105,6 @@ func (b *Bot) persistDeferred(synced pipeline.SyncedMessage, result assets.TagRe
 		}
 		if deferred.Index < len(result.ImageNotes) {
 			job.Attempts = result.ImageNotes[deferred.Index].Attempts
-		}
-		if len(deferred.Data) > 0 && deferred.Index < len(result.ImageIDs) {
-			path, err := assets.SaveDeferredBytes(cfg.Assets.DeferCacheDir, result.ImageIDs[deferred.Index],
-				deferred.Data, cfg.Assets.DeferCacheMaxBytes)
-			if err != nil {
-				logutil.Debug("保存欠条原图副本失败，退回只记 URL", "err", err)
-			} else {
-				job.LocalPath = path
-			}
 		}
 		if err := store.SaveAssetTagJob(job); err != nil {
 			logutil.Warn("写入资产欠条失败", "err", err)

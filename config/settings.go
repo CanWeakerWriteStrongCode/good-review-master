@@ -100,8 +100,6 @@ type runtimeAssetsSettings struct {
 	JobRetentionDays    *int    `json:"job_retention_days"`
 	MessageBudgetSec    *int    `json:"message_budget_sec"`
 	TagConcurrency      *int    `json:"tag_concurrency"`
-	DeferCacheMaxBytes  *int64  `json:"defer_cache_max_bytes"`
-	DeferCacheTTLDays   *int    `json:"defer_cache_ttl_days"`
 	PromptVersion       *string `json:"prompt_version"`
 }
 
@@ -132,12 +130,6 @@ func (s runtimeAssetsSettings) applyTo(out *AssetsConf) {
 	}
 	applySec(s.MessageBudgetSec, &out.MessageBudget)
 	applyPositive(s.TagConcurrency, &out.TagConcurrency)
-	if s.DeferCacheMaxBytes != nil && *s.DeferCacheMaxBytes >= 0 {
-		out.DeferCacheMaxBytes = *s.DeferCacheMaxBytes
-	}
-	if s.DeferCacheTTLDays != nil && *s.DeferCacheTTLDays >= 0 {
-		out.DeferCacheTTL = time.Duration(*s.DeferCacheTTLDays) * 24 * time.Hour
-	}
 	if s.PromptVersion != nil && *s.PromptVersion != "" {
 		out.PromptVersion = *s.PromptVersion
 	}

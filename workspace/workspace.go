@@ -194,8 +194,6 @@ func New(appCfg config.Snapshot, systemPromptPath, customPromptPath string,
 				Batch:       cfg.Assets.BackfillBatch,
 				MaxAttempts: cfg.Assets.BackfillMaxAttempts,
 				Retention:   cfg.Assets.JobRetention,
-				CacheDir:    cfg.Assets.DeferCacheDir,
-				CacheTTL:    cfg.Assets.DeferCacheTTL,
 			}
 		})
 		if shutdownCtx != nil {
