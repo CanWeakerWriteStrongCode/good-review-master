@@ -477,13 +477,10 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement st
 		"reply_id 表示该消息引用了哪条 message_id。"+
 		requirement,
 		cfg.LLMConfig.ModelName, identity)
-	// agent「看图」：候选列表里带全局图库的内容/信息量描述，按描述决定是否看原图。
-	// 描述缺失（新图描述失败）时退回按聊天文字判断。
-	if cfg.LLMConfig.ImageMax > 0 {
-		systemPrompt += "\n【图片】群消息里的图片默认不随文字附上；候选列表里附有每张图的内容与信息量描述。" +
-			"信息量 low/none、或类型是表情包/梗图的，不要看；信息量 high/medium、或消息文字在问图里的东西、提到新闻/公告/截图/图表/报错时，回复需要其中信息才按 url 调用看图工具。" +
-			"有人 @ 你或私聊时发图，可以看 1 张。没有描述的图按聊天文字判断，拿不准但需要回应时最多看 1 张；查看有次数上限，达到后直接作答。"
-	}
+	// 看图说明不放在这里：它只该在有图的时候出现。
+	// 窗口里真有图时，user 消息尾部会拼【群内图片候选】段（imageCandidatesBlock），
+	// 里面已经写了"候选只是文字 / low 不看 / url 逐字复制 / 最多看 N 张 / 别编造"。
+	// 固定写在 system 里等于没图的请求白付两百字符，而且和那段重复。
 	if personaBlock != "" {
 		systemPrompt += "\n" + personaBlock
 	}
