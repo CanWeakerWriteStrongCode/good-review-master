@@ -88,7 +88,6 @@ type proactiveGroup struct {
 	pending     *proactiveCandidate // 单槽：运行期间新消息只覆盖，不排队
 	lastJudgeAt time.Time           // 上次判定**开始**时刻；判定间隔从这一刻算，含本轮大模型耗时
 	lastReplyAt time.Time           // 上次发言时刻（冷却）
-	lastReply   string              // 上次发言摘要（裁判输入）
 	streak      int                 // 当前话题里连续主动发言次数
 	lastActive  time.Time           // 群里最后一次活动（静默重置 streak）
 }
@@ -181,39 +180,26 @@ func (p *proactiveRegistry) next(groupID string, cfg *config.Config, now time.Ti
 	return cand, false
 }
 
-// recordReply 记录一次主动发言：冷却起点、连续计数、裁判可看到的上一句。
-func (p *proactiveRegistry) recordReply(groupID, text string, now time.Time) {
+// recordReply 记录一次主动发言：冷却起点、连续计数。
+// 不存"上次说了什么"——那句话已经作为机器人自己的一行进聊天记录/缓存了，裁判直接能看到。
+func (p *proactiveRegistry) recordReply(groupID string, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	g := p.group(groupID)
 	g.lastReplyAt = now
 	g.streak++
-	g.lastReply = summarize(text)
 }
 
 // noteDirect 被点名/引用后的回复：对话对象切回了机器人，
 // 连续主动发言计数清零；同时机器人刚说过话，主动链路也要等冷却。
-func (p *proactiveRegistry) noteDirect(groupID, text string, now time.Time) {
+func (p *proactiveRegistry) noteDirect(groupID string, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	g := p.group(groupID)
 	g.streak = 0
 	g.lastReplyAt = now
-	g.lastReply = summarize(text)
-}
-
-// lastTurn 返回"机器人上次发言"的摘要，供裁判判断话题是否在延续。
-func (p *proactiveRegistry) lastTurn(groupID string, now time.Time) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	g := p.group(groupID)
-	if g.lastReply == "" || g.lastReplyAt.IsZero() {
-		return ""
-	}
-	return humanAgo(now.Sub(g.lastReplyAt)) + "：" + g.lastReply
 }
 
 // abandon worker 退出/panic 时兜底复位，避免一个群被永久锁死。
@@ -339,9 +325,9 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 		"reason", verdict.Reason)
 
 	systemPrompt := r.proactiveSystemPrompt(cfg, cand.event, groupID, verdict.focusLast())
-	reply, sent := r.chatReplyWithSnapshot(ctx, cand.event, groupID, systemPrompt, "", false, images, cand.snapshot, &verdict)
+	_, sent := r.chatReplyWithSnapshot(ctx, cand.event, groupID, systemPrompt, "", false, images, cand.snapshot, &verdict)
 	if sent {
-		r.proactive.recordReply(groupID, reply, time.Now())
+		r.proactive.recordReply(groupID, time.Now())
 	}
 }
 
@@ -383,7 +369,7 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 	for _, img := range images {
 		dataURLs = append(dataURLs, llm.DataURL(img.MIMEType, img.Data))
 	}
-	userText := buildJudgeText(window, cfg.BotNickname, cand.event.BotID(), r.proactive.lastTurn(groupID, time.Now()), len(dataURLs) > 0, mention)
+	userText := buildJudgeText(window, cfg.BotNickname, cand.event.BotID(), len(dataURLs) > 0, mention)
 	// 裁判提示词来自 prompt_system.yaml 的 internal.proactive_judge（缺失时用内置默认值）。
 	// 内容必须逐字节稳定才能持续命中 prompt 缓存；动态内容都在 user 消息里。
 	messages := []llm.Message{
@@ -468,15 +454,15 @@ func judgeWindow(msgs []cache.Message, latestID string, limit int) []cache.Messa
 //
 // botID 是本群可用于 @ 比较的机器人 ID：聊天记录里的「@昵称(ID)」靠它才能分辨
 // 这条消息 @ 的是机器人自己还是别的成员（同群常常还有别的机器人）。拿不到时省略。
-func buildJudgeText(window []cache.Message, botName, botID, lastTurn string, hasImage, mention bool) string {
+//
+// 不再单独写「机器人上次发言」：机器人自己说过的话已经作为一行在聊天记录里
+// （recordSelfReply 写进缓存和 state.db，昵称与 ID 都在），identityLine 又告诉它哪个身份是自己。
+// 而且那一段排在【最近聊天】前面，每次都要带"几分钟前 + 摘要"，等于把后面整段聊天记录
+// 从可命中的前缀里切掉。
+func buildJudgeText(window []cache.Message, botName, botID string, hasImage, mention bool) string {
 	var b strings.Builder
 	if line := identityLine(botName, botID); line != "" {
 		b.WriteString(line + "\n")
-	}
-	if lastTurn != "" {
-		b.WriteString("【机器人上次发言】" + lastTurn + "\n")
-	} else {
-		b.WriteString("【机器人上次发言】无\n")
 	}
 	b.WriteString("【最近聊天】\n")
 	b.WriteString(cache.BuildChatLog(window))
@@ -542,25 +528,4 @@ func isPlaceholderOnly(content string) bool {
 		text = strings.ReplaceAll(text, placeholder, "")
 	}
 	return strings.TrimSpace(text) == ""
-}
-
-// summarize 截断机器人发言，供裁判理解"上一句说了什么"。
-func summarize(text string) string {
-	runes := []rune(strings.TrimSpace(text))
-	if len(runes) <= 60 {
-		return string(runes)
-	}
-	return string(runes[:60]) + "…"
-}
-
-// humanAgo 把时间差转成中文短描述（裁判只需大致的时间感）。
-func humanAgo(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return "1 分钟内"
-	case d < time.Hour:
-		return fmt.Sprintf("%d 分钟前", int(d.Minutes()))
-	default:
-		return fmt.Sprintf("%d 小时前", int(d.Hours()))
-	}
 }

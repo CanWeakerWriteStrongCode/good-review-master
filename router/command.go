@@ -362,7 +362,7 @@ func (r *Router) reply(event onebot.Event, chatID, text string) {
 	} else {
 		r.obClient.SendGroupReply(chatID, event.MessageID, event.UserID, text)
 	}
-	r.proactive.noteDirect(chatID, text, time.Now())
+	r.proactive.noteDirect(chatID, time.Now())
 	r.recordSelfReply(event, chatID, text)
 }
 

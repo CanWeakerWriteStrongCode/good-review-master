@@ -145,12 +145,12 @@ func TestProactiveRegistry门控与合并(t *testing.T) {
 	}
 
 	// 发言冷却：刚主动发言后不再判定（此处已越过 20s 判定间隔）
-	reg.recordReply("g1", "我在", now.Add(22*time.Second))
+	reg.recordReply("g1", now.Add(22*time.Second))
 	if reg.enqueue("g1", first, cfg, now.Add(60*time.Second)) {
 		t.Fatal("冷却期内不应再起判定")
 	}
 	// 冷却结束但连续发言已到上限（2 次）
-	reg.recordReply("g1", "我再说一句", now.Add(200*time.Second))
+	reg.recordReply("g1", now.Add(200*time.Second))
 	if reg.enqueue("g1", first, cfg, now.Add(250*time.Second)) {
 		t.Fatal("到达连续发言上限后不应再主动发言")
 	}
@@ -165,12 +165,12 @@ func TestProactiveRegistry被点名清零(t *testing.T) {
 	cfg := &config.Config{ProactiveCooldown: time.Second, ProactiveMaxStreak: 1, ProactiveJudgeEvery: time.Second}
 	now := time.Now()
 	var reg proactiveRegistry
-	reg.recordReply("g1", "我先说", now)
+	reg.recordReply("g1", now)
 	if reg.enqueue("g1", &proactiveCandidate{}, cfg, now.Add(2*time.Second)) {
 		t.Fatal("连续上限为 1 时不应再发言")
 	}
 	// 被 @ 回复后计数清零，主动链路恢复（仍受冷却约束，这里跨过冷却）
-	reg.noteDirect("g1", "你叫我？", now.Add(2*time.Second))
+	reg.noteDirect("g1", now.Add(2*time.Second))
 	if !reg.enqueue("g1", &proactiveCandidate{}, cfg, now.Add(5*time.Second)) {
 		t.Fatal("被点名后连续计数应清零")
 	}

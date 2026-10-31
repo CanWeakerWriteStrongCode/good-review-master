@@ -193,7 +193,7 @@ func (r *Router) sendReply(ctx context.Context, event onebot.Event, chatID strin
 		}
 	}
 	if len(actions) > 0 {
-		r.proactive.noteDirect(chatID, actions[len(actions)-1].Text, time.Now())
+		r.proactive.noteDirect(chatID, time.Now())
 	}
 	logutil.Debug("分条发送完成", "group", chatID, "动作数", len(actions), "间隔", cfg.ReplySendInterval)
 	return nil
