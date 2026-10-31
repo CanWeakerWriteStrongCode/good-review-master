@@ -11,14 +11,18 @@ import (
 // 字段命名对齐 OneBot 12 的 message_id / user_id / nickname；message_id 是字符串，
 // 保持平台原值（QQ 官方是长数字串，Satori 可能是任意字符串）。
 type Message struct {
-	MessageID string   `json:"msg_id"`
-	GroupID   string   `json:"group_id"`
-	SelfID    string   `json:"self_id,omitempty"` // 收到这条消息的机器人账号；同一群多账号时用于去重
-	UserID    string   `json:"user_id"`
-	Nickname  string   `json:"nick"`
-	Card      string   `json:"card"`
-	Content   string   `json:"content"`
-	Images    []string `json:"images,omitempty"` // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
+	MessageID string `json:"msg_id"`
+	// RowID 是 state.db 里 messages 表自增主键。发给大模型的 message_id 就用它：
+	// 同一条消息在任何窗口、任何一次请求里都是同一个号，窗口重置也不会重新编号。
+	// 0 表示这条消息没写进库（写库失败、测试注入），聊天记录里就不带 message_id。
+	RowID    int64    `json:"db_id,omitempty"`
+	GroupID  string   `json:"group_id"`
+	SelfID   string   `json:"self_id,omitempty"` // 收到这条消息的机器人账号；同一群多账号时用于去重
+	UserID   string   `json:"user_id"`
+	Nickname string   `json:"nick"`
+	Card     string   `json:"card"`
+	Content  string   `json:"content"`
+	Images   []string `json:"images,omitempty"` // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
 	// ImageIDs 与 Images 一一对齐：图片内容标识（sha256 + 字节大小），持久化在 messages.image_ids。
 	ImageIDs []ImageID `json:"image_ids,omitempty"`
 	// ImageNotes 与 Images 一一对齐：全局图库里的描述，仅内存（重启时按 ImageIDs 回填）。
@@ -272,38 +276,38 @@ func (gc *GroupMsgCache) Len() int {
 // UserID 是发言者的稳定标识（QQ 官方机器人是 openid，aiocqhttp 是数字 QQ），
 // 昵称会变，它不会；为空时省略。
 //
-// MessageID/ReplyID 用的是本窗口内的序号，不是平台消息 ID：真实 ID 有上百个字符
-// （QQ 官方 ROBOT1.0_…），模型既不输出也不寻址，白占 token。序号只在本次
-// 聊天记录内有效；引用目标不在窗口里时 reply_id 省略。
+// MessageID/ReplyID 用的是 state.db 的自增主键（Message.RowID），不是平台消息 ID：
+// 真实 ID 有上百个字符（QQ 官方 ROBOT1.0_…），模型既不输出也不寻址，白占 token；
+// 而自增主键同样是全局唯一、且跨窗口不变。引用目标不在窗口里、或那条消息没有行号时
+// reply_id 省略。
 type chatLine struct {
-	MessageID int    `json:"message_id,omitempty"`
+	MessageID int64  `json:"message_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
 	Nickname  string `json:"nickname"`
 	Message   string `json:"message"`
-	ReplyID   int    `json:"reply_id,omitempty"`
+	ReplyID   int64  `json:"reply_id,omitempty"`
 }
 
 // BuildChatLog 将消息列表组装为发给大模型的群聊上下文：每条消息一行 JSON 对象，如
 //
-//	{"message_id":1,"user_id":"3319D767...","nickname":"张三","message":"今天好累"}
-//	{"message_id":2,"user_id":"79EBED44...","nickname":"李四","message":"你也好","reply_id":1}
+//	{"message_id":1287,"user_id":"3319D767...","nickname":"张三","message":"今天好累"}
+//	{"message_id":1288,"user_id":"79EBED44...","nickname":"李四","message":"你也好","reply_id":1287}
 //
-// message_id 是本窗口内的序号（从 1 开始，跳过空消息）；reply_id 指向窗口内被引用
-// 消息的序号，被引消息不在窗口里时不输出。平台原始 message_id 仍保留在缓存/数据库/
-// 锚点里，用于被动回复窗口与持久化，只有这份给大模型的文本用短序号。
+// message_id 取 state.db 里 messages 的自增主键：同一条消息在任何窗口、任何一次请求里
+// 都是同一个号，窗口重置也不重新编号，模型跨轮引用不会指错。
+// 没有行号的消息（写库失败、测试注入）不输出 message_id，也不参与 reply_id 映射。
+// reply_id 指向被引用消息的 message_id，被引消息不在窗口里时不输出。
 // user_id 用字符串保留 openid / 数字 QQ 原值：昵称会变，稳定 ID 不会。
 // 用 json.Marshal 保证昵称/内容里的引号、换行等被正确转义。空内容消息跳过。
 func BuildChatLog(msgs []Message) string {
-	// 先给会输出的行编号，reply_id 才能反查到窗口内序号。
-	seq := make(map[string]int, len(msgs))
-	next := 0
+	// 先收集窗口内每条的号，reply_id 才能反查。
+	seq := make(map[string]int64, len(msgs))
 	for _, msg := range msgs {
-		if msg.Content == "" {
+		if msg.Content == "" || msg.RowID <= 0 {
 			continue
 		}
-		next++
 		if msg.MessageID != "" {
-			seq[msg.MessageID] = next
+			seq[msg.MessageID] = msg.RowID
 		}
 	}
 
@@ -312,12 +316,12 @@ func BuildChatLog(msgs []Message) string {
 		if msg.Content == "" {
 			continue
 		}
-		replyID := 0
+		var replyID int64
 		if msg.ReplyToID != "" {
 			replyID = seq[msg.ReplyToID]
 		}
 		line, err := json.Marshal(chatLine{
-			MessageID: seq[msg.MessageID],
+			MessageID: msg.RowID,
 			UserID:    msg.UserID,
 			Nickname:  msg.Nickname,
 			Message:   msg.Content,

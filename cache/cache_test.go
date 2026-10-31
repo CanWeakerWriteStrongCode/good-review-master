@@ -8,12 +8,14 @@ import (
 func TestBuildChatLog保留字符串UserID(t *testing.T) {
 	log := BuildChatLog([]Message{
 		{
+			RowID:     1287,
 			MessageID: "ROBOT1.0_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			UserID:    "79EBED44D996F294D8548AA8B0767D4C",
 			Nickname:  "薛定谔的价值",
 			Content:   "@用户(3319D76763F54481B6E5C25D68A787FA) test",
 		},
 		{
+			RowID:     1288,
 			MessageID: "ROBOT1.0_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 			UserID:    "FB7B890D38D41845542F14F25BC7A3E5",
 			Nickname:  "小助理",
@@ -21,6 +23,7 @@ func TestBuildChatLog保留字符串UserID(t *testing.T) {
 			ReplyToID: "ROBOT1.0_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		},
 		{
+			RowID:     1289,
 			MessageID: "ROBOT1.0_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
 			UserID:    "u3",
 			Nickname:  "路人",
@@ -29,17 +32,17 @@ func TestBuildChatLog保留字符串UserID(t *testing.T) {
 		},
 	})
 
-	// 平台 ID 太长，发给大模型的是窗口内序号。
+	// 平台 ID 太长，发给大模型的是 state.db 自增主键。
 	if strings.Contains(log, "ROBOT1.0_") {
 		t.Fatalf("不应把平台 message_id 发给大模型：%s", log)
 	}
-	for _, want := range []string{`"message_id":1`, `"message_id":2`, `"message_id":3`} {
+	for _, want := range []string{`"message_id":1287`, `"message_id":1288`, `"message_id":1289`} {
 		if !strings.Contains(log, want) {
-			t.Fatalf("缺少窗口序号 %s：%s", want, log)
+			t.Fatalf("缺少行号 %s：%s", want, log)
 		}
 	}
-	if !strings.Contains(log, `"reply_id":1`) {
-		t.Fatalf("窗口内的引用应映射成序号：%s", log)
+	if !strings.Contains(log, `"reply_id":1287`) {
+		t.Fatalf("窗口内的引用应映射成被引消息的行号：%s", log)
 	}
 	if strings.Count(log, `"reply_id"`) != 1 {
 		t.Fatalf("引用目标不在窗口时应省略 reply_id：%s", log)
@@ -52,18 +55,39 @@ func TestBuildChatLog保留字符串UserID(t *testing.T) {
 	}
 }
 
-// 空内容消息不占序号，序号仍从 1 连续。
-func TestBuildChatLog空消息不占序号(t *testing.T) {
-	log := BuildChatLog([]Message{
-		{MessageID: "a", Content: ""},
-		{MessageID: "b", Content: "第一条"},
-		{MessageID: "c", Content: "第二条"},
-	})
-	if !strings.Contains(log, `"message_id":1`) || !strings.Contains(log, `"message_id":2`) {
-		t.Fatalf("序号应连续：%s", log)
+// 同一个窗口后缀换窗口发送时，同一条消息的行号必须一样——这是前缀缓存还能命中的前提。
+func TestBuildChatLog行号跨窗口不变(t *testing.T) {
+	msgs := []Message{
+		{RowID: 501, MessageID: "m1", UserID: "u1", Nickname: "张三", Content: "第一句"},
+		{RowID: 502, MessageID: "m2", UserID: "u2", Nickname: "李四", Content: "第二句"},
+		{RowID: 503, MessageID: "m3", UserID: "u1", Nickname: "张三", Content: "第三句"},
 	}
-	if strings.Contains(log, `"message_id":3`) {
-		t.Fatalf("空消息不应占序号：%s", log)
+	full := BuildChatLog(msgs)
+	reset := BuildChatLog(msgs[1:]) // 重置窗口：起点前移，消息集合变了
+
+	for _, want := range []string{`"message_id":502`, `"message_id":503`} {
+		if !strings.Contains(full, want) || !strings.Contains(reset, want) {
+			t.Fatalf("同一条消息在两个窗口里应是同一个行号 %s：\n全窗口=%s\n重置窗口=%s", want, full, reset)
+		}
+	}
+	if strings.Contains(reset, `"message_id":1,`) {
+		t.Fatalf("重置窗口不应重新从 1 编号：%s", reset)
+	}
+}
+
+// 没有行号的消息（写库失败、测试注入）不带 message_id，也不参与 reply_id 映射。
+func TestBuildChatLog无行号的消息不带message_id(t *testing.T) {
+	log := BuildChatLog([]Message{
+		{RowID: 700, MessageID: "m1", Content: "有行号"},
+		{MessageID: "m2", Content: "没行号"},
+		{MessageID: "m3", Content: "引用了没行号的那条", ReplyToID: "m2"},
+		{MessageID: "m4", Content: ""},
+	})
+	if got := strings.Count(log, `"message_id"`); got != 1 {
+		t.Fatalf("只有有行号的那条该带 message_id，实际 %d 条：%s", got, log)
+	}
+	if strings.Contains(log, `"reply_id"`) {
+		t.Fatalf("被引消息没有行号时应省略 reply_id：%s", log)
 	}
 }
 

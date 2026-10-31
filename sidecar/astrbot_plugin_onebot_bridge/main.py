@@ -49,7 +49,7 @@ DEFAULT_LISTEN_PORT = 6199
 
 ONEBOT_VERSION = "12"
 IMPL_NAME = "astrbot-plugin-onebot-bridge"
-PLUGIN_VERSION = "1.7.5"
+PLUGIN_VERSION = "1.7.9"
 
 # AstrBot 适配器类型 → OB12 平台名。OB12 平台名不允许下划线，
 # 所以 qq_official 这类适配器名必须显式映射；其它（wecom/lark/telegram…）
@@ -87,16 +87,46 @@ SELF_ID_PLACEHOLDERS = {"", "qq_official", "unknown_selfid"}
 MAX_MEMBERS_PER_GROUP = 2000
 
 # QQ 官方的三种 @ 写法：botpy 原始标记、通用 <@id>、以及本插件生成的 CQ 码。
-QQBOT_AT_RE = re.compile(r'<qqbot-at-user\s+id="([^"]+)"\s*/>')
-ANGLE_AT_RE = re.compile(r"<@!?([^<>\s]+)>")
-CQ_AT_RE = re.compile(r"\[CQ:at,qq=([^,\]]+)[^\]]*\]")
+# 适配器只对「@ 本账号」给 At 组件；@ 其他成员常常只以这三种文本形式留在正文里，
+# 所以要把它们从文本里拆出来单独上报成 mention 段（见 _split_text_at）。
+AT_TOKEN_RE = re.compile(
+    r'<qqbot-at-user\s+id="(?P<qqbot>[^"]+)"\s*/>'
+    r"|<@!?(?P<angle>[^<>\s]+)>"
+    r"|\[CQ:at,qq=(?P<cq>[^,\]]+)[^\]]*\]"
+)
+
+
+def _split_text_at(text: str) -> list[dict]:
+    """把纯文本里的 @ 标记拆成 mention 段，其余文本原样保留。
+
+    不拆的话 Go 只看到一段普通文字，"@ 了别人"这件事就丢了：主动接话链路
+    判断不出这条有明确对象，会把「@A 回答我一下」当成没人指名而插话。
+    """
+    parts: list[dict] = []
+    pos = 0
+    for match in AT_TOKEN_RE.finditer(text):
+        if match.start() > pos:
+            parts.append({"type": "text", "data": {"text": text[pos:match.start()]}})
+        target = next((value for value in match.groups() if value), "")
+        if target.lower() == "all":
+            # @全体 在 OB12 里是独立的 mention_all，不是 user_id="all" 的 mention。
+            parts.append({"type": "mention_all", "data": {}})
+        elif target and target not in SELF_ID_PLACEHOLDERS:
+            parts.append({"type": "mention", "data": {"user_id": target}})
+        else:
+            # 占位值不是任何人：原样留成文本，不伪造 mention。
+            parts.append({"type": "text", "data": {"text": match.group(0)}})
+        pos = match.end()
+    if pos < len(text):
+        parts.append({"type": "text", "data": {"text": text[pos:]}})
+    return parts
 
 
 @register(
     PLUGIN_NAME,
     "good-review",
     "把 AstrBot 事件以 OneBot 12 转发给外部 Go 服务，并实现 OneBot 12 动作服务",
-    "1.7.5",
+    PLUGIN_VERSION,
 )
 class OneBotBridge(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -366,7 +396,8 @@ class OneBotBridge(Star):
             if name == "plain":
                 text = str(getattr(comp, "text", "") or "")
                 if text:
-                    segments.append({"type": "text", "data": {"text": text}})
+                    # @ 别人的标记通常只存在于文本里，先拆成 mention 段再上报。
+                    segments.extend(_split_text_at(text))
             elif name == "atall":
                 segments.append({"type": "mention_all", "data": {}})
             elif name == "at":

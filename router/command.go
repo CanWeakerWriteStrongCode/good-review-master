@@ -139,9 +139,9 @@ type Router struct {
 	// 只用 user_id，不影响功能——昵称只是给人看的。
 	displayName func(groupID, userID string) string
 
-	// saveMessage 把消息写进共享 state.db（工作空间的 State.SaveMessage）。
+	// saveMessage 把消息写进共享 state.db（工作空间的 State.SaveMessage），返回行号。
 	// 机器人自己的回复也走这里；nil 时只写内存缓存，重启后丢失。
-	saveMessage func(cache.Message)
+	saveMessage func(cache.Message) int64
 
 	// ledger 发送台账：动作编号为键，重试时跳过已发动作。
 	ledger SendLedger
@@ -187,7 +187,8 @@ func (r *Router) SetWorkspace(id string) { r.workspace = id }
 
 // SetMessageSink 注入消息持久化入口（工作空间的 State.SaveMessage）：
 // 机器人回复也要落库，重启后聊天记录里才还有自己说过的话。
-func (r *Router) SetMessageSink(sink func(cache.Message)) { r.saveMessage = sink }
+// 返回值是该 message 在 state.db 里的行号，写入失败返回 0（这条就不带 message_id）。
+func (r *Router) SetMessageSink(sink func(cache.Message) int64) { r.saveMessage = sink }
 
 // SetSendLedger 注入发送台账（state.db 实现）。nil 时保持进程内台账。
 func (r *Router) SetSendLedger(ledger SendLedger) {
@@ -403,10 +404,11 @@ func (r *Router) recordSelfReply(event onebot.Event, chatID, text string) {
 		Content:   text,
 		Time:      now.Unix(),
 	}
-	r.cacheStore().GetGroupCache(chatID, cfg.MaxCacheMsg).Add(msg)
+	// 先落库拿到行号再进内存缓存：聊天记录里的 message_id 就是这一行。
 	if r.saveMessage != nil {
-		r.saveMessage(msg)
+		msg.RowID = r.saveMessage(msg)
 	}
+	r.cacheStore().GetGroupCache(chatID, cfg.MaxCacheMsg).Add(msg)
 }
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
@@ -470,7 +472,7 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement st
 		identity += "。"
 	}
 	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
-		"%s【聊天记录】每行一条群消息，message_id 是本窗口内的消息序号，user_id 是发言者的稳定ID，nickname 是昵称，message 是正文；"+
+		"%s【聊天记录】每行一条群消息，message_id 是这条消息的编号（同一条消息每次都一样，按它引用），user_id 是发言者的稳定ID，nickname 是昵称，message 是正文；"+
 		"@昵称(ID) 表示 @ 了该用户，昵称可能变化，以括号里的 ID 为准。"+
 		"reply_id 表示该消息引用了哪条 message_id。"+
 		requirement,

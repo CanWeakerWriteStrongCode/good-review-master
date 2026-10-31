@@ -4,9 +4,12 @@ package state
 // 模型只负责让单行/单表写走 ORM，并在换 MySQL 时集中处理列名与类型。
 
 type messageRow struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	GroupID     string `gorm:"column:group_id;primaryKey"`
-	MessageID   string `gorm:"column:message_id;primaryKey"`
+	// ID 是自增主键，也是发给大模型看的 message_id：跨窗口、跨重启都不变。
+	ID int64 `gorm:"column:id;primaryKey;autoIncrement"`
+	// 三元组是原来的主键，现在降为唯一键：upsert 的冲突目标显式按它写，见 SaveMessage。
+	WorkspaceID string `gorm:"column:workspace_id"`
+	GroupID     string `gorm:"column:group_id"`
+	MessageID   string `gorm:"column:message_id"`
 	UserID      string `gorm:"column:user_id"`
 	Content     string `gorm:"column:content"`
 	Images      string `gorm:"column:images"`

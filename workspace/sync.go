@@ -121,7 +121,8 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []pipeline.InboundE
 			Time:      eventTime(event),
 		}
 		// Stage 1 同步入库；图片标识等 Stage 2 拿到后再补写。
-		w.State.SaveMessage(msg)
+		// 行号（state.db 自增主键）跟着消息一路带下去，发给大模型的 message_id 就用它。
+		msg.RowID = w.State.SaveMessage(msg)
 		out = append(out, pipeline.SyncedMessage{
 			WorkspaceID: w.ID,
 			ChatID:      entry.chatID,

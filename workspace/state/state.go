@@ -36,8 +36,9 @@ const (
 	// v1 是“每工作空间一个库”的旧结构；v2 起所有表带 workspace_id；
 	// v3 groups；v4 messages.ref_idx；v5 messages.image_ids + image_notes；
 	// v6 workspace_profile 取代 meta；v7 成员/群历史表；
-	// v8 资产欠条、发送台账、报警、全局 settings、image_notes.prompt_version。
-	schemaVersion = 8
+	// v8 资产欠条、发送台账、报警、全局 settings、image_notes.prompt_version；
+	// v9 messages 加自增主键 id（三元组降为唯一键），重建表以保留历史消息。
+	schemaVersion = 9
 
 	// warnRows / warnBytes 启动统计的告警阈值（清理是人工决定）。
 	warnRows  = 100_000
@@ -164,6 +165,7 @@ func migrate(db *gorm.DB, path string) error {
 	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS messages (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			message_id   TEXT NOT NULL,
@@ -174,7 +176,7 @@ func migrate(db *gorm.DB, path string) error {
 			reply_to     TEXT NOT NULL DEFAULT '',
 			ref_idx      TEXT NOT NULL DEFAULT '',
 			ts           INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, group_id, message_id)
+			UNIQUE (workspace_id, group_id, message_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS anchors (
 			workspace_id TEXT NOT NULL,
@@ -333,6 +335,13 @@ func migrate(db *gorm.DB, path string) error {
 			return err
 		}
 	}
+	// v9：老库的 messages 没有自增 id，SQLite 又不能 ALTER TABLE 加主键，只能重建。
+	// 放在补列之后，拷贝时新表列已经齐全。
+	if version < 9 {
+		if err := rebuildMessagesWithID(db); err != nil {
+			return err
+		}
+	}
 
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(workspace_id, group_id, ts)`,
@@ -399,6 +408,51 @@ func ensureColumn(db *gorm.DB, table, column, ddl string) error {
 	return nil
 }
 
+// rebuildMessagesWithID 把 messages 重建成「自增主键 id + 三元组唯一键」。
+// 只搬已有列，不增不删；按 ts 升序插入，历史消息的 id 就是时间顺序。
+// 重建过（已带 id 列）或表还不存在时直接返回。
+func rebuildMessagesWithID(db *gorm.DB) error {
+	if !tableExists(db, "messages") {
+		return nil
+	}
+	var count int
+	if err := db.Raw(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'id'`).Scan(&count).Error; err != nil {
+		return fmt.Errorf("读取 messages 表结构失败：%w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	steps := []string{
+		`CREATE TABLE messages_v9 (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id TEXT NOT NULL,
+			group_id     TEXT NOT NULL,
+			message_id   TEXT NOT NULL,
+			user_id      TEXT NOT NULL,
+			content      TEXT NOT NULL,
+			images       TEXT NOT NULL DEFAULT '[]',
+			image_ids    TEXT NOT NULL DEFAULT '[]',
+			reply_to     TEXT NOT NULL DEFAULT '',
+			ref_idx      TEXT NOT NULL DEFAULT '',
+			ts           INTEGER NOT NULL,
+			UNIQUE (workspace_id, group_id, message_id)
+		)`,
+		`INSERT INTO messages_v9
+			(workspace_id, group_id, message_id, user_id, content, images, image_ids, reply_to, ref_idx, ts)
+			SELECT workspace_id, group_id, message_id, user_id, content, images, image_ids, reply_to, ref_idx, ts
+			FROM messages ORDER BY ts`,
+		`DROP TABLE messages`,
+		`ALTER TABLE messages_v9 RENAME TO messages`,
+	}
+	for _, statement := range steps {
+		if err := db.Exec(statement).Error; err != nil {
+			return fmt.Errorf("重建 messages 表失败：%w", err)
+		}
+	}
+	logutil.Info("state.db messages 表已重建：新增自增主键 id")
+	return nil
+}
+
 func tableExists(db *gorm.DB, table string) bool {
 	var count int
 	if err := db.Raw(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count).Error; err != nil {
@@ -407,10 +461,11 @@ func tableExists(db *gorm.DB, table string) bool {
 	return count > 0
 }
 
-// SaveMessage 同步写入一条消息。失败只记日志，不阻塞调用方。
-func (s *Scope) SaveMessage(msg cache.Message) {
+// SaveMessage 同步写入一条消息，返回该行的自增主键（写入失败返回 0）。
+// 失败只记日志，不阻塞调用方；调用方拿到 0 就当作"这条没有行号"。
+func (s *Scope) SaveMessage(msg cache.Message) int64 {
 	if s == nil || s.store == nil || msg.MessageID == "" || s.store.closed.Load() {
-		return
+		return 0
 	}
 	images, err := json.Marshal(msg.Images)
 	if err != nil {
@@ -425,9 +480,26 @@ func (s *Scope) SaveMessage(msg cache.Message) {
 		UserID: msg.UserID, Content: msg.Content, Images: string(images),
 		ImageIDs: string(imageIDs), ReplyTo: msg.ReplyToID, RefIdx: msg.RefIdx, TS: msg.Time,
 	}
-	if err := s.store.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+	// 冲突目标必须显式指定三元组：主键换成自增 id 后，默认目标会变成 id，等于永不更新。
+	err = s.store.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "group_id"}, {Name: "message_id"}},
+		UpdateAll: true,
+	}).Create(&row).Error
+	if err != nil {
 		s.store.noteFailure("写入消息", err)
+		return 0
 	}
+	if row.ID > 0 {
+		return row.ID
+	}
+	// 走 ON CONFLICT DO UPDATE 分支时驱动的 RETURNING 由 SQLite 负责，个别版本不回填，回查一次。
+	var id int64
+	if err := s.store.db.Raw(`SELECT id FROM messages WHERE workspace_id = ? AND group_id = ? AND message_id = ?`,
+		s.workspaceID, msg.GroupID, msg.MessageID).Scan(&id).Error; err != nil {
+		s.store.noteFailure("回查消息自增ID", err)
+		return 0
+	}
+	return id
 }
 
 // UpdateMessageImages 在 Stage 2 把图片内容标识补写到已入库的消息上。
@@ -460,7 +532,7 @@ func (s *Scope) LoadRecent(limit int) ([]cache.Message, error) {
 		return nil, nil
 	}
 	rows, err := s.store.db.Raw(`
-		SELECT group_id, message_id, user_id, content, images, image_ids, reply_to, ref_idx, ts FROM (
+		SELECT id, group_id, message_id, user_id, content, images, image_ids, reply_to, ref_idx, ts FROM (
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY ts DESC) AS rn
 			FROM messages WHERE workspace_id = ?
 		) WHERE rn <= ? ORDER BY group_id, ts`, s.workspaceID, limit).Rows()
@@ -473,7 +545,7 @@ func (s *Scope) LoadRecent(limit int) ([]cache.Message, error) {
 	for rows.Next() {
 		var msg cache.Message
 		var images, imageIDs string
-		if err := rows.Scan(&msg.GroupID, &msg.MessageID, &msg.UserID, &msg.Content,
+		if err := rows.Scan(&msg.RowID, &msg.GroupID, &msg.MessageID, &msg.UserID, &msg.Content,
 			&images, &imageIDs, &msg.ReplyToID, &msg.RefIdx, &msg.Time); err != nil {
 			return nil, err
 		}

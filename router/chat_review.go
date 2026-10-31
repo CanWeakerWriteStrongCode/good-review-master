@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"good-review-master/cache"
@@ -228,7 +229,12 @@ func (r *Router) imageCandidatesBlock(msgs []cache.Message) string {
 			if u == "" {
 				continue
 			}
-			item := row{nick: m.Nickname, msgID: m.MessageID, url: u}
+			// 这里标的是聊天记录里的 message_id（即库里的行号），模型才能把图和那一行对上。
+			msgID := m.MessageID
+			if m.RowID > 0 {
+				msgID = strconv.FormatInt(m.RowID, 10)
+			}
+			item := row{nick: m.Nickname, msgID: msgID, url: u}
 			if i < len(m.ImageNotes) {
 				note := m.ImageNotes[i]
 				if note.Status == "ok" && note.Note != "" {

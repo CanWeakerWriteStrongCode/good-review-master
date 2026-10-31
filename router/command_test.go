@@ -41,7 +41,7 @@ func TestComposeSystemPrompt包含稳定身份与at约定(t *testing.T) {
 	if !strings.Contains(prompt, "user_id 是发言者的稳定ID") || !strings.Contains(prompt, "@昵称(ID)") {
 		t.Fatalf("提示词应说明 @昵称(ID) 与 user_id 的约定：%s", prompt)
 	}
-	if !strings.Contains(prompt, "message_id 是本窗口内的消息序号") || !strings.Contains(prompt, "nickname 是昵称") {
+	if !strings.Contains(prompt, "message_id 是这条消息的编号") || !strings.Contains(prompt, "nickname 是昵称") {
 		t.Fatalf("提示词应说明与 OneBot 对齐的字段名：%s", prompt)
 	}
 	if !strings.Contains(prompt, "reply_id") {
@@ -208,7 +208,7 @@ func Test回传模式下不重复记录回复(t *testing.T) {
 	cfg.EchoSelfMessages = true
 	instance, _ := newProactiveTestRouter(t, cfg)
 	var saved []cache.Message
-	instance.SetMessageSink(func(m cache.Message) { saved = append(saved, m) })
+	instance.SetMessageSink(func(m cache.Message) int64 { saved = append(saved, m); return 0 })
 
 	event := onebot.Event{
 		Type: "message", DetailType: "group", GroupID: "g1", UserID: "u1", MessageID: "m1",
@@ -277,7 +277,7 @@ func Test机器人回复写入缓存与状态库(t *testing.T) {
 	cfg := proactiveTestConfig()
 	instance, fake := newProactiveTestRouter(t, cfg)
 	var saved []cache.Message
-	instance.SetMessageSink(func(m cache.Message) { saved = append(saved, m) })
+	instance.SetMessageSink(func(m cache.Message) int64 { saved = append(saved, m); return 0 })
 	fake.SetReply("先这样，明天再看。")
 
 	seedMessages(instance, cfg,

@@ -252,8 +252,8 @@ func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Mes
 		ChatTemplateKwargs: chatTemplateKwargs,
 	}
 	// Debug 级把「发给大模型的完整请求 JSON」整段打出来。
-	// 字段顺序按模型 chat template 的渲染顺序排列（tools 在 messages 之前），
-	// 与 go-openai 实际发送的请求语义一致、仅键顺序不同——避免日志看着像"工具定义塞在对话后面"。
+	// 不做任何重排：键序就是 go-openai 结构体的顺序（model → messages → … → tools），
+	// 与线上实际发出的一致，核对时不用在脑子里翻译。
 	// Debug 默认开启；收紧到 info 及以上时这条不再输出，用于核对模型到底收到了什么。
 	//
 	// 带图的请求（data URL 内联 base64）不打正文：MCP 多轮查询查完图后，
@@ -367,17 +367,10 @@ func countImageContents(messages []Message) int {
 	return n
 }
 
-// marshalRequestForLog 序列化调试日志用的请求体：tools 放在最前，messages 在后，
-// 与模型 chat template 的渲染顺序一致；JSON 语义与实际发送的请求完全相同。
-//
-// 用内嵌原始请求而不是复制字段：encoding/json 遇到不同层级的同名字段时浅层胜出，
-// 外层的 Tools 会覆盖内嵌请求里的 tools，不会出现重复键，其余字段仍跟随 go-openai 定义。
+// marshalRequestForLog 序列化调试日志用的请求体。字段顺序直接用 go-openai 结构体的，
+// 不重排——日志里看到的键序就是线上请求的键序。
 func marshalRequestForLog(req openai.ChatCompletionRequest) ([]byte, error) {
-	ordered := struct {
-		Tools []openai.Tool `json:"tools,omitempty"`
-		openai.ChatCompletionRequest
-	}{Tools: req.Tools, ChatCompletionRequest: req}
-	return marshalForLog(ordered)
+	return marshalForLog(req)
 }
 
 // marshalForLog 只用于调试日志：把 JSON 里的 HTML 转义还原成可读字符。

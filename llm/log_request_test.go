@@ -8,11 +8,15 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-// TestMarshalRequestForLogTools在messages前 锁住日志字段顺序：
-// tools 必须出现在 messages 之前，且只能出现一次（不能和 go-openai 的同名字段重复）。
-func TestMarshalRequestForLogTools在messages前(t *testing.T) {
+// TestMarshalRequestForLog字段顺序与线上一致 日志不做重排：键序就是 go-openai
+// 结构体的顺序（model → messages → temperature → tools → tool_choice）。
+// 顺带锁住 tools 只出现一次，别再有"日志里多一份 tools"那种事。
+func TestMarshalRequestForLog字段顺序与线上一致(t *testing.T) {
 	req := openai.ChatCompletionRequest{
-		Model: "m",
+		Model:       "m",
+		Temperature: 0.6,
+		TopP:        0.95,
+		ToolChoice:  "auto",
 		Messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleSystem, Content: "sys"},
 			{Role: openai.ChatMessageRoleUser, Content: "hi"},
@@ -30,13 +34,16 @@ func TestMarshalRequestForLogTools在messages前(t *testing.T) {
 	body := string(raw)
 
 	// 注意：messages 里可能有 tool 相关文本，这里按字段键定位（带引号 + 冒号）
-	toolsAt := strings.Index(body, `"tools":`)
-	messagesAt := strings.Index(body, `"messages":`)
-	if toolsAt < 0 || messagesAt < 0 {
-		t.Fatalf("请求里应同时包含 tools 与 messages：%s", body)
-	}
-	if toolsAt > messagesAt {
-		t.Fatalf("tools 应排在 messages 之前：%s", body)
+	prev := -1
+	for _, key := range []string{`"model":`, `"messages":`, `"temperature":`, `"tools":`, `"tool_choice":`} {
+		at := strings.Index(body, key)
+		if at < 0 {
+			t.Fatalf("请求里应包含 %s：%s", key, body)
+		}
+		if at < prev {
+			t.Fatalf("日志键序应与线上请求一致，%s 位置不对：%s", key, body)
+		}
+		prev = at
 	}
 	if got := strings.Count(body, `"tools":`); got != 1 {
 		t.Fatalf("tools 键应只出现一次，实际 %d 次：%s", got, body)

@@ -391,6 +391,84 @@ func TestV3升级补引用索引(t *testing.T) {
 	}
 }
 
+// TestSaveMessage返回自增行号 行号就是发给大模型的 message_id：
+// 写一次就要拿到，重写同一条（upsert）不换号、也不新增行。
+func TestSaveMessage返回自增行号(t *testing.T) {
+	_, scope := openTemp(t)
+
+	first := scope.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", Content: "一", Time: 1})
+	second := scope.SaveMessage(cache.Message{MessageID: "m2", GroupID: "g1", Content: "二", Time: 2})
+	if first <= 0 || second <= 0 || second <= first {
+		t.Fatalf("行号应依次自增，实际 %d / %d", first, second)
+	}
+
+	// 同一条重写（实现端回传机器人自己的消息）：行号不变，内容更新
+	if again := scope.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", Content: "一改", Time: 1}); again != first {
+		t.Fatalf("重写同一条应返回原行号 %d，实际 %d", first, again)
+	}
+	msgs, err := scope.LoadRecent(10)
+	if err != nil {
+		t.Fatalf("LoadRecent: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("重写不应新增行，实际 %d 条：%+v", len(msgs), msgs)
+	}
+	if msgs[0].RowID != first || msgs[0].Content != "一改" || msgs[1].RowID != second {
+		t.Fatalf("行号或内容不对：%+v", msgs)
+	}
+}
+
+// TestV8升级messages补自增主键 v8 的 messages 是三元组主键，升级要重建表：
+// 消息一条不丢、按时间拿到递增 id，重建后还能接着写。
+func TestV8升级messages补自增主键(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE messages (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			user_id TEXT NOT NULL, content TEXT NOT NULL, images TEXT NOT NULL DEFAULT '[]',
+			image_ids TEXT NOT NULL DEFAULT '[]', reply_to TEXT NOT NULL DEFAULT '',
+			ref_idx TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id, message_id))`,
+		`INSERT INTO messages (workspace_id, group_id, message_id, user_id, content, ts)
+			VALUES ('qq_a', 'g1', 'm1', 'u1', '旧消息一', 1)`,
+		`INSERT INTO messages (workspace_id, group_id, message_id, user_id, content, ts)
+			VALUES ('qq_a', 'g1', 'm2', 'u1', '旧消息二', 2)`,
+		`PRAGMA user_version = 8`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("造 v8 库失败：%v", err)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+	scope := st.Scope("qq_a")
+	msgs, err := scope.LoadRecent(10)
+	if err != nil {
+		t.Fatalf("LoadRecent: %v", err)
+	}
+	if len(msgs) != 2 || msgs[0].Content != "旧消息一" || msgs[1].Content != "旧消息二" {
+		t.Fatalf("升级不能丢消息：%+v", msgs)
+	}
+	if msgs[0].RowID <= 0 || msgs[1].RowID <= msgs[0].RowID {
+		t.Fatalf("按时间应拿到递增 id：%d / %d", msgs[0].RowID, msgs[1].RowID)
+	}
+
+	// 重建后还能接着写，行号要比历史的大
+	if next := scope.SaveMessage(cache.Message{MessageID: "m3", GroupID: "g1", Content: "新消息", Time: 3}); next <= msgs[1].RowID {
+		t.Fatalf("重建后新写入的行号应大于历史行号 %d，实际 %d", msgs[1].RowID, next)
+	}
+}
+
 // Test图片描述全局读写 image_notes 不带 workspace_id：任意工作空间都命中同一张图；
 // 同哈希不同大小不算命中。
 func Test图片描述全局读写(t *testing.T) {
