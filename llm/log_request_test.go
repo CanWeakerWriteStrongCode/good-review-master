@@ -113,6 +113,30 @@ func TestMarshalForLog字面反斜杠不破坏JSON(t *testing.T) {
 	}
 }
 
+// TestCacheHitRate 日志里那一列命中率就是 cached / prompt，两个数都取自服务端 usage。
+// 上游不返回用量时要打 "-"：0% 和"没给数"是两件事，别混。
+func TestCacheHitRate(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage openai.Usage
+		want  string
+	}{
+		{name: "正常命中", usage: openai.Usage{PromptTokens: 1541, PromptTokensDetails: &openai.PromptTokensDetails{CachedTokens: 1232}}, want: "79.9%"},
+		{name: "完全命中", usage: openai.Usage{PromptTokens: 816, PromptTokensDetails: &openai.PromptTokensDetails{CachedTokens: 816}}, want: "100.0%"},
+		{name: "完全未命中", usage: openai.Usage{PromptTokens: 1829, PromptTokensDetails: &openai.PromptTokensDetails{CachedTokens: 0}}, want: "0.0%"},
+		// 中转不返回 prompt_tokens_details 时指针为 nil，不能 panic 也不能算成命中
+		{name: "没有明细", usage: openai.Usage{PromptTokens: 500}, want: "0.0%"},
+		{name: "上游没给用量", usage: openai.Usage{}, want: "-"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cacheHitRate(tc.usage); got != tc.want {
+				t.Fatalf("cacheHitRate() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCountImageContents 用来判断是否跳过完整请求 JSON 日志：
 // 只要请求里有内联图片（base64 data URL），就不该把整段正文写进日志。
 func TestCountImageContents(t *testing.T) {

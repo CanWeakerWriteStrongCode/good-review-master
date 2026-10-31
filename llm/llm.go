@@ -292,8 +292,15 @@ func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Mes
 
 	// Debug 级把模型返回的完整原始 JSON 整段打出，与上面的请求 JSON 对照：
 	// 能直接看到 finish_reason 是 stop 还是 tool_calls、message.tool_calls 里有没有函数名。
+	// 同一行顺带打出缓存命中率：以前要拿 usage 里的两个数自己去除，现在直接读这一行。
+	cached := 0
+	if resp.Usage.PromptTokensDetails != nil {
+		cached = resp.Usage.PromptTokensDetails.CachedTokens
+	}
 	if raw, err := marshalForLog(resp); err == nil {
-		logutil.Debug("大模型原始返回JSON", "body", string(raw))
+		logutil.Debug("大模型原始返回JSON", "body", string(raw),
+			"prompt_token", resp.Usage.PromptTokens, "cached_token", cached,
+			"命中率", cacheHitRate(resp.Usage))
 	} else {
 		logutil.Debug("大模型原始返回JSON序列化失败", "err", err)
 	}
@@ -316,6 +323,22 @@ func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Mes
 		})
 	}
 	return out, nil
+}
+
+// cacheHitRate 把服务端报的缓存命中折成百分比字符串，供日志直接用。
+//
+// 分子分母都取自响应的 usage，不是本地估算——cache.EstimateTokens 那套只服务于选窗决策，
+// 两者口径不同。prompt_tokens_details 是指针，中转不返回时为 nil，按 0 处理；
+// prompt_tokens 也是 0 时返回 "-"：那是上游没给用量，别记成 0% 命中。
+func cacheHitRate(usage openai.Usage) string {
+	if usage.PromptTokens <= 0 {
+		return "-"
+	}
+	cached := 0
+	if usage.PromptTokensDetails != nil {
+		cached = usage.PromptTokensDetails.CachedTokens
+	}
+	return fmt.Sprintf("%.1f%%", 100*float64(cached)/float64(usage.PromptTokens))
 }
 
 // responseFormatRejected 判断错误是否像"后端不认识 response_format"。
