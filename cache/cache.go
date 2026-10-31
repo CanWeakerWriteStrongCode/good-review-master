@@ -147,6 +147,24 @@ func (gc *GroupMsgCache) Add(msg Message) {
 	}
 }
 
+// SetNickname 给某用户已缓存、但还没有昵称的消息补上显示名。
+//
+// 昵称往往在后一条消息里才第一次学到（QQ 官方事件通常不带 sender，桥接偶尔透传），
+// 在此之前同一用户的消息都是空名；补上后拼给模型的聊天记录才能看出"谁说的"。
+// 已有名字不改：历史名字可能与平台当前名不同，但那是当时真实显示的内容。
+func (gc *GroupMsgCache) SetNickname(userID, name string) {
+	if userID == "" || name == "" {
+		return
+	}
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	for i := range gc.buf {
+		if gc.buf[i].UserID == userID && gc.buf[i].Nickname == "" {
+			gc.buf[i].Nickname = name
+		}
+	}
+}
+
 // GetAll 获取所有缓存消息（按时间排序的快照副本）
 func (gc *GroupMsgCache) GetAll() []Message {
 	gc.mu.RLock()

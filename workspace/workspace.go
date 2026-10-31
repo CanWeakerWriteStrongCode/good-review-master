@@ -289,10 +289,20 @@ func (w *Workspace) restore(cfg *config.Config) {
 	if w.State == nil {
 		return
 	}
+	// 成员名要先于消息恢复：messages 表不存 nickname（昵称会变，属于目录数据），
+	// 历史消息的昵称只能按 (group, user_id) 回查成员目录补上。
+	if members, err := w.State.LoadMembers(); err != nil {
+		logutil.Warn("读取成员名失败", "workspace", w.ID, "err", err)
+	} else {
+		w.members.seed(members)
+	}
 	if msgs, err := w.State.LoadRecent(cfg.MaxCacheMsg); err != nil {
 		logutil.Warn("读取历史消息失败", "workspace", w.ID, "err", err)
 	} else {
 		for _, msg := range msgs {
+			if msg.Nickname == "" {
+				msg.Nickname = w.members.peek(msg.GroupID, msg.UserID)
+			}
 			w.Cache.GetGroupCache(msg.GroupID, cfg.MaxCacheMsg).Add(msg)
 		}
 		for _, groupID := range w.Cache.ListGroupIDs() {
@@ -317,11 +327,6 @@ func (w *Workspace) restore(cfg *config.Config) {
 			w.identities[groupID] = selfID
 		}
 		w.identityMu.Unlock()
-	}
-	if members, err := w.State.LoadMembers(); err != nil {
-		logutil.Warn("读取成员名失败", "workspace", w.ID, "err", err)
-	} else {
-		w.members.seed(members)
 	}
 	if groups, err := w.State.LoadGroups(); err != nil {
 		logutil.Warn("读取群档案失败", "workspace", w.ID, "err", err)
@@ -485,6 +490,44 @@ func (w *Workspace) DisplayNameFor(groupID string) func(userID string) string {
 	return func(userID string) string { return w.members.name(groupID, userID) }
 }
 
+// MemberName 返回成员目录里已知的显示名；未命中返回空串，不触发网络查询。
+func (w *Workspace) MemberName(groupID, userID string) string {
+	return w.members.peek(groupID, userID)
+}
+
+// ResolveNames 批量解析成员的显示名，用于入站消息缺昵称时补全。
+//
+// 先查内存目录（启动时已按 members 表整表载入），缺的再按群批量查一次库；
+// 查到的名字回填内存目录，后续消息不用再查。只读不写库，也不触发单人的
+// get_group_member_info（网络补名仍由 DisplayNameFor 的异步链路负责）。
+func (w *Workspace) ResolveNames(groupID string, userIDs []string) map[string]string {
+	out := make(map[string]string, len(userIDs))
+	missing := make([]string, 0, len(userIDs))
+	seen := make(map[string]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == "" {
+			continue
+		}
+		if _, dup := seen[userID]; dup {
+			continue
+		}
+		seen[userID] = struct{}{}
+		if name := w.members.peek(groupID, userID); name != "" {
+			out[userID] = name
+			continue
+		}
+		missing = append(missing, userID)
+	}
+	if len(missing) == 0 || w.State == nil {
+		return out
+	}
+	for userID, name := range w.State.LookupMemberNames(groupID, missing) {
+		w.members.remember(groupID, userID, name)
+		out[userID] = name
+	}
+	return out
+}
+
 // EnsureGroup 保证这个群在 state.db 里有档案；每个群只写一次。
 //
 // 群名在 QQ 官方通常拿不到，所以先落一条空名记录，再异步向实现端补；
@@ -554,8 +597,9 @@ func (w *Workspace) ObserveMember(groupID, userID string) {
 // LearnMemberName 用消息里自带的显示名（AstrBot 的 sender 字段）更新成员目录。
 // QQ 官方事件通常没有昵称，但桥接拿到时会透传；学到后本条消息的 @ 渲染、
 // 聊天记录昵称和后续反查都能直接用，不必等 get_group_member_info。
-func (w *Workspace) LearnMemberName(groupID, userID, name string) {
-	w.members.learn(groupID, userID, name)
+// 返回值表示名字是否变化：变化时调用方可以顺手补全该用户更早的消息。
+func (w *Workspace) LearnMemberName(groupID, userID, name string) bool {
+	return w.members.learn(groupID, userID, name)
 }
 
 // MemberCount 返回已收录的群成员数（说过话或被 @ 过的人）。
@@ -816,6 +860,37 @@ func (d *directory) name(groupID, userID string) string {
 	return ""
 }
 
+// peek 只读内存目录，不触发异步成员信息查询。
+// 入站补名要先用它过滤掉已知成员，避免批量查库变成每条消息一次无谓的 SQL。
+func (d *directory) peek(groupID, userID string) string {
+	if userID == "" {
+		return ""
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.names[groupID][userID]
+}
+
+// remember 把库里已经有的名字写进内存目录：不回写数据库，也不触发改名回调。
+// 只填空位——内存里的名字来自更近的消息，不会被更旧的库记录覆盖。
+func (d *directory) remember(groupID, userID, name string) {
+	if groupID == "" || userID == "" || name == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.names[groupID] == nil {
+		d.names[groupID] = make(map[string]string)
+	}
+	if d.seen[groupID] == nil {
+		d.seen[groupID] = make(map[string]struct{})
+	}
+	if d.names[groupID][userID] == "" {
+		d.names[groupID][userID] = name
+	}
+	d.seen[groupID][userID] = struct{}{}
+}
+
 // rename 更新某个成员的内存显示名，并把改名落到 state.db。
 //
 // 先看成员目录里已有的名字：已经是新名就什么都不做；只有确实要改（为空或仍是旧名）
@@ -845,15 +920,16 @@ func (d *directory) rename(groupID, userID, oldName, newName string) {
 
 // learn 用消息里直接拿到的显示名更新目录（来源：AstrBot 透传的 sender）。
 // 与 fetchAsync 共用同一套写入规则：只有名字确实变化才写内存与库，避免每条消息一次 DB 写。
-func (d *directory) learn(groupID, userID, name string) {
+// 返回是否真的写入了一个新名字（调用方据此决定要不要补全历史消息的昵称）。
+func (d *directory) learn(groupID, userID, name string) bool {
 	name = strings.TrimSpace(name)
 	if groupID == "" || userID == "" || name == "" {
-		return
+		return false
 	}
 	d.mu.Lock()
 	if d.names[groupID][userID] == name {
 		d.mu.Unlock()
-		return
+		return false
 	}
 	if d.names[groupID] == nil {
 		d.names[groupID] = make(map[string]string)
@@ -870,6 +946,7 @@ func (d *directory) learn(groupID, userID, name string) {
 	if d.onSelfName != nil {
 		d.onSelfName(groupID, userID, name)
 	}
+	return true
 }
 
 func (d *directory) fetchAsync(groupID, userID string) {

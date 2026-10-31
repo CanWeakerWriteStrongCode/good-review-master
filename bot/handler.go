@@ -59,24 +59,46 @@ func (b *Bot) ProcessMessage(ctx context.Context, event onebot.Event, ws *worksp
 		return
 	}
 
+	// 发送者与本条 @ 到的成员一起收集：后面补昵称时按这批 user_id 批量处理。
+	nameIDs := make([]string, 0, len(event.Message)+1)
+	nameIDs = append(nameIDs, event.UserID)
 	if !private {
 		// 群档案与成员目录跟着消息一起积累：群只写一次，成员首次出现时写一行。
 		ws.EnsureGroup(chatID)
 		ws.ObserveMember(chatID, event.UserID)
-		for _, seg := range event.Message {
-			if seg.Type == onebot.SegmentMention {
-				ws.ObserveMember(chatID, seg.String("user_id"))
-			}
+	}
+	for _, seg := range event.Message {
+		if seg.Type != onebot.SegmentMention {
+			continue
+		}
+		userID := seg.String("user_id")
+		if userID == "" {
+			continue
+		}
+		nameIDs = append(nameIDs, userID)
+		if !private {
+			ws.ObserveMember(chatID, userID)
 		}
 	}
 
 	// 消息自带显示名时先学进成员目录：QQ 官方一般不带，桥接拿到时会透传，
 	// 学完本条消息的 @ 渲染与缓存昵称就能立刻用上。
+	// 名字确实变化时，把该用户更早的、还没昵称的消息一起补上（只改内存缓存）。
 	if name := event.SenderName(); name != "" {
-		ws.LearnMemberName(chatID, event.UserID, name)
+		if ws.LearnMemberName(chatID, event.UserID, name) {
+			ws.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg).SetNickname(event.UserID, name)
+		}
 	}
 
-	nameOf := ws.DisplayNameFor(chatID)
+	// 仍有缺名的（发送者没有 sender、或 @ 到的人不在内存目录），按群批量查 members 表补；
+	// 查到会回填内存目录，后续消息不用再查。
+	resolved := ws.ResolveNames(chatID, nameIDs)
+	nameOf := func(userID string) string {
+		if name := resolved[userID]; name != "" {
+			return name
+		}
+		return ws.DisplayNameFor(chatID)(userID)
+	}
 	content := truncate(event.RenderText(nameOf), cfg.MaxMsgRune)
 	if content == "" {
 		return

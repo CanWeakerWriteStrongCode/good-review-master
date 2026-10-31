@@ -651,6 +651,56 @@ func (s *Scope) LoadMembers() (map[string]map[string]string, error) {
 	return out, rows.Err()
 }
 
+// LookupMemberNames 按群批量查成员显示名，用于给缺昵称的消息补名。
+//
+// 只返回确实有名字的行：群名片（display_name）优先，没有时退回账号名（name）。
+// 分批查询是因为 SQLite 一条语句的绑定参数有上限（保守按 999 估算），
+// 一次窗口补名可能带上几百个 user_id。
+func (s *Scope) LookupMemberNames(groupID string, userIDs []string) map[string]string {
+	if s == nil || s.store == nil || groupID == "" || len(userIDs) == 0 || s.store.closed.Load() {
+		return nil
+	}
+	out := make(map[string]string, len(userIDs))
+	const chunk = 400
+	for start := 0; start < len(userIDs); start += chunk {
+		end := start + chunk
+		if end > len(userIDs) {
+			end = len(userIDs)
+		}
+		args := make([]any, 0, end-start+2)
+		args = append(args, s.workspaceID, groupID)
+		holders := make([]string, 0, end-start)
+		for _, id := range userIDs[start:end] {
+			args = append(args, id)
+			holders = append(holders, "?")
+		}
+		query := `SELECT user_id, name, display_name FROM members
+			WHERE workspace_id = ? AND group_id = ? AND user_id IN (` + strings.Join(holders, ",") + `)`
+		rows, err := s.store.db.Query(query, args...)
+		if err != nil {
+			s.store.noteFailure("批量查询成员名", err)
+			return out
+		}
+		for rows.Next() {
+			var userID, name, display string
+			if err := rows.Scan(&userID, &name, &display); err != nil {
+				s.store.noteFailure("批量查询成员名", err)
+				break
+			}
+			if display != "" {
+				out[userID] = display
+			} else if name != "" {
+				out[userID] = name
+			}
+		}
+		if err := rows.Err(); err != nil {
+			s.store.noteFailure("批量查询成员名", err)
+		}
+		_ = rows.Close()
+	}
+	return out
+}
+
 // SaveGroup 记录群档案。name 为空是常态（QQ 官方群机器人不提供群名）：
 // 空名不能覆盖已经拿到的名字，所以用 CASE 只接受非空更新。
 func (s *Scope) SaveGroup(groupID, name string) {

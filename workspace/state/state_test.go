@@ -513,3 +513,42 @@ func TestV4升级补图片字段(t *testing.T) {
 		t.Fatalf("补列后应可写 image_ids：%+v, %v", msgs, err)
 	}
 }
+
+// TestLookupMemberNames批量补名 按群批量查显示名：群名片优先，其次账号名；
+// 只有 ID、没有名字的成员与别的群都不返回；超过单条 SQL 参数上限时分批查完。
+func TestLookupMemberNames批量补名(t *testing.T) {
+	_, scope := openTemp(t)
+	scope.SaveMember("g1", "u1", "账号名", "群名片")
+	scope.SaveMember("g1", "u2", "只有账号名", "")
+	scope.SaveMember("g1", "u3", "", "")
+	scope.SaveMember("g2", "u4", "别的群", "")
+
+	got := scope.LookupMemberNames("g1", []string{"u1", "u2", "u3", "nope"})
+	if got["u1"] != "群名片" {
+		t.Fatalf("应优先用群名片，实际 %q", got["u1"])
+	}
+	if got["u2"] != "只有账号名" {
+		t.Fatalf("没有群名片时应退回账号名，实际 %q", got["u2"])
+	}
+	if _, ok := got["u3"]; ok {
+		t.Fatal("没有名字的成员不应返回")
+	}
+	if _, ok := got["nope"]; ok {
+		t.Fatal("库里没有的 user_id 不应返回")
+	}
+
+	if other := scope.LookupMemberNames("g2", []string{"u1", "u4"}); len(other) != 1 || other["u4"] != "别的群" {
+		t.Fatalf("成员名应按群隔离，实际 %v", other)
+	}
+
+	// 超过 400/批的分批查询：450 个都要查回来。
+	ids := make([]string, 0, 450)
+	for i := 0; i < 450; i++ {
+		id := "bulk-" + string(rune('a'+i%26)) + string(rune('a'+i/26%26))
+		scope.SaveMember("g1", id, "批量"+id, "")
+		ids = append(ids, id)
+	}
+	if got := scope.LookupMemberNames("g1", ids); len(got) != 450 {
+		t.Fatalf("分批查询应返回全部 450 个名字，实际 %d", len(got))
+	}
+}

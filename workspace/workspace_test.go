@@ -606,3 +606,99 @@ func TestLearnMemberName消息自带名字(t *testing.T) {
 		t.Fatalf("重启后应按 members 表恢复名字，实际 %q", got)
 	}
 }
+
+// TestResolveNames内存优先查库兜底 入站缺名时按群批量查 members 表：
+// 内存里有的直接用；内存缺的从库里补并回填目录；内存里较新的名字不被库里旧名覆盖。
+func TestResolveNames内存优先查库兜底(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_a"},
+		MaxCacheMsg:       10,
+	}
+	m, err := New(func() *config.Config { return cfg }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer m.Close()
+	ws, err := m.ResolveOrCreate("qq", "a")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
+	}
+
+	// 只写库、不写内存目录：模拟库里已有名字而内存缺（例如目录恢复失败）。
+	ws.State.SaveMember("g1", "u1", "账号名", "群名片")
+	if got := ws.MemberName("g1", "u1"); got != "" {
+		t.Fatalf("内存目录此时应为空，实际 %q", got)
+	}
+
+	got := ws.ResolveNames("g1", []string{"u1", "u2", "u1", ""})
+	if got["u1"] != "群名片" {
+		t.Fatalf("应从库里补回群名片，实际 %q", got["u1"])
+	}
+	if len(got) != 1 {
+		t.Fatalf("只应返回查到名字的成员，实际 %v", got)
+	}
+	if ws.MemberName("g1", "u1") != "群名片" {
+		t.Fatal("查到名字后应回填内存目录")
+	}
+
+	// 内存里更新过的名字优先：库里仍是旧账号名。
+	if !ws.LearnMemberName("g1", "u1", "新名") {
+		t.Fatal("新名字应写入目录")
+	}
+	if got := ws.ResolveNames("g1", []string{"u1"})["u1"]; got != "新名" {
+		t.Fatalf("内存中的新名应优先于库里的旧名，实际 %q", got)
+	}
+}
+
+// Test重启恢复历史消息昵称 messages 表不存 nickname：重启后按 members 表补回，
+// 拼给模型的聊天记录里才能看出谁说的。
+func Test重启恢复历史消息昵称(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_a"},
+		MaxCacheMsg:       10,
+	}
+	newManager := func() *Manager {
+		m, err := New(func() *config.Config { return cfg }, system,
+			filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		return m
+	}
+
+	m := newManager()
+	ws, err := m.ResolveOrCreate("qq", "a")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
+	}
+	ws.State.SaveMember("g1", "u1", "小张", "")
+	ws.State.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "你好", Time: 1})
+	m.Close()
+
+	m2 := newManager()
+	defer m2.Close()
+	ws2, ok := m2.ByID("qq_a")
+	if !ok || ws2 == nil {
+		t.Fatal("工作空间应从档案恢复")
+	}
+	msgs := ws2.Cache.GetGroupCache("g1", cfg.MaxCacheMsg).GetAll()
+	if len(msgs) != 1 {
+		t.Fatalf("应恢复 1 条消息，实际 %d", len(msgs))
+	}
+	if msgs[0].Nickname != "小张" {
+		t.Fatalf("历史消息应按 members 表补回昵称，实际 %q", msgs[0].Nickname)
+	}
+}

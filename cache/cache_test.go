@@ -140,3 +140,30 @@ func TestStats环形覆盖(t *testing.T) {
 		t.Fatalf("环形覆盖后 Stats = %+v", st)
 	}
 }
+
+// TestSetNickname补空名 昵称通常是后学到的：只补同一用户还没名字的消息，
+// 已有名字（哪怕是旧名）不动，别的用户也不受影响。
+func TestSetNickname补空名(t *testing.T) {
+	gc := &GroupMsgCache{
+		buf:     make([]Message, 6),
+		seenSet: make(map[string]struct{}, 6),
+	}
+	gc.Add(Message{MessageID: "1", UserID: "u1", Content: "a"})
+	gc.Add(Message{MessageID: "2", UserID: "u1", Nickname: "旧名", Content: "b"})
+	gc.Add(Message{MessageID: "3", UserID: "u2", Content: "c"})
+
+	gc.SetNickname("u1", "小张")
+	gc.SetNickname("", "空ID")
+	gc.SetNickname("u2", "")
+
+	all := gc.GetAll()
+	if all[0].Nickname != "小张" {
+		t.Fatalf("空昵称应被补成小张，实际 %q", all[0].Nickname)
+	}
+	if all[1].Nickname != "旧名" {
+		t.Fatalf("已有昵称不应被覆盖，实际 %q", all[1].Nickname)
+	}
+	if all[2].Nickname != "" {
+		t.Fatalf("空名字不应写入，实际 %q", all[2].Nickname)
+	}
+}
