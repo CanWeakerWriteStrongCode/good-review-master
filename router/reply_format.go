@@ -98,33 +98,104 @@ func (r *Router) rewriteReply(ctx context.Context, cfg *config.Config, draft, ch
 	return sentences
 }
 
-// parseSentenceReply 从排版结果里取 sentences。容忍代码围栏与前后散文，
-// 但要求至少有一句非空；否则返回错误，由调用方回退原文。
+// parseSentenceReply 从排版结果里取句子。容忍代码围栏、前后散文、以及
+// 后端不认 response_format 时模型自己换的键名（实测有模型回 {"reply":"一句\n二句"}）。
+//
+// 取法按顺序试，任一命中就返回：
+//  1. {"sentences": [...]} —— schema 生效时的标准形状；
+//  2. 常见单键 {"reply"/"text"/"content"/"rewritten"/"result": "一句\n二句"} —— 字符串按换行拆句；
+//  3. 顶层直接是 ["第一句","第二句"]；
+//  4. 对象里只有一个字符串字段 —— 键名未知也收（比如 {"note":"..."}）。
+//
+// 宁可多试几种形状，也别把有效回复直接丢掉：一次排版调用已经花出去了。
+// 但只认上面这些形状，"sentences 为空 + reason 之类的说明字段"不算正文。
 func parseSentenceReply(raw string) ([]string, error) {
 	text := stripJSONFences(raw)
 	start := strings.Index(text, "{")
 	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return nil, fmt.Errorf("排版结果不是 JSON：%s", truncateJudgeLog(raw))
+
+	// 1) schema 生效时的标准形状
+	if start >= 0 && end > start {
+		body := text[start : end+1]
+		var payload struct {
+			Sentences []string `json:"sentences"`
+		}
+		if err := json.Unmarshal([]byte(body), &payload); err == nil {
+			if out := cleanSentences(payload.Sentences); len(out) > 0 {
+				return out, nil
+			}
+		}
+		// 2) 模型自己起的键名
+		if out := sentencesFromObject(body); len(out) > 0 {
+			return out, nil
+		}
 	}
-	var payload struct {
-		Sentences []string `json:"sentences"`
+
+	// 3) 顶层就是字符串数组
+	arrStart := strings.Index(text, "[")
+	arrEnd := strings.LastIndex(text, "]")
+	if arrStart >= 0 && arrEnd > arrStart {
+		var arr []string
+		if err := json.Unmarshal([]byte(text[arrStart:arrEnd+1]), &arr); err == nil {
+			if out := cleanSentences(arr); len(out) > 0 {
+				return out, nil
+			}
+		}
 	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &payload); err != nil {
-		return nil, fmt.Errorf("排版结果解析失败：%w（原文 %s）", err, truncateJudgeLog(raw))
+	return nil, fmt.Errorf("排版结果里没有句子：%s", truncateJudgeLog(raw))
+}
+
+// looseSentenceKeys 模型自己起的键名候选，按顺序试。
+// 只列"正文"语义的键：reason/note 这类说明字段不在里面，不能被当成回复发出去。
+var looseSentenceKeys = []string{"reply", "text", "content", "rewritten", "result"}
+
+// sentencesFromObject 从对象里取正文句子：先按 looseSentenceKeys 顺序找，
+// 都不在时，只有对象仅含一个字符串字段的情况下才收它（键名未知也认）。
+func sentencesFromObject(body string) []string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
+		return nil
 	}
-	out := make([]string, 0, len(payload.Sentences))
-	for _, sentence := range payload.Sentences {
-		// 句子内部的换行压成空格：每句必须真的占一行，不能被内嵌换行打乱排版。
+	for _, key := range looseSentenceKeys {
+		if raw, ok := fields[key]; ok {
+			if out := sentencesFromValue(raw); len(out) > 0 {
+				return out
+			}
+		}
+	}
+	if len(fields) != 1 {
+		return nil
+	}
+	for _, raw := range fields {
+		return sentencesFromValue(raw)
+	}
+	return nil
+}
+
+// sentencesFromValue 一个 JSON 值里的句子：字符串按换行拆，字符串数组逐个取，其它类型忽略。
+func sentencesFromValue(raw json.RawMessage) []string {
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return cleanSentences(strings.Split(one, "\n"))
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err == nil {
+		return cleanSentences(many)
+	}
+	return nil
+}
+
+// cleanSentences 去空白、把句内换行压成空格、丢掉空句：
+// 每句必须真的占一行，不能被内嵌换行打乱排版。
+func cleanSentences(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, sentence := range in {
 		sentence = strings.TrimSpace(strings.ReplaceAll(sentence, "\n", " "))
 		if sentence != "" {
 			out = append(out, sentence)
 		}
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("排版结果 sentences 为空：%s", truncateJudgeLog(raw))
-	}
-	return out, nil
+	return out
 }
 
 // maxReplyMessages QQ 官方对同一条入站消息的被动回复上限：超过 5 条会被平台拒绝。

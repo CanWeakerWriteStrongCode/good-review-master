@@ -100,7 +100,8 @@ const defaultReplyRewrite = `你是群聊回复的排版器。用户消息里有
 - 保持原回复的语气、人称和人格色彩：只调整断句和长度，不要改成生硬的书面语、客服腔或新闻播报腔；
 - 可以适当删减，以应对多个短句的形式；
 - 每句尽量短（一般不超过 50 字），口语化，像真人在群里发消息；
-- 只输出 JSON，不要解释。`
+- 只输出 JSON，不要解释：{"sentences": ["第一句", "第二句"]}。键名必须是 sentences，值是字符串数组，一句一个元素。
+  后端不支持 JSON schema 时（response_format 被降级），这一句就是唯一的形状约束，不要换成别的键名。`
 
 // defaultProactiveRequirement 是主动插话（裁判判定要回后）生成回复时，
 // system prompt 里"【要求】"那句的兜底：正常从 prompt_system.yaml 的

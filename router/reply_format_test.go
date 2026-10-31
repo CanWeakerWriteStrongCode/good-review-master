@@ -46,6 +46,15 @@ func TestParseSentenceReply(t *testing.T) {
 		{name: "空数组", raw: `{"sentences":[]}`, wantErr: true},
 		{name: "非JSON", raw: "好啊", wantErr: true},
 		{name: "缺字段", raw: `{"other":1}`, wantErr: true},
+		// 后端把 response_format 降级成 none 时，模型常自己换键名。实测吞掉过一次
+		// {"reply":"一句\n二句"}，那条回复被迫发原文，这里锁住兜底。
+		{name: "键名写成reply", raw: `{"reply":"上句\n下句"}`, want: []string{"上句", "下句"}},
+		{name: "键名写成text", raw: `{"text":"只有一句"}`, want: []string{"只有一句"}},
+		{name: "键名写成content数组", raw: `{"content":["一","二"]}`, want: []string{"一", "二"}},
+		{name: "顶层字符串数组", raw: `["一","二"]`, want: []string{"一", "二"}},
+		{name: "单键未知也收", raw: `{"note":"孤零零一句"}`, want: []string{"孤零零一句"}},
+		// 说明字段不能被当成正文：sentences 空、其余字段又不是正文语义时宁可失败
+		{name: "空句配说明字段", raw: `{"sentences":[],"reason":"模型偷懒"}`, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
