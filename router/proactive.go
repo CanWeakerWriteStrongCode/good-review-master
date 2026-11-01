@@ -303,13 +303,22 @@ func (r *Router) runProactive(ctx context.Context, groupID string) {
 	}
 }
 
-// handleProactive 对一个候选消息执行"裁判 → 必要时生成并发送"。
+// handleProactive 对一个候选消息执行"选窗 → 裁判 → 必要时生成并发送"。
 func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, groupID string, cfg *config.Config) {
 	// 图片只下载一次：裁判看它决定要不要回，生成阶段也直接复用这份像素，
 	// 否则生成只能看到聊天记录里的“[图片]”，会出现“裁判看懂了新闻、回复却在聊构图”的割裂。
 	images := r.judgeImages(ctx, cand.event, cfg)
 
-	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, images, false)
+	// 选窗放在裁判之前，算出来的这一份同时交给裁判和生成。
+	// 以前两条链路各算各的：裁判按条数滚（20~40 条），生成按 token 成本滚（可能几百条），
+	// 正式锚点一重置，裁判反而看得比生成还多——判"要不要回"和真去回时看到的不是同一段。
+	window := r.proactiveWindow(cand, groupID, cfg)
+	if len(window) == 0 {
+		logutil.Warn("没有可判定的聊天记录，本条不处理", "group", groupID)
+		return
+	}
+
+	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, images, window, false)
 	if err != nil {
 		telemetry.ProactiveJudgeTotal.WithLabelValues(r.workspace, telemetry.ProactiveJudgeError).Inc()
 		logutil.Warn("主动判定失败，本条不回复", "group", groupID, "err", err)
@@ -325,10 +334,33 @@ func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, 
 		"reason", verdict.Reason)
 
 	systemPrompt := r.proactiveSystemPrompt(cfg, cand.event, groupID, verdict.focusLast())
-	_, sent := r.chatReplyWithSnapshot(ctx, cand.event, groupID, systemPrompt, "", false, images, cand.snapshot, &verdict)
+	_, sent := r.replyWithWindow(ctx, replyParams{
+		event: cand.event, groupID: groupID, cfg: cfg,
+		systemPrompt: systemPrompt, keywordPrompt: "",
+		mention: false, images: images, window: window, longForm: verdict.LongForm,
+	})
 	if sent {
 		r.proactive.recordReply(groupID, time.Now())
 	}
+}
+
+// proactiveWindow 在裁判之前就把这次要用的窗口定下来。
+//
+// 选窗需要的 system prompt 里有一句 focus（"只看最后一条" / "结合整体上下文"），
+// 而 focus 要等裁判结论才知道。这里先用通用那版算：它只是 system 末尾几十个字，
+// 对 systemTokens 的影响远小于一条消息，扩不扩展的判断不会因为这一句翻面。
+func (r *Router) proactiveWindow(cand *proactiveCandidate, groupID string, cfg *config.Config) []cache.Message {
+	msgs := cand.snapshot
+	if msgs == nil {
+		msgs = r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
+	}
+	// 和生成链路一样截到候选消息为止：worker 判定时缓存里可能已经有更新的消息，
+	// 不能让裁判去判比触发消息更晚的内容。
+	msgs = cutAtMessage(msgs, cand.event.MessageID)
+	if len(msgs) == 0 {
+		return nil
+	}
+	return r.selectChatWindow(msgs, groupID, r.proactiveSystemPrompt(cfg, cand.event, groupID, false), cfg)
 }
 
 // proactiveSystemPrompt 主动插话的 system prompt：在普通问答基础上换成
@@ -347,15 +379,9 @@ func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, g
 
 // judgeProactive 问裁判"这条要不要回"。任何失败都由调用方按"不回"处理。
 // images 是已经下载好的候选图片（handleProactive 只下载一次，生成阶段复用）。
+// window 是调用方在裁判之前选好的窗口——裁判看到的聊天记录和随后生成用的完全一致。
 // mention=true 表示这条本身 @ 了机器人（或私聊）：reply 结论一律忽略，只取 long_form/focus。
-func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proactiveCandidate, cfg *config.Config, images []llm.Image, mention bool) (judgeVerdict, error) {
-	msgs := cand.snapshot
-	if msgs == nil {
-		msgs = r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
-	}
-	// 裁判窗口以 llm_send_count 起步，之后接着上次的起点往后加（见 judgeWindow），
-	// 和生成阶段的"扩展优先"是同一个思路，只是这里按条数控制上限。
-	window := r.judgeWindow(groupID, msgs, cand.event.MessageID, cfg.LLMSendCount)
+func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proactiveCandidate, cfg *config.Config, images []llm.Image, window []cache.Message, mention bool) (judgeVerdict, error) {
 	if len(window) == 0 {
 		return judgeVerdict{}, fmt.Errorf("没有可判定的聊天记录")
 	}
@@ -394,15 +420,16 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 // judgeLongForm 直答（@/私聊）链路的轻量判定：只取 long_form，
 // reply 结论一律忽略——被点名必须回，裁判说"不回"也不作数。
 //
+// window 是调用方选好的生成窗口：这次判定和随后的正式生成看同一段记录，不重复选窗。
 // 返回 longForm=true 表示这条是查资料/知识型长篇解答，生成后跳过排版（不强制 ≤N 句）。
 // 任何失败都返回 false（照常排版）：排版只是格式，不该因为它挡住回复。
-func (r *Router) judgeLongForm(ctx context.Context, event onebot.Event, groupID string, cfg *config.Config) bool {
+func (r *Router) judgeLongForm(ctx context.Context, event onebot.Event, groupID string, cfg *config.Config, window []cache.Message) bool {
 	// 排版已关闭时 long_form 没有消费方，省掉这次调用。
 	if cfg.LLMConfig.ReplyMaxSentences <= 0 {
 		return false
 	}
 	cand := &proactiveCandidate{event: event}
-	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, nil, true)
+	verdict, err := r.judgeProactive(ctx, groupID, cand, cfg, nil, window, true)
 	if err != nil {
 		logutil.Warn("直答 long_form 判定失败，按普通回复排版", "group", groupID, "err", err)
 		return false
@@ -435,54 +462,6 @@ func (r *Router) judgeImages(ctx context.Context, event onebot.Event, cfg *confi
 	return out
 }
 
-// judgeWindow 取裁判要看的聊天记录：以候选消息为右边界，能接着上次窗口往后加就加，
-// 涨到上限才重置。只往后加是这件事的全部目的——同样是 20 条起步，每来一条新消息
-// 就从头部滑掉一条的话，整段 user 消息的 token 前缀会立刻失效：实测（约 3000 token
-// 的真实尺寸）尾部追加一行命中 82%，滑掉首行只剩 10.5%，而且滑 1 行和滑 5 行一样惨。
-//
-// 上限取 limit 的两倍：窗口在 limit ~ 2×limit 之间滚，滚得越久命中越多，
-// 但也不能无限长，否则裁判自己的 prompt 会一直涨，本机每槽 8192 装不下。
-func (r *Router) judgeWindow(groupID string, msgs []cache.Message, latestID string, limit int) []cache.Message {
-	r.judgeAnchorMu.Lock()
-	anchorID := r.judgeAnchors[groupID]
-	r.judgeAnchorMu.Unlock()
-
-	window, next := judgeWindowFrom(msgs, latestID, limit, anchorID)
-
-	r.judgeAnchorMu.Lock()
-	if r.judgeAnchors == nil {
-		r.judgeAnchors = make(map[string]string)
-	}
-	r.judgeAnchors[groupID] = next
-	r.judgeAnchorMu.Unlock()
-
-	return window
-}
-
-// judgeWindowFrom 是 judgeWindow 的纯函数部分：给出本次窗口和下次该记住的起点。
-//
-// anchorID 是上次窗口的首条 messageID，所以新窗口以它为起点、包含上次的全部内容，
-// 等于"把已经发过的那段原样放在最前面"。切到候选消息为右边界（cutAtMessage）是原逻辑：
-// worker 判定时缓存里可能已经有更新的消息，不能让裁判去判更晚的内容。
-func judgeWindowFrom(msgs []cache.Message, latestID string, limit int, anchorID string) ([]cache.Message, string) {
-	window := cutAtMessage(msgs, latestID)
-	if len(window) == 0 {
-		return nil, ""
-	}
-	if limit <= 0 || limit > len(window) {
-		limit = len(window)
-	}
-	start := len(window) - limit
-	if anchorID != "" {
-		// 锚点还在缓存里（没被环形缓冲覆盖）、接上去也没超两倍上限，就沿用它的起点。
-		if idx := cache.FindMsgIndex(window, anchorID); idx >= 0 && len(window)-idx <= limit*2 {
-			start = idx
-		}
-	}
-	out := window[start:]
-	return out, out[0].MessageID
-}
-
 // buildJudgeText 组装裁判的 user 消息。动态内容全部在这里，system prompt 保持稳定。
 //
 // botID 是本群可用于 @ 比较的机器人 ID：聊天记录里的「@昵称(ID)」靠它才能分辨
@@ -506,11 +485,13 @@ func buildJudgeText(window []cache.Message, botName, botID string, hasImage, men
 	}
 	if mention {
 		// 直答链路：reply 结论不用（@/私聊必须回），只取 long_form 与 focus。
+		// 这一句不能省：它改写的是语义（"必须回、reply 填 true"），不是重复交代判定对象。
 		b.WriteString("【待判定】最后一条消息 @ 了机器人（或私聊），本条必须回复：reply 固定填 true，" +
 			"忽略\"要不要回\"的判断，只需给出 long_form 与 focus。")
-	} else {
-		b.WriteString("【待判定】最近聊天里的最后一条消息。判断机器人是否应该主动回复它。")
 	}
+	// 非 @ 的主动接话在这里不写任何"待判定"：
+	// 判什么、按什么判，system 里的判定规则已经写明（最后一条消息），
+	// 再补一句只是重复，还白白多一行 user 正文。
 	return b.String()
 }
 

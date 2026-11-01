@@ -21,7 +21,8 @@ bot:
   # 字符串写法等价：allow_workspace_accounts: "qq_official_bot_1906xxxx,qq_official_bot_1904xxxx"
   # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
   # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
-  # 裁判看的窗口与生成一致（runtime.llm_send_count 条），不再单独配置。
+  # 裁判和生成用的是同一份窗口：进入 Agent 时先按 llm_send_count / 缓存命中算一次，
+  # 裁判看的就是这份，判完直接拿去生成，不再各算各的。
   proactive_enabled: true
   # 显式写 0 都有效；想用默认值请删掉该行（缺省才是默认，0 不再被覆盖）。
   proactive_cooldown_sec: 90       # 0 = 主动发言后不冷却
@@ -64,8 +65,10 @@ runtime:
   # 0 = 不拆分，所有句子合成一条消息。注意 QQ 官方对同一条触发消息的被动回复最多 5 次，
   # 所以超过 5 句时会自动把余下句子合并进第 5 条。默认 800。
   reply_send_interval_ms: 800
-  # 环形缓冲条数上限（手动配，建议 ≈31×llm_send_count；几百 KB/群不会爆内存）
-  max_cache_msg: 3100
+  # 环形缓冲条数上限（手动配；几百 KB/群不会爆内存）。
+  # 它同时也是扩展窗口的天花板：窗口从锚点一路往后加，锚点一旦被挤出这个缓冲就只能重置，
+  # 所以这个数定了，缓存最多能滚多长也就定了。200 条 ≈ 10200 估算 token。
+  max_cache_msg: 200
   # AstrBot 桥接插件推送事件的监听地址（与插件的 event_url 主机端口对应，
   # 路径是 /im/event/{account}）
   im_listen_addr: "127.0.0.1:18090"

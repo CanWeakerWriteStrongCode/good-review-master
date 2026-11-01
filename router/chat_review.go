@@ -34,11 +34,6 @@ func (r *Router) chatReview(parent context.Context, event onebot.Event, groupID 
 // @ 链路由 chatReview 包成 goroutine；主动插话的 worker 本身已在串行 goroutine 里，
 // 直接同步调用——它需要知道有没有产出可发送的回复，才能决定要不要记冷却与连续计数。
 // mention=false 时只引用触发消息、不 @ 人（主动接话不该把人架出来回答）。
-// chatReplyNow 同步完成一次"选窗 → 调模型 → 发送 → 记录锚点"。
-//
-// @ 链路由 chatReview 包成 goroutine；主动插话的 worker 本身已在串行 goroutine 里，
-// 直接同步调用——它需要知道有没有产出可发送的回复，才能决定要不要记冷却与连续计数。
-// mention=false 时只引用触发消息、不 @ 人（主动接话不该把人架出来回答）。
 //
 // longForm=true 表示这条是知识型长篇（主动链路来自裁判；直答链路会用一次轻量判定
 // 自行得出），生成后跳过"≤N 句"排版。
@@ -69,23 +64,54 @@ func (r *Router) chatReplyWithSnapshot(ctx context.Context, event onebot.Event, 
 	// 否则"只回最后一条点名消息"会指到别人的新消息上。
 	msgs = cutAtMessage(msgs, event.MessageID)
 
+	// 先选窗再判 long_form：这轮轻量判定和正式生成看的是同一份窗口。
+	// 反过来先判定再选窗，两次选窗之间缓存可能又进了新消息，两边条数就对不上了。
+	window := r.selectChatWindow(msgs, groupID, systemPrompt, cfg)
+
 	var longForm bool
 	if mention {
 		// 直答链路（@/私聊）在这里补一次轻量判定，只取 long_form：
 		// 知识型长篇不再强制排版；reply 结论忽略（被点名必须回）。
-		longForm = r.judgeLongForm(ctx, event, groupID, cfg)
+		longForm = r.judgeLongForm(ctx, event, groupID, cfg, window)
 	} else if verdict != nil {
 		longForm = verdict.LongForm
 	}
+	return r.replyWithWindow(ctx, replyParams{
+		event: event, groupID: groupID, cfg: cfg,
+		systemPrompt: systemPrompt, keywordPrompt: keywordPrompt,
+		mention: mention, images: images, window: window, longForm: longForm,
+	})
+}
 
-	// 按 token 成本决定扩展/重置，得到本次要发送的窗口
-	chatLogMsgs := r.selectChatWindow(msgs, groupID, systemPrompt, cfg)
+// replyParams 一次回复的全部输入。窗口在进来之前就已经定下——
+// 主动链路是在裁判之前选的，裁判和生成看的就是同一段聊天记录。
+type replyParams struct {
+	event         onebot.Event
+	groupID       string
+	cfg           *config.Config
+	systemPrompt  string
+	keywordPrompt string
+	mention       bool
+	images        []llm.Image
+	window        []cache.Message
+	longForm      bool
+}
+
+// replyWithWindow 用给定窗口走完生成、排版、发送、记锚点，不再重新选窗。
+func (r *Router) replyWithWindow(ctx context.Context, p replyParams) (string, bool) {
+	event, groupID, cfg := p.event, p.groupID, p.cfg
+	if len(p.window) == 0 {
+		// 调用方都检查过窗口非空；走到这里说明上游逻辑变了，宁可这一条不发，也别发空上下文。
+		logutil.Warn("发送窗口为空，放弃本次回复", "group", groupID)
+		return "", false
+	}
+	chatLogMsgs := p.window
 	chatLog := cache.BuildChatLog(chatLogMsgs)
 
 	baseCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, cfg.LLMTimeout)
 	defer cancel()
-	userMsg := BuildUserMsg(chatLog, keywordPrompt)
+	userMsg := BuildUserMsg(chatLog, p.keywordPrompt)
 	// agent「看图」：窗口内有图片且 view_image 工具在线时，附上候选图列表（懒加载，图不随文本常驻）
 	if cfg.LLMConfig.ImageMax > 0 && r.mcp != nil && len(r.mcp.Tools()) > 0 {
 		if block := r.imageCandidatesBlock(chatLogMsgs); block != "" {
@@ -94,14 +120,14 @@ func (r *Router) chatReplyWithSnapshot(ctx context.Context, event onebot.Event, 
 	}
 	// 主动插话的候选消息图片由裁判阶段下载好，随本次请求直接附上；
 	// 必须明确告诉模型"图已经给你了"，否则它只会看到聊天记录里的"[图片]"占位。
-	if len(images) > 0 {
+	if len(p.images) > 0 {
 		userMsg += "\n【图片】最后一条消息附带图片，已随本次请求提供，请结合图片内容回答。"
 	}
 
-	reply, err := r.runReviewLLM(ctx, systemPrompt, userMsg, images)
+	reply, err := r.runReviewLLM(ctx, p.systemPrompt, userMsg, p.images)
 	if err != nil {
 		logutil.Error("大模型调用失败", "err", err, "group", groupID)
-		if mention {
+		if p.mention {
 			r.reply(event, groupID, "大师今天罢工了，稍后再试~")
 		}
 		return "", false
@@ -114,7 +140,7 @@ func (r *Router) chatReplyWithSnapshot(ctx context.Context, event onebot.Event, 
 	// 用 baseCtx 而不是上面那个已带主调用超时的 ctx，排版才有自己独立的时间预算；
 	// 排版失败会退回原文，不影响这次回复。
 	var sentences []string
-	if longForm {
+	if p.longForm {
 		logutil.Info("知识型长篇回复，跳过排版", "group", groupID)
 		sentences = []string{reply}
 	} else {
@@ -122,7 +148,7 @@ func (r *Router) chatReplyWithSnapshot(ctx context.Context, event onebot.Event, 
 	}
 	// 发送层决定合成一条还是逐条发（最多 5 条，QQ 被动回复上限）
 	reply = strings.Join(sentences, "\n")
-	if err := r.sendReply(baseCtx, event, groupID, mention, sentences, cfg); err != nil {
+	if err := r.sendReply(baseCtx, event, groupID, p.mention, sentences, cfg); err != nil {
 		logutil.Warn("回复未完全发送，等待重试", "group", groupID, "err", err)
 		return reply, false
 	}

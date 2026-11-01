@@ -57,7 +57,9 @@ func TestParseJudgeVerdict(t *testing.T) {
 	}
 }
 
-func TestJudgeWindow以候选消息为右边界(t *testing.T) {
+// 裁判和生成用的是同一份窗口，右边界都由 cutAtMessage 锁在候选消息上：
+// worker 判定时缓存里可能已经有更新的消息，不能让裁判去判比触发消息更晚的内容。
+func TestCutAtMessage以候选消息为右边界(t *testing.T) {
 	msgs := []cache.Message{
 		{MessageID: "1", Content: "a"},
 		{MessageID: "2", Content: "b"},
@@ -65,60 +67,14 @@ func TestJudgeWindow以候选消息为右边界(t *testing.T) {
 		{MessageID: "4", Content: "d"},
 	}
 
-	got, _ := judgeWindowFrom(msgs, "2", 10, "")
+	got := cutAtMessage(msgs, "2")
 	if len(got) != 2 || got[1].MessageID != "2" {
 		t.Fatalf("应以候选消息为右边界，实际 %+v", got)
 	}
 
-	got, _ = judgeWindowFrom(msgs, "2", 1, "")
-	if len(got) != 1 || got[0].MessageID != "2" {
-		t.Fatalf("limit 应截断到候选消息本身，实际 %+v", got)
-	}
-
-	// 候选消息已不在缓存（被环形缓冲覆盖）：退回最近 limit 条
-	got, _ = judgeWindowFrom(msgs, "unknown", 2, "")
-	if len(got) != 2 || got[1].MessageID != "4" {
-		t.Fatalf("候选缺失时应取最近 limit 条，实际 %+v", got)
-	}
-}
-
-// 裁判窗口要接着上次的起点往后加，不能每条新消息都从头滑掉一条。
-// 实测（约 3000 token 的真实尺寸）：尾部追加一行命中 82%，滑掉首行只剩 10.5%。
-func TestJudgeWindow接着锚点只往后加(t *testing.T) {
-	msgs := make([]cache.Message, 0, 61)
-	for i := 1; i <= 60; i++ {
-		id := fmt.Sprintf("%d", i)
-		msgs = append(msgs, cache.Message{MessageID: id, Content: "m" + id})
-	}
-
-	// 第一次没有锚点：取最近 10 条，起点是第 51 条
-	got, next := judgeWindowFrom(msgs, "60", 10, "")
-	if len(got) != 10 || got[0].MessageID != "51" || next != "51" {
-		t.Fatalf("首次应取最近 10 条并记住首条，实际 %d 条、起点 %s、next %s", len(got), got[0].MessageID, next)
-	}
-
-	// 又来一条新消息：从锚点开始，窗口是上次的超集（11 条），前缀没动
-	more := append(msgs, cache.Message{MessageID: "61", Content: "m61"})
-	got, next = judgeWindowFrom(more, "61", 10, next)
-	if len(got) != 11 || got[0].MessageID != "51" || got[10].MessageID != "61" || next != "51" {
-		t.Fatalf("应接着上次起点往后加，实际 %d 条、起点 %s", len(got), got[0].MessageID)
-	}
-
-	// 涨过两倍上限（10→20）就重置成最近 10 条
-	wide := make([]cache.Message, 0, 30)
-	for i := 1; i <= 30; i++ {
-		id := fmt.Sprintf("w%d", i)
-		wide = append(wide, cache.Message{MessageID: id, Content: "x"})
-	}
-	got, next = judgeWindowFrom(wide, "w30", 10, "w1")
-	if len(got) != 10 || got[0].MessageID != "w21" || next != "w21" {
-		t.Fatalf("超过两倍上限应重置为最近 10 条，实际 %d 条、起点 %s", len(got), got[0].MessageID)
-	}
-
-	// 锚点被环形缓冲覆盖（找不到）：退回最近 limit 条
-	got, _ = judgeWindowFrom(msgs, "60", 10, "已流走")
-	if len(got) != 10 || got[0].MessageID != "51" {
-		t.Fatalf("锚点丢失应取最近 limit 条，实际 %d 条、起点 %s", len(got), got[0].MessageID)
+	// 候选消息已不在缓存（被环形缓冲覆盖）：原样返回，交给选窗决定发多少
+	if got := cutAtMessage(msgs, "unknown"); len(got) != len(msgs) {
+		t.Fatalf("候选缺失时应原样返回，实际 %d 条", len(got))
 	}
 }
 
@@ -300,13 +256,17 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("等待超时：%s", what)
 }
 
-// Test裁判窗口与生成一致 裁判看到的条数取自 runtime.llm_send_count，
-// 不再单独准备一份聊天记录；生成阶段自己再按缓存命中扩展/重置。
-func Test裁判窗口与生成一致(t *testing.T) {
+// Test裁判与生成用同一份窗口 选窗挪到了裁判之前：裁判看到的聊天记录，
+// 和随后真正拿去生成的是同一段。
+//
+// 改动前两条链路各算各的：裁判按条数滚（llm_send_count ~ 2 倍），生成按 token 成本滚，
+// 正式锚点一重置，裁判反而看得比生成还多——判"要不要回"和真去回时看的不是同一段。
+func Test裁判与生成用同一份窗口(t *testing.T) {
 	cfg := proactiveTestConfig()
 	cfg.LLMSendCount = 3
 	instance, fake := newProactiveTestRouter(t, cfg)
-	fake.SetJSONReply(`{"reply": false, "long_form": false, "focus": "最后一条消息", "reason": "闲聊"}`)
+	fake.SetJSONReply(`{"reply": true, "reason": "有群友提问"}`)
+	fake.SetReply("嗯")
 
 	contents := []string{"第1条消息", "第2条消息", "第3条消息", "第4条消息", "第5条消息", "第6条消息"}
 	for i, content := range contents {
@@ -315,19 +275,68 @@ func Test裁判窗口与生成一致(t *testing.T) {
 			Nickname: "张三", Content: content,
 		})
 	}
-	instance.TryProactive(context.Background(), proactiveEvent("u1", "m6", contents[5]), "g1", contents[5])
 
-	waitFor(t, "裁判调用", func() bool { return len(fake.JSONCalls()) == 1 })
-	text := fake.JSONCalls()[0].Messages[1].Content
-	for i := 0; i < 3; i++ {
-		if strings.Contains(text, contents[i]) {
-			t.Fatalf("裁判不应看到 %s（窗口=%d）：%s", contents[i], cfg.LLMSendCount, text)
-		}
+	// 第一次：没有锚点，窗口是最近 3 条，发送成功后锚点停在 m4..m6
+	first := &proactiveCandidate{event: proactiveEvent("u1", "m6", contents[5]), content: contents[5]}
+	instance.handleProactive(context.Background(), first, "g1", cfg)
+	if got, want := len(fake.JSONCalls()), 1; got != want {
+		t.Fatalf("裁判调用 = %d，期望 %d", got, want)
 	}
-	for i := 3; i < len(contents); i++ {
-		if !strings.Contains(text, contents[i]) {
-			t.Fatalf("裁判应看到 %s：%s", contents[i], text)
-		}
+	if got, want := len(fake.Calls()), 1; got != want {
+		t.Fatalf("生成调用 = %d，期望 %d", got, want)
+	}
+	assertJudgeAndGenSameWindow(t, fake, "首次")
+
+	// 又来两条新消息：生成窗口接着锚点扩成 m4..m8（5 条），
+	// 裁判必须跟着看到同样这 5 条——这正是改动前会对不上的地方（那时裁判只看最近 3 条）。
+	seedMessages(instance, cfg,
+		cache.Message{MessageID: "m7", GroupID: "g1", UserID: "u2", Nickname: "李四", Content: "第7条消息"},
+		cache.Message{MessageID: "m8", GroupID: "g1", UserID: "u2", Nickname: "李四", Content: "第8条消息"},
+	)
+	second := &proactiveCandidate{event: proactiveEvent("u2", "m8", "第8条消息"), content: "第8条消息"}
+	instance.handleProactive(context.Background(), second, "g1", cfg)
+	if got, want := len(fake.JSONCalls()), 2; got != want {
+		t.Fatalf("裁判调用 = %d，期望 %d", got, want)
+	}
+	if got, want := len(fake.Calls()), 2; got != want {
+		t.Fatalf("生成调用 = %d，期望 %d", got, want)
+	}
+	assertJudgeAndGenSameWindow(t, fake, "扩展后")
+
+	judgeText := fake.JSONCalls()[1].Messages[1].Content
+	if !strings.Contains(judgeText, "第4条消息") {
+		t.Fatalf("扩展后裁判应看到锚点起点（第4条消息）：%s", judgeText)
+	}
+	if strings.Contains(judgeText, "第3条消息") {
+		t.Fatalf("裁判窗口不应越过锚点往前多拿：%s", judgeText)
+	}
+}
+
+// assertJudgeAndGenSameWindow 断言最近一次裁判 user 里的聊天记录，与最近一次生成 user 的完全一致。
+// 裁判那边聊天记录前面有【最近聊天】、后面接身份行，两头切掉再比。
+func assertJudgeAndGenSameWindow(t *testing.T, fake *testutil.FakeLLM, when string) {
+	t.Helper()
+	jsonCalls := fake.JSONCalls()
+	judgeText := jsonCalls[len(jsonCalls)-1].Messages[1].Content
+	const prefix = "【最近聊天】\n"
+	start := strings.Index(judgeText, prefix)
+	if start < 0 {
+		t.Fatalf("%s：裁判 user 缺少【最近聊天】段：%s", when, judgeText)
+	}
+	judgeLog := judgeText[start+len(prefix):]
+	if end := strings.Index(judgeLog, "【机器人】"); end >= 0 {
+		judgeLog = judgeLog[:end]
+	}
+	judgeLog = strings.TrimRight(judgeLog, "\n")
+
+	// 生成这边：没有 MCP 时走单轮，ChatLog 就是 BuildChatLog(window)。
+	calls := fake.Calls()
+	genLog := strings.TrimRight(calls[len(calls)-1].ChatLog, "\n")
+	if judgeLog == "" || genLog == "" {
+		t.Fatalf("%s：取到的聊天记录为空（裁判 %q，生成 %q）", when, judgeLog, genLog)
+	}
+	if judgeLog != genLog {
+		t.Fatalf("%s：裁判与生成看到的聊天记录不一致\n裁判：%q\n生成：%q", when, judgeLog, genLog)
 	}
 }
 

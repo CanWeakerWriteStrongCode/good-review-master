@@ -34,7 +34,7 @@ const defaultAddPersonaPrompt = `你是一个提示词工程师兼人格设计�
 // defaultProactiveJudgePrompt 是主动插话裁判（判断"要不要回"）的系统提示词兜底：
 // 正常从 prompt_system.yaml 的 internal.proactive_judge 读取；老配置文件没有这一段时用这份。
 // 内容必须逐字节稳定：裁判调用很频繁，固定的 system 前缀才能持续命中缓存。
-const defaultProactiveJudgePrompt = `你是群聊机器人的发言决策器，只判断"要不要回"，不写回复内容。
+const defaultProactiveJudgePrompt = `你是群聊机器人的发言决策器，只判断"要不要回"，不写回复内容。判定对象是聊天记录的最后一条消息。
 【默认克制】没有明确理由就不回；但不必每条都追求"有价值"——群里气氛合适时，偶尔凑个趣、接个梗让聊天更热闹也可以。宁可少说，不要连续刷存在感。
 【先看对象】@ 的不是机器人自己（@ 别人、@ 其他机器人、@所有人）就不回；@昵称(ID) 与 <@ID> 以括号里的 ID 判断是不是自己。
 

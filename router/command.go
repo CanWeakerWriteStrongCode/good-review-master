@@ -131,12 +131,6 @@ type Router struct {
 	// 实际语义是 (workspace, group) 联合——同一个群里的两个机器人互不阻塞。
 	proactive proactiveRegistry
 
-	// judgeAnchors 各群上次裁判窗口的首条 messageID。
-	// 裁判要接着上次的起点往后加，user 消息前缀才不变、缓存才命中；
-	// 窗口涨到 llm_send_count 的两倍就重置一次。进程重启后丢失，等于重新开始。
-	judgeAnchorMu sync.Mutex
-	judgeAnchors  map[string]string
-
 	// personaStore 可选：把群人格的**源关键字**持久化到共享 state.db（带 workspace_id）。
 	// 只存关键字而不是渲染后的文本：提示词热更新后要按新版本重新绑定。
 	personaStore PersonaStore
@@ -176,7 +170,6 @@ func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient
 		store:        cache.DefaultStore(),
 		starter:      async.New(shutdownCtx),
 		groupPersona: make(map[string]*groupPersonaBinding),
-		judgeAnchors: make(map[string]string),
 		ledger:       NewMemoryLedger(),
 	}
 	r.handlerMap = map[string]HandlerFunc{
