@@ -165,6 +165,9 @@ func logStartup(application *App) {
 	}
 	logutil.Info("允许响应群（全局）：" + cfg.AllowGroupsStr())
 	logutil.Info("允许自动开通的工作空间：" + cfg.WorkspaceAccountsStr())
+	if recordOnly := cfg.RecordOnlyAccountsStr(); recordOnly != "" {
+		logutil.Info("只记录不回复的工作空间：" + recordOnly)
+	}
 	logutil.Info("IM 事件入口：" + cfg.IMListenAddr + "/im/event/{account}")
 	if application.Workspaces != nil {
 		application.Workspaces.LogSummary()

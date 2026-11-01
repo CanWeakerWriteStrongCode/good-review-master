@@ -289,7 +289,7 @@ cfg := b.cfg()        // ← take ONE snapshot per operation, use cfg.X througho
 | Changed | Takes effect |
 | --- | --- |
 | `prompt_system.yaml` / `prompt_custom.yaml` | within ~2s (`PromptConfig.Reload()` **and** `Router.Rebuild()`) |
-| `allow_groups`, `allow_workspace_accounts` (new provisioning), thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
+| `allow_groups`, `allow_workspace_accounts` (new provisioning), `record_only_accounts`, thresholds, cost params, model name, `max_msg_rune` | on the next read (next event / next request) |
 | `im.api_base`, `im.accounts`, `web_port`, `im_listen_addr`, credentials, `jwt_secret`, `mcp.servers`, `metrics_addr`, `otlp_endpoint`, `llm.rate_limit_*`, `*.breaker_*` | **restart required** — a WARN says so on reload |
 
 The limiter and breaker are **stateful** (a token bucket, a consecutive-failure counter), so

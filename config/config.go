@@ -13,13 +13,14 @@ import (
 // 消费者仍然写 cfg.BotNickname，一行都不用改。
 // 这不只是图省事：mcpclient / router / web/server 的测试都直接构造这个结构体的字面量。
 type Config struct {
-	IMToken           string      // OneBot 12 接入共享 token（入站校验 + 出站 Bearer）
-	IMAPIBase         string      // 所有账号默认的出站根地址
-	IMAccounts        []IMAccount // 可选的按账号覆盖；api_base 为空表示沿用 IMAPIBase
-	EchoSelfMessages  bool        // 实现端会把机器人自己发的消息回传为事件时置 true：本地不再重复记录回复
-	BotNickname       string      // 运行时设置（get_self_info 结果），不来自配置文件
-	AllowGroups       []string    // 群白名单；含 "*" 表示全部群
-	WorkspaceAccounts []string    // 允许自动开通的工作空间 ID；含 "*" 表示全部
+	IMToken            string      // OneBot 12 接入共享 token（入站校验 + 出站 Bearer）
+	IMAPIBase          string      // 所有账号默认的出站根地址
+	IMAccounts         []IMAccount // 可选的按账号覆盖；api_base 为空表示沿用 IMAPIBase
+	EchoSelfMessages   bool        // 实现端会把机器人自己发的消息回传为事件时置 true：本地不再重复记录回复
+	BotNickname        string      // 运行时设置（get_self_info 结果），不来自配置文件
+	AllowGroups        []string    // 群白名单；含 "*" 表示全部群
+	WorkspaceAccounts  []string    // 允许自动开通的工作空间 ID；含 "*" 表示全部
+	RecordOnlyAccounts []string    // 只记录不回复的工作空间 ID；空表示全部都正常回复
 
 	// 主动插话（非 @ 时由大模型裁决）。全局一份，所有工作空间共用。
 	ProactiveEnabled      bool
@@ -196,6 +197,25 @@ func (cfg *Config) AllowsAllWorkspaceAccounts() bool {
 		}
 	}
 	return false
+}
+
+// IsRecordOnly 判断某个工作空间是否"只记录不回复"。
+//
+// 这类账号照常入库、打图片标签、写进群聊缓存，只是不触发任何回复；
+// 被 @ 或私聊时回一句固定话术。主备双号时给备份号配。
+// 不支持 "*"：全部静默等于没有机器人，配置校验阶段就会拒绝。
+func (cfg *Config) IsRecordOnly(id string) bool {
+	for _, account := range cfg.RecordOnlyAccounts {
+		if account == id {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordOnlyAccountsStr 返回逗号分隔的只记录账号（用于启动日志）
+func (cfg *Config) RecordOnlyAccountsStr() string {
+	return strings.Join(cfg.RecordOnlyAccounts, ",")
 }
 
 // WorkspaceAccountsStr 返回逗号分隔的工作空间白名单（用于日志输出）

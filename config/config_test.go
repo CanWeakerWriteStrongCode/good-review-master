@@ -47,3 +47,21 @@ func TestHasWorkspaceAccount(t *testing.T) {
 		t.Fatal("empty list must allow nothing")
 	}
 }
+
+func TestIsRecordOnly(t *testing.T) {
+	cfg := &Config{RecordOnlyAccounts: []string{"qq_official_bot_1904xxxx"}}
+	if !cfg.IsRecordOnly("qq_official_bot_1904xxxx") {
+		t.Fatal("名单内的账号应判为只记录")
+	}
+	if cfg.IsRecordOnly("qq_official_bot_1906xxxx") {
+		t.Fatal("名单外的账号不应判为只记录")
+	}
+	if (&Config{}).IsRecordOnly("qq_official_bot_1904xxxx") {
+		t.Fatal("空名单不应命中任何账号")
+	}
+	// 通配符不参与只记录判定：配置校验阶段就拒绝，这里确认不会被误当成"全部"
+	wildcard := &Config{RecordOnlyAccounts: []string{"*"}}
+	if wildcard.IsRecordOnly("qq_official_bot_1904xxxx") {
+		t.Fatal("\"*\" 不应让所有账号都变成只记录")
+	}
+}

@@ -7,6 +7,7 @@ import (
 
 	"good-review-master/assets"
 	"good-review-master/cache"
+	"good-review-master/config"
 	"good-review-master/logutil"
 	"good-review-master/pipeline"
 	"good-review-master/telemetry"
@@ -144,6 +145,15 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 			ws.SyncSelfName(enriched.Event.BotID(), enriched.ChatID)
 		}
 
+		// 只记录不回复：入库、打标签、进缓存上面都已做完，这里只处理"被点名"。
+		// 不走 FindMsgIndex 之后的任何一步，所以裁判和生成都不会跑。
+		if cfg.IsRecordOnly(ws.ID) {
+			if b.addressed(ws, cfg, enriched) {
+				b.answerRecordOnly(ws, enriched)
+			}
+			continue
+		}
+
 		msgs := gc.GetAll()
 		index := cache.FindMsgIndex(msgs, enriched.Message.MessageID)
 		if index < 0 {
@@ -152,8 +162,7 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 		}
 		snapshot := msgs[:index+1]
 
-		if enriched.Private || enriched.Event.MentionsBot() || enriched.Event.AdapterAtMe() ||
-			isAtBot(enriched.Message.Content, cfg, b.allowNicknameFallback(ws, cfg.BotNickname)) {
+		if b.addressed(ws, cfg, enriched) {
 			ws.Router.RouteMessageNow(ctx, enriched.Message.Content, enriched.Event, enriched.ChatID, snapshot)
 			continue
 		}
@@ -166,6 +175,24 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 			latestProactive.enriched.ChatID, latestProactive.enriched.Message.Content, latestProactive.snapshot)
 	}
 	return failed
+}
+
+// recordOnlyReply 备用号被点名时的固定回答。
+const recordOnlyReply = "我是备用号，不负责回答"
+
+// addressed 判断这条消息是不是冲着机器人来的：私聊、@ 段、适配器标记，或昵称开头。
+func (b *Bot) addressed(ws *workspace.Workspace, cfg *config.Config, enriched pipeline.EnrichedMessage) bool {
+	return enriched.Private || enriched.Event.MentionsBot() || enriched.Event.AdapterAtMe() ||
+		isAtBot(enriched.Message.Content, cfg, b.allowNicknameFallback(ws, cfg.BotNickname))
+}
+
+// answerRecordOnly 备用号被点名时回一句固定话术，不调大模型、不占被动回复额度之外的东西。
+func (b *Bot) answerRecordOnly(ws *workspace.Workspace, enriched pipeline.EnrichedMessage) {
+	if err := ws.Router.SayFixed(enriched.Event, enriched.ChatID, recordOnlyReply); err != nil {
+		logutil.Warn("备用号提示发送失败", "workspace", ws.ID, "chat", enriched.ChatID, "err", err)
+		return
+	}
+	logutil.Debug("备用号已提示不负责回答", "workspace", ws.ID, "chat", enriched.ChatID)
 }
 
 // recordAging 记录“触发消息已不在窗口里”：放弃这条回复任务，但保存完整现场。

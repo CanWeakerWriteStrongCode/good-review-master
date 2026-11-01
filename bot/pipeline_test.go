@@ -211,3 +211,78 @@ func Test图片消息在Stage2生成描述并入库(t *testing.T) {
 		t.Fatalf("按 id 回填描述失败：%+v", persisted[0].ImageNotes)
 	}
 }
+
+// Test只记录账号不回复但照常入缓存 验证 record_only_accounts：
+// 消息照常走到 Stage 3 进缓存，但大模型一次都不会被调用。
+func Test只记录账号不回复但照常入缓存(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:        []string{"g1"},
+		WorkspaceAccounts:  []string{"qq_official_bot_1906"},
+		RecordOnlyAccounts: []string{"qq_official_bot_1906"},
+		BotNickname:        "小助理",
+		MaxCacheMsg:        100,
+		MaxMsgRune:         500,
+		LLMSendCount:       10,
+		LLMTimeout:         2 * time.Second,
+	}
+	snapshot := func() *config.Config { return cfg }
+	fake := testutil.NewFakeLLM()
+	mgr, err := workspace.New(snapshot, system, filepath.Join(dir, "prompt_custom.yaml"),
+		fake, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	t.Cleanup(mgr.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	b := NewBot(snapshot, mgr)
+	go b.Run(ctx)
+
+	event := onebot.Event{
+		ID:          "e1",
+		Time:        float64(time.Now().Unix()),
+		Type:        "message",
+		DetailType:  "group",
+		Self:        onebot.Self{Platform: "qq", UserID: "bot-openid"},
+		AccountKind: "official_bot",
+		MessageID:   "m1",
+		GroupID:     "g1",
+		UserID:      "u1",
+		Message: []onebot.Segment{
+			onebot.TextSegment("你好"),
+			onebot.MentionSegment("bot-openid"),
+		},
+		AltMessage: "@小助理 你好",
+	}
+	if accepted, err := b.AcceptEvent(ctx, "1906", event); err != nil || !accepted {
+		t.Fatalf("AcceptEvent = %v, %v", accepted, err)
+	}
+
+	ws, ok := mgr.ByID("qq_official_bot_1906")
+	if !ok {
+		t.Fatal("工作空间未开通")
+	}
+	// 缓存能出现，说明 Stage 3 已经处理过这条消息了；再等一小会儿确认它没继续往下调模型。
+	deadline := time.Now().Add(3 * time.Second)
+	var msgs []cache.Message
+	for time.Now().Before(deadline) {
+		msgs = ws.Cache.GetGroupCache("g1", 100).GetAll()
+		if len(msgs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(msgs) != 1 || msgs[0].MessageID != "m1" {
+		t.Fatalf("只记录账号的消息没有进缓存：%+v", msgs)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if calls := fake.Calls(); len(calls) != 0 {
+		t.Fatalf("只记录账号不应调用大模型，实际 %d 次", len(calls))
+	}
+}

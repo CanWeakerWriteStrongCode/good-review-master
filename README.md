@@ -124,6 +124,7 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | `im.accounts`               | 可选：多实现端时按账号覆盖出站地址 `[{id, api_base}]`；`id` = `平台名_接收账号` | 一般不用配 |
 | `bot.allow_groups`          | 允许响应的群（QQ 官方机器人填 `group_openid`；`*` 表示全部群；支持逗号分隔字符串或 YAML 列表） | `123456,789012`            |
 | `bot.allow_workspace_accounts`    | 允许自动开通的工作空间 ID：`平台名_账号类型_接收账号`（如 `qq_official_bot_1906xxxx`；`*` 表示全部；支持 YAML 列表或逗号分隔字符串） | `["qq_official_bot_1906xxxx"]` |
+| `bot.record_only_accounts` | 只记录不回复的工作空间 ID（写法同 `allow_workspace_accounts`，但不接受 `*`）：消息照常入库、打图片标签、进群聊缓存，只是不 @ 回复、不接私聊、不主动接话；被 @ 或私聊只回一句"我是备用号，不负责回答"。主备双号时给备份号配这里 | `["qq_official_bot_1904xxxx"]` |
 | `bot.proactive_enabled`     | 主动插话：没被 @ 时也先由大模型判定要不要接话 | `false`                    |
 | `bot.proactive_cooldown_sec`| 主动发言后该群冷却秒数（期间不再判定；0=不冷却）        | `90`                       |
 | `bot.proactive_max_streak`  | 同一话题最多连续主动发言次数（0=不主动发言）              | `5`                        |

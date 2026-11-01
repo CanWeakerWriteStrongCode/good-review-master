@@ -92,6 +92,13 @@ type botSection struct {
 	// 必须匹配完整 ID 而不是单独的 account：不同平台可能出现相同的 account。
 	AllowWorkspaceAccounts workspaceIDList `yaml:"allow_workspace_accounts"`
 
+	// RecordOnlyAccounts 只记录不回复的工作空间 ID（写法同 allow_workspace_accounts）。
+	//
+	// 这些账号的消息照常入库、打图片标签、写进群聊缓存，但不 @ 回复、不接私聊、
+	// 不主动接话；只有被 @ 或私聊时回一句固定话术表明身份。
+	// 主备双号部署时给备份号配这里：主答挂了把这两个号换一下即可，历史缓存还在。
+	RecordOnlyAccounts workspaceIDList `yaml:"record_only_accounts"`
+
 	// ---- 主动插话（非 @ 时由大模型裁决要不要接话） ----
 	// 全局一份，所有工作空间共用；关闭时行为与改造前完全一致。
 
@@ -170,6 +177,44 @@ func (s *botSection) Validate() error {
 			return fmt.Errorf("bot.allow_workspace_accounts 中重复：%s", account)
 		}
 		seen[account] = struct{}{}
+	}
+
+	// record_only_accounts：写法和校验与 allow_workspace_accounts 一致，但不接受 "*"——
+	// 全部账号都只记录等于什么都干不了，几乎肯定是写错了。
+	seenRecordOnly := make(map[string]struct{}, len(s.RecordOnlyAccounts))
+	for i, account := range s.RecordOnlyAccounts {
+		account = strings.TrimSpace(account)
+		s.RecordOnlyAccounts[i] = account
+		if account == "" {
+			return fmt.Errorf("bot.record_only_accounts[%d] 不能为空", i)
+		}
+		if account == "*" {
+			return fmt.Errorf("bot.record_only_accounts 不支持 \"*\"：全部账号只记录等于没有机器人回答，请逐个列账号 ID")
+		}
+		if !workspaceIDPattern.MatchString(account) {
+			return fmt.Errorf("bot.record_only_accounts[%d]=%q 不是合法的工作空间 ID（字母/数字/_/-，最多 128 字符，例如 qq_official_bot_1906xxxx）", i, account)
+		}
+		if _, ok := seenRecordOnly[account]; ok {
+			return fmt.Errorf("bot.record_only_accounts 中重复：%s", account)
+		}
+		seenRecordOnly[account] = struct{}{}
+	}
+	if len(s.RecordOnlyAccounts) > 0 {
+		allowed := make(map[string]struct{}, len(s.AllowWorkspaceAccounts))
+		allowAll := false
+		for _, account := range s.AllowWorkspaceAccounts {
+			if account == "*" {
+				allowAll = true
+			}
+			allowed[account] = struct{}{}
+		}
+		for _, account := range s.RecordOnlyAccounts {
+			if _, ok := allowed[account]; ok || allowAll {
+				continue
+			}
+			logutil.Warn("bot.record_only_accounts 里的账号不在 allow_workspace_accounts 中："+
+				"档案里没有它会无法自动开通，也就记录不到消息", "account", account)
+		}
 	}
 
 	// 主动插话的数值项：0 是有效值（不冷却/不设间隔等），负数没有意义。

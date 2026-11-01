@@ -19,6 +19,12 @@ bot:
   # 所以是 qq_official_bot_<AppID>。
   allow_workspace_accounts: ["qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"]
   # 字符串写法等价：allow_workspace_accounts: "qq_official_bot_1906xxxx,qq_official_bot_1904xxxx"
+  # 只记录不回复的账号（写法和上面一样，但不接受 "*"）。
+  # 这些号的消息照常入库、打图片标签、进群聊缓存，只是不 @ 回复、不接私聊、
+  # 不主动接话；被 @ 或私聊时只回一句「我是备用号，不负责回答」。
+  # 主备双号时给备份号配这里：缓存一直在更新，把两个号调换一下就能接管。
+  record_only_accounts: []
+  # 例：record_only_accounts: ["qq_official_bot_1904xxxx"]
   # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
   # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
   # 裁判和生成用的是同一份窗口：进入 Agent 时先按 llm_send_count / 缓存命中算一次，

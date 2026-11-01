@@ -459,6 +459,9 @@ func configsEqual(a, b *Config) bool {
 	if strings.Join(a.WorkspaceAccounts, ",") != strings.Join(b.WorkspaceAccounts, ",") {
 		return false
 	}
+	if strings.Join(a.RecordOnlyAccounts, ",") != strings.Join(b.RecordOnlyAccounts, ",") {
+		return false
+	}
 	if a.ProactiveEnabled != b.ProactiveEnabled ||
 		a.ProactiveCooldown != b.ProactiveCooldown ||
 		a.ProactiveMaxStreak != b.ProactiveMaxStreak ||

@@ -123,6 +123,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `im.accounts` | Optional per-account overrides `[{id, api_base}]`; `id` = `platform_account` | usually unset |
 | `bot.allow_groups` | Allowed groups (`group_openid` for the official bot; `*` for all groups; accepts a comma-separated string or a YAML list) | `123456,789012` |
 | `bot.allow_workspace_accounts` | Workspace IDs allowed to auto-provision: `platform_kind_account` (e.g. `qq_official_bot_1906xxxx`; `*` for all; YAML list or comma-separated string) | `["qq_official_bot_1906xxxx"]` |
+| `bot.record_only_accounts` | Workspace IDs that only record and never reply (same syntax as `allow_workspace_accounts`, `*` not allowed): messages are still stored, image-tagged and cached, but the account never @-replies, answers DMs or joins proactively; when mentioned or DM'ed it answers a single fixed line. Use it for the standby bot of a primary/standby pair | `["qq_official_bot_1904xxxx"]` |
 | `bot.proactive_enabled` | Proactive replies: let the LLM decide whether to join when not mentioned | `false` |
 | `bot.proactive_cooldown_sec` | Per-group cooldown after a proactive reply (0 = no cooldown) | `90` |
 | `bot.proactive_max_streak` | Max consecutive proactive replies on one topic (0 = never) | `5` |

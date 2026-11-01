@@ -140,3 +140,17 @@ func (r *Router) sendAction(ctx context.Context, action ReplyAction) (LedgerEntr
 	entry.SendOK = false
 	return entry, err
 }
+
+// SayFixed 直接发一句固定文本，不经过大模型。
+//
+// 用于「只记录不回复」的账号被点名时表明身份：群聊带上引用和 @ 提问者，
+// 私聊直接回到会话。不走发送台账——这类提示重复一次无害，少了反而像掉线。
+func (r *Router) SayFixed(event onebot.Event, chatID, text string) error {
+	if text == "" {
+		return nil
+	}
+	if event.IsPrivate() {
+		return r.obClient.SendPrivateReplyE(event.UserID, text)
+	}
+	return r.obClient.SendGroupReplyE(chatID, event.MessageID, event.UserID, text)
+}

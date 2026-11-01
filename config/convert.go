@@ -28,13 +28,14 @@ func assemble(sections *sections) *Config {
 	servers := resolveMCPServers(sections.MCP.AcceptedServers(), secret)
 
 	return &Config{
-		IMToken:           imToken,
-		IMAPIBase:         strings.TrimRight(strings.TrimSpace(sections.IM.APIBase), "/"),
-		IMAccounts:        convertIMAccounts(sections.IM.Accounts),
-		EchoSelfMessages:  sections.IM.EchoSelfMessages,
-		BotNickname:       "",
-		AllowGroups:       parseCommaList(sections.Bot.AllowGroups.String()),
-		WorkspaceAccounts: convertWorkspaceAccounts([]string(sections.Bot.AllowWorkspaceAccounts)),
+		IMToken:            imToken,
+		IMAPIBase:          strings.TrimRight(strings.TrimSpace(sections.IM.APIBase), "/"),
+		IMAccounts:         convertIMAccounts(sections.IM.Accounts),
+		EchoSelfMessages:   sections.IM.EchoSelfMessages,
+		BotNickname:        "",
+		AllowGroups:        parseCommaList(sections.Bot.AllowGroups.String()),
+		WorkspaceAccounts:  convertWorkspaceAccounts([]string(sections.Bot.AllowWorkspaceAccounts)),
+		RecordOnlyAccounts: convertWorkspaceAccounts([]string(sections.Bot.RecordOnlyAccounts)),
 
 		ProactiveEnabled:      sections.Bot.ProactiveEnabled,
 		ProactiveCooldown:     time.Duration(*sections.Bot.ProactiveCooldownSec) * time.Second,
