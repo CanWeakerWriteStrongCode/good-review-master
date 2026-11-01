@@ -172,12 +172,12 @@ CREATE TABLE messages (
 CREATE INDEX idx_messages_ts ON messages(workspace_id, group_id, ts);
 CREATE INDEX idx_messages_ref ON messages(workspace_id, group_id, ref_idx);
 
-CREATE TABLE anchors (
-  workspace_id TEXT NOT NULL,
-  group_id     TEXT NOT NULL,
-  start_id     TEXT NOT NULL DEFAULT '',
-  last_sent_id TEXT NOT NULL DEFAULT '',
-  updated_at   INTEGER NOT NULL,
+CREATE TABLE anchors (             -- 每个群上次发出去的对话窗口
+  workspace_id    TEXT NOT NULL,
+  group_id        TEXT NOT NULL,
+  window_first_id TEXT NOT NULL DEFAULT '', -- 窗口第一条消息的编号
+  window_last_id  TEXT NOT NULL DEFAULT '', -- 窗口最后一条；之后的就是下次"新增"
+  updated_at      INTEGER NOT NULL,         -- 写入时刻（Unix 秒），也用作缓存过期基准
   PRIMARY KEY (workspace_id, group_id)
 );
 

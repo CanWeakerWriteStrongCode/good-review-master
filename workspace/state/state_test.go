@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"good-review-master/cache"
 	"good-review-master/logutil"
@@ -175,6 +176,10 @@ func Test锚点成员人格与元信息(t *testing.T) {
 	anchors, err := scope.LoadAnchors()
 	if err != nil || anchors["g1"].Start != "10" || anchors["g1"].LastSent != "20" {
 		t.Fatalf("anchors = %+v, %v", anchors, err)
+	}
+	// SaveAnchor 没给 At 时要回填写入时刻：锚点重启后能不能用，全靠这个时间判过期。
+	if age := time.Since(anchors["g1"].At); age < 0 || age > time.Minute {
+		t.Fatalf("At 应为写入时刻，得到 %v（距今 %v）", anchors["g1"].At, age)
 	}
 	identities, err := scope.LoadIdentities()
 	if err != nil || identities["g1"] != "openid-a" {
@@ -415,6 +420,51 @@ func TestSaveMessage返回自增行号(t *testing.T) {
 	}
 	if msgs[0].RowID != first || msgs[0].Content != "一改" || msgs[1].RowID != second {
 		t.Fatalf("行号或内容不对：%+v", msgs)
+	}
+}
+
+// TestV9升级anchors列改名 老库的 anchors 用的是 start_id / last_sent_id，
+// 光看名字分不清说的是窗口的起止还是时间点；v10 改成 window_first_id / window_last_id。
+// 改名不能丢数据：锚点丢了等于把这个群"上次发到哪"清零，重启后要从头攒前缀。
+func TestV9升级anchors列改名(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE anchors (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL,
+			start_id TEXT NOT NULL DEFAULT '', last_sent_id TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id))`,
+		`INSERT INTO anchors (workspace_id, group_id, start_id, last_sent_id, updated_at)
+			VALUES ('qq_a', 'g1', '10', '20', 1761955200)`,
+		`PRAGMA user_version = 9`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("造 v9 库失败：%v", err)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+
+	anchors, err := st.Scope("qq_a").LoadAnchors()
+	if err != nil {
+		t.Fatalf("LoadAnchors: %v", err)
+	}
+	got := anchors["g1"]
+	if got.Start != "10" || got.LastSent != "20" {
+		t.Fatalf("改名不能丢锚点：%+v", got)
+	}
+	if got.At.Unix() != 1761955200 {
+		t.Fatalf("updated_at 应读回成 At（得到 %v）", got.At)
 	}
 }
 

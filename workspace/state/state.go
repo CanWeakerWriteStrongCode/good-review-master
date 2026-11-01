@@ -37,8 +37,9 @@ const (
 	// v3 groups；v4 messages.ref_idx；v5 messages.image_ids + image_notes；
 	// v6 workspace_profile 取代 meta；v7 成员/群历史表；
 	// v8 资产欠条、发送台账、报警、全局 settings、image_notes.prompt_version；
-	// v9 messages 加自增主键 id（三元组降为唯一键），重建表以保留历史消息。
-	schemaVersion = 9
+	// v9 messages 加自增主键 id（三元组降为唯一键），重建表以保留历史消息；
+	// v10 anchors 的 start_id/last_sent_id 改名 window_first_id/window_last_id。
+	schemaVersion = 10
 
 	// warnRows / warnBytes 启动统计的告警阈值（清理是人工决定）。
 	warnRows  = 100_000
@@ -179,11 +180,11 @@ func migrate(db *gorm.DB, path string) error {
 			UNIQUE (workspace_id, group_id, message_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS anchors (
-			workspace_id TEXT NOT NULL,
-			group_id     TEXT NOT NULL,
-			start_id     TEXT NOT NULL DEFAULT '',
-			last_sent_id TEXT NOT NULL DEFAULT '',
-			updated_at   INTEGER NOT NULL,
+			workspace_id    TEXT NOT NULL,
+			group_id        TEXT NOT NULL,
+			window_first_id TEXT NOT NULL DEFAULT '',
+			window_last_id  TEXT NOT NULL DEFAULT '',
+			updated_at      INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS identities (
@@ -342,6 +343,16 @@ func migrate(db *gorm.DB, path string) error {
 			return err
 		}
 	}
+	// v10：anchors 两列改名。老库的表已经建好了，上面的 CREATE TABLE IF NOT EXISTS
+	// 不会动它，只能显式 RENAME COLUMN；新库走建表语句，这里什么都不做。
+	if version < 10 {
+		if err := renameColumn(db, "anchors", "start_id", "window_first_id"); err != nil {
+			return err
+		}
+		if err := renameColumn(db, "anchors", "last_sent_id", "window_last_id"); err != nil {
+			return err
+		}
+	}
 
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(workspace_id, group_id, ts)`,
@@ -404,6 +415,28 @@ func ensureColumn(db *gorm.DB, table, column, ddl string) error {
 	}
 	if err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl).Error; err != nil {
 		return fmt.Errorf("给 %s 补列 %s 失败：%w", table, column, err)
+	}
+	return nil
+}
+
+// renameColumn 把 table 的 from 列改名成 to，保留数据。
+// 幂等：表不存在、旧列不存在（新库或已改过）、新列已存在都直接返回。
+func renameColumn(db *gorm.DB, table, from, to string) error {
+	if !tableExists(db, table) {
+		return nil
+	}
+	var oldCount, newCount int
+	if err := db.Raw(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, from).Scan(&oldCount).Error; err != nil {
+		return fmt.Errorf("读取 %s 表结构失败：%w", table, err)
+	}
+	if err := db.Raw(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, to).Scan(&newCount).Error; err != nil {
+		return fmt.Errorf("读取 %s 表结构失败：%w", table, err)
+	}
+	if oldCount == 0 || newCount > 0 {
+		return nil
+	}
+	if err := db.Exec(`ALTER TABLE ` + table + ` RENAME COLUMN ` + from + ` TO ` + to).Error; err != nil {
+		return fmt.Errorf("给 %s 表重命名列 %s→%s 失败：%w", table, from, to, err)
 	}
 	return nil
 }
@@ -745,6 +778,7 @@ func (s *Scope) ResolveMessageID(groupID, refIdx string) string {
 }
 
 // LoadAnchors 返回本工作空间全部群的选窗锚点。
+// updated_at 一并读回成 At：它是"上次真正把窗口发出去"的时刻，判断缓存是否过期靠它。
 func (s *Scope) LoadAnchors() (map[string]cache.LLMAnchor, error) {
 	if s == nil || s.store == nil {
 		return nil, nil
@@ -755,18 +789,32 @@ func (s *Scope) LoadAnchors() (map[string]cache.LLMAnchor, error) {
 	}
 	out := make(map[string]cache.LLMAnchor, len(rows))
 	for _, row := range rows {
-		out[row.GroupID] = cache.LLMAnchor{Start: row.StartID, LastSent: row.LastSentID}
+		anchor := cache.LLMAnchor{Start: row.WindowFirstID, LastSent: row.WindowLastID}
+		// 0 表示这行是更早的版本写的、没记时间，留零值让 Expired 按"未知"处理，而不是当成 1970 年。
+		if row.UpdatedAt > 0 {
+			anchor.At = time.Unix(row.UpdatedAt, 0)
+		}
+		out[row.GroupID] = anchor
 	}
 	return out, nil
 }
 
-// SaveAnchor 锚点变更很少，直接同步写。
+// SaveAnchor 记录本群"上次发出去的窗口是哪一段"。锚点变更很少，直接同步写。
 func (s *Scope) SaveAnchor(groupID string, anchor cache.LLMAnchor) {
 	if s == nil || s.store == nil || s.store.closed.Load() {
 		return
 	}
-	row := anchorRow{WorkspaceID: s.workspaceID, GroupID: groupID, StartID: anchor.Start,
-		LastSentID: anchor.LastSent, UpdatedAt: time.Now().Unix()}
+	at := anchor.At
+	if at.IsZero() {
+		at = time.Now()
+	}
+	row := anchorRow{
+		WorkspaceID:   s.workspaceID,
+		GroupID:       groupID,
+		WindowFirstID: anchor.Start,
+		WindowLastID:  anchor.LastSent,
+		UpdatedAt:     at.Unix(),
+	}
 	if err := s.store.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
 		s.store.noteFailure("保存锚点", err)
 	}

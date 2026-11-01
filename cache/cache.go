@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Message 群聊消息
@@ -72,6 +73,23 @@ type GroupMsgCache struct {
 type LLMAnchor struct {
 	Start    string // 上次发送窗口首条消息 message_id
 	LastSent string // 上次发送窗口末条消息 message_id
+
+	// At 上次成功发送的时间。服务端的 KV 缓存有有效期（DeepSeek 是几小时，
+	// llama.cpp 也可能被后来的请求挤掉），而锚点本身一直留着。过了有效期再按
+	// "命中前缀"去扩展，实际是全额重算：2996 token 的前缀按命中算约 100，
+	// 真按未命中付就是 2996，比重置还贵。零值表示不知道时间，不判过期。
+	//
+	// 不加 json tag：debug/state 把 LLMAnchor 直接序列化，e2e 读的是 Start/LastSent
+	// 这种字段名，At 跟着保持同一形状，别单独变成小写。
+	At time.Time
+}
+
+// Expired 距上次发送超过 ttl 就视为缓存已失效；ttl <= 0 或时间未知时不判过期。
+func (a *LLMAnchor) Expired(ttl time.Duration, now time.Time) bool {
+	if a == nil || ttl <= 0 || a.At.IsZero() {
+		return false
+	}
+	return now.Sub(a.At) > ttl
 }
 
 // Store 一个工作空间的消息缓存与选窗锚点。

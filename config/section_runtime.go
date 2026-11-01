@@ -28,6 +28,11 @@ type runtimeSection struct {
 	// 0：不拆分，所有句子合成一条消息发出去（旧行为）；
 	// 指针用于区分"没写"（缺省 800ms）与"显式写 0（关闭分条）"。
 	ReplySendIntervalMs *int `yaml:"reply_send_interval_ms"`
+
+	// CacheTTLSec 前缀缓存的假定有效期（秒）。锚点超过这么久没更新就当作没有锚点：
+	// 服务端那段 KV 缓存多半已经过期或被挤掉，再按"命中"去扩展，实际付的是全价。
+	// 指针用于区分"没写"（缺省 900）与"显式写 0（不判过期）"。
+	CacheTTLSec *int `yaml:"cache_ttl_sec"`
 }
 
 // defaultLLMSendCount 与 llm_send_count 缺省值。
@@ -53,6 +58,13 @@ const defaultCacheMsgMultiplier = 31
 
 // defaultReplySendIntervalMs 分句回复的缺省发送间隔：约 0.8 秒一条，接近真人打字节奏。
 const defaultReplySendIntervalMs = 800
+
+// defaultCacheTTLSec 前缀缓存的假定有效期缺省 15 分钟。
+//
+// 特意取得偏短：两个方向判错的代价不对称——把还在的缓存当成没了，代价只是多发
+// llm_send_count 条重置；把没了的缓存当成还在，就要按命中价去算一个几万 token、
+// 实际全额计费的请求，比重置贵好几倍。
+const defaultCacheTTLSec = 900
 
 func (s *runtimeSection) Name() string { return "runtime" }
 
@@ -90,6 +102,10 @@ func (s *runtimeSection) SetDefaults() {
 	if s.ReplySendIntervalMs == nil {
 		defaultInterval := defaultReplySendIntervalMs
 		s.ReplySendIntervalMs = &defaultInterval
+	}
+	if s.CacheTTLSec == nil {
+		defaultTTL := defaultCacheTTLSec
+		s.CacheTTLSec = &defaultTTL
 	}
 }
 
@@ -143,6 +159,10 @@ func (s *runtimeSection) Validate() error {
 	if s.ReplySendIntervalMs != nil && *s.ReplySendIntervalMs < 0 {
 		return fmt.Errorf("runtime.reply_send_interval_ms 不能为负（当前 %d）：0 表示不拆分、合成一条发送，正数为逐条发送的间隔毫秒",
 			*s.ReplySendIntervalMs)
+	}
+	if s.CacheTTLSec != nil && *s.CacheTTLSec < 0 {
+		return fmt.Errorf("runtime.cache_ttl_sec 不能为负（当前 %d）：0 表示不判过期，正数为假定前缀缓存存活的秒数",
+			*s.CacheTTLSec)
 	}
 	return nil
 }

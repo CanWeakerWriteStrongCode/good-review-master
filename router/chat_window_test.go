@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strconv"
 	"testing"
+	"time"
 
 	"good-review-master/cache"
+	"good-review-master/config"
 )
 
 // makeChatMsgs 构造 n 条连续 MsgID 的消息（从 1001 起），内容固定为「消息N」。
@@ -169,5 +171,66 @@ func TestDecideChatWindow_ResetWindowWithinGuard(t *testing.T) {
 			t.Fatalf("组合 %+v：截断后窗口 %d 条 token=%d 仍超上限 %d",
 				c, len(d.Window), actualTokens, c.maxContextTokens)
 		}
+	}
+}
+
+// TestSelectChatWindow_AnchorExpired TTL 判断发生在 selectChatWindow 里、把锚点交给
+// decideChatWindow 之前：过期就当没有锚点，直接退回重置窗口。
+//
+// 为什么要在决策之前拦：decideChatWindow 拿到的锚点若是失效的，算出的扩展成本是假账
+// （前缀按命中价 0.033 计），而真实情况是这段 KV 没了、几万 token 全额重算，比重置贵。
+func TestSelectChatWindow_AnchorExpired(t *testing.T) {
+	setupTestLogger(t)
+
+	const groupID = "ttl-test-group"
+	// 1001..1030。锚点 Start=1001 说明前 29 条都发过，只差最后 1 条 → 扩展一定划算；
+	// 重置窗口取最近 llm_send_count=20 条，也就是 1011..1030。
+	msgs := makeChatMsgs(30)
+
+	newRouter := func(ttl time.Duration) *Router {
+		return &Router{
+			appCfg: staticSnapshot(&config.Config{
+				LLMSendCount: 20,
+				CacheTTL:     ttl,
+				LLMConfig: config.LLMConf{
+					CacheHitCost:     0.033,
+					CacheMissCost:    1.0,
+					MaxContextTokens: 50000,
+				},
+			}),
+		}
+	}
+
+	tests := []struct {
+		name      string
+		ttl       time.Duration
+		anchorAt  time.Time
+		wantFirst string
+		wantLen   int
+	}{
+		{
+			name: "锚点还新鲜：扩展，保留更早的历史", ttl: 15 * time.Minute,
+			anchorAt: time.Now(), wantFirst: "1001", wantLen: 30,
+		},
+		{
+			name: "锚点过期：按无锚点处理，退回最近 llm_send_count 条", ttl: 15 * time.Minute,
+			anchorAt: time.Now().Add(-time.Hour), wantFirst: "1011", wantLen: 20,
+		},
+		{
+			name: "ttl 配 0：不判过期，隔一天也照样扩展", ttl: 0,
+			anchorAt: time.Now().Add(-24 * time.Hour), wantFirst: "1001", wantLen: 30,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cache.ResetAll()
+			cache.SetLLMAnchor(groupID, cache.LLMAnchor{Start: "1001", LastSent: "1029", At: tt.anchorAt})
+			r := newRouter(tt.ttl)
+			got := r.selectChatWindow(msgs, groupID, "", r.appCfg())
+			if len(got) != tt.wantLen || got[0].MessageID != tt.wantFirst {
+				t.Fatalf("窗口 = %d 条，首条 %s；期望 %d 条，首条 %s",
+					len(got), got[0].MessageID, tt.wantLen, tt.wantFirst)
+			}
+		})
 	}
 }

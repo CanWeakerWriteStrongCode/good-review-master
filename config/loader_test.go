@@ -445,6 +445,7 @@ func configsEqual(a, b *Config) bool {
 	if a.IMToken != b.IMToken || a.IMAPIBase != b.IMAPIBase ||
 		a.MaxCacheMsg != b.MaxCacheMsg ||
 		a.LLMSendCount != b.LLMSendCount || a.LLMTimeout != b.LLMTimeout ||
+		a.CacheTTL != b.CacheTTL ||
 		a.MaxMsgRune != b.MaxMsgRune ||
 		a.WebPort != b.WebPort || a.WebUsername != b.WebUsername ||
 		a.WebPassword != b.WebPassword || a.JWTSecret != b.JWTSecret ||

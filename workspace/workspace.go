@@ -358,6 +358,9 @@ func (m *Manager) load(id, platform, accountKind, account string) (*Workspace, e
 		ws.Router.SetPersonaStore(st)
 		// 机器人自己的回复也要落库：否则重启后模型只能看到用户说过的话。
 		ws.Router.SetMessageSink(st.SaveMessage)
+		// 选窗锚点也要落库：它是"上次发到哪"的位置，重启后靠它接着往后加，
+		// 不然每个群重启后第一次请求都得当冷启动处理。
+		ws.Router.SetAnchorSink(st.SaveAnchor)
 		ws.Router.SetSendLedger(sendLedger{scope: st})
 	}
 

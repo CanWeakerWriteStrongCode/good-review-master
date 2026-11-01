@@ -3,7 +3,34 @@ package cache
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestLLMAnchorExpired 锁住"锚点什么时候算过期"的边界：
+// 缓存过期后再按命中价去扩展，算出来的成本是假的，所以这个判断宁严勿松。
+func TestLLMAnchorExpired(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		anchor *LLMAnchor
+		ttl    time.Duration
+		want   bool
+	}{
+		{"五分钟前发过，没过期", &LLMAnchor{At: now.Add(-5 * time.Minute)}, 15 * time.Minute, false},
+		{"刚过有效期", &LLMAnchor{At: now.Add(-15*time.Minute - time.Second)}, 15 * time.Minute, true},
+		{"正好卡在边界上不算过期", &LLMAnchor{At: now.Add(-15 * time.Minute)}, 15 * time.Minute, false},
+		{"没记时间（旧数据）不判过期", &LLMAnchor{}, 15 * time.Minute, false},
+		{"ttl=0 表示不判过期", &LLMAnchor{At: now.Add(-24 * time.Hour)}, 0, false},
+		{"没有锚点", nil, 15 * time.Minute, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.anchor.Expired(tt.ttl, now); got != tt.want {
+				t.Fatalf("Expired() = %v，期望 %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestBuildChatLog保留字符串UserID(t *testing.T) {
 	log := BuildChatLog([]Message{

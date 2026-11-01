@@ -30,6 +30,7 @@ type Config struct {
 	ProactiveJudgeImages  int           // 每次判定最多附几张图；0=图片消息不判定
 	MaxCacheMsg           int           // 手动配置的环形缓冲条数上限（≈31×llm_send_count）
 	LLMSendCount          int           // 每次发送 LLM 的消息条数（重置窗口）
+	CacheTTL              time.Duration // 前缀缓存假定有效期；锚点超过它就当作没有；0=不判过期
 	LLMTimeout            time.Duration
 	MaxMsgRune            int
 	ReplySendInterval     time.Duration // 分句回复的发送间隔；>0 拆成最多 5 条逐条发，0=合成一条

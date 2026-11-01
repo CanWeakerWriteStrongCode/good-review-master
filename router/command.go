@@ -149,6 +149,11 @@ type Router struct {
 	// 机器人自己的回复也走这里；nil 时只写内存缓存，重启后丢失。
 	saveMessage func(cache.Message) int64
 
+	// saveAnchor 把选窗锚点写进共享 state.db（工作空间的 State.SaveAnchor）。
+	// 不写的话锚点只活在内存：每次重启后每个群的第一条消息都得重新建立前缀缓存。
+	// nil 时只写内存，行为与接入前一致。
+	saveAnchor func(groupID string, anchor cache.LLMAnchor)
+
 	// ledger 发送台账：动作编号为键，重试时跳过已发动作。
 	ledger SendLedger
 }
@@ -196,6 +201,13 @@ func (r *Router) SetWorkspace(id string) { r.workspace = id }
 // 机器人回复也要落库，重启后聊天记录里才还有自己说过的话。
 // 返回值是该 message 在 state.db 里的行号，写入失败返回 0（这条就不带 message_id）。
 func (r *Router) SetMessageSink(sink func(cache.Message) int64) { r.saveMessage = sink }
+
+// SetAnchorSink 注入锚点持久化入口（工作空间的 State.SaveAnchor）。
+// 锚点记的是"上次发出去的窗口从哪条到哪条"，落库之后进程重启也能接着往后加，
+// 不用每个群重新攒一遍前缀。nil 时锚点只留在内存。
+func (r *Router) SetAnchorSink(sink func(groupID string, anchor cache.LLMAnchor)) {
+	r.saveAnchor = sink
+}
 
 // SetSendLedger 注入发送台账（state.db 实现）。nil 时保持进程内台账。
 func (r *Router) SetSendLedger(ledger SendLedger) {

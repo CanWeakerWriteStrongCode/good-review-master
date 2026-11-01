@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"good-review-master/cache"
 	"good-review-master/config"
@@ -128,10 +129,15 @@ func (r *Router) chatReplyWithSnapshot(ctx context.Context, event onebot.Event, 
 
 	// 保存锚点（窗口首条 + 末条 message_id）。只有整次发送完成才推进，
 	// 未发出的句子不会因为锚点前移而被跳过。
-	r.cacheStore().SetLLMAnchor(groupID, cache.LLMAnchor{
+	anchor := cache.LLMAnchor{
 		Start:    chatLogMsgs[0].MessageID,
 		LastSent: chatLogMsgs[len(chatLogMsgs)-1].MessageID,
-	})
+		At:       time.Now(),
+	}
+	r.cacheStore().SetLLMAnchor(groupID, anchor)
+	if r.saveAnchor != nil {
+		r.saveAnchor(groupID, anchor)
+	}
 	return reply, true
 }
 
@@ -143,7 +149,17 @@ func (r *Router) selectChatWindow(msgs []cache.Message, groupID string, systemPr
 	// 工具清单必须算进来：它是随请求一起下发的 tools 字段，既占上下文长度又属于缓存前缀，
 	// 漏算会低估总 token，把窗口扩到撞穿 max_context_tokens 护栏。
 	systemTokens := cache.EstimateTokens(systemPrompt) + r.mcpToolsTokens()
-	decision := decideChatWindow(msgs, r.cacheStore().GetLLMAnchor(groupID),
+
+	// 锚点过了缓存有效期就跟没有一样：服务端那段 KV 早没了，再按"命中前缀"去算
+	// 扩展成本，算出来的是假账——真实情况是几万 token 全额重算，比重置还贵。
+	// 宁可退回重置窗口，也不拿一个已经失效的锚点做决策。
+	anchor := r.cacheStore().GetLLMAnchor(groupID)
+	if anchor.Expired(cfg.CacheTTL, time.Now()) {
+		logutil.Debug("锚点已过期，按无锚点处理", "group", groupID,
+			"已过", time.Since(anchor.At).Round(time.Second), "有效期", cfg.CacheTTL)
+		anchor = nil
+	}
+	decision := decideChatWindow(msgs, anchor,
 		cfg.LLMConfig.CacheHitCost, cfg.LLMConfig.CacheMissCost,
 		cfg.LLMConfig.MaxContextTokens, cfg.LLMSendCount, systemTokens)
 

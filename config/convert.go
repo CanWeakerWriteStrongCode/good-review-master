@@ -44,6 +44,7 @@ func assemble(sections *sections) *Config {
 		ProactiveJudgeImages:  *sections.Bot.ProactiveJudgeImages,
 		MaxCacheMsg:           sections.Runtime.MaxCacheMsg,
 		LLMSendCount:          sections.Runtime.LLMSendCount,
+		CacheTTL:              time.Duration(*sections.Runtime.CacheTTLSec) * time.Second,
 		LLMTimeout:            time.Duration(sections.Runtime.LLMTimeoutSec) * time.Second,
 		MaxMsgRune:            sections.Runtime.MaxMsgRune,
 		ReplySendInterval:     time.Duration(*sections.Runtime.ReplySendIntervalMs) * time.Millisecond,

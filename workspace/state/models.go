@@ -21,12 +21,17 @@ type messageRow struct {
 
 func (messageRow) TableName() string { return "messages" }
 
+// anchorRow 每个群「上次发出去的那个窗口」的首尾两条消息。
+//
+// 这两个位置是前缀缓存的命门：知道上次从哪条发到哪条，这次才能接着往后加，
+// 前面那一大段才可能被服务端复用。改名带上 window_ 前缀是因为 start/last_sent
+// 看不出说的是"窗口的起点和终点"，光看列名会以为是时间或者队列位置。
 type anchorRow struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	GroupID     string `gorm:"column:group_id;primaryKey"`
-	StartID     string `gorm:"column:start_id"`
-	LastSentID  string `gorm:"column:last_sent_id"`
-	UpdatedAt   int64  `gorm:"column:updated_at"`
+	WorkspaceID   string `gorm:"column:workspace_id;primaryKey"`
+	GroupID       string `gorm:"column:group_id;primaryKey"`
+	WindowFirstID string `gorm:"column:window_first_id"` // 上次窗口第一条消息的编号（messages.id）
+	WindowLastID  string `gorm:"column:window_last_id"`  // 上次窗口最后一条消息的编号，之后的就是"新增"
+	UpdatedAt     int64  `gorm:"column:updated_at"`      // 写入时刻（Unix 秒），同时用作缓存是否过期的基准
 }
 
 func (anchorRow) TableName() string { return "anchors" }
