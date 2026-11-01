@@ -49,7 +49,7 @@ DEFAULT_LISTEN_PORT = 6199
 
 ONEBOT_VERSION = "12"
 IMPL_NAME = "astrbot-plugin-onebot-bridge"
-PLUGIN_VERSION = "1.7.9"
+PLUGIN_VERSION = "1.7.10"
 
 # AstrBot 适配器类型 → OB12 平台名。OB12 平台名不允许下划线，
 # 所以 qq_official 这类适配器名必须显式映射；其它（wecom/lark/telegram…）
@@ -157,8 +157,10 @@ class OneBotBridge(Star):
         self._self_platform: dict[str, str] = {}
         self._group_platform: dict[str, str] = {}
         self._private_platform: dict[str, str] = {}
-        # 每个会话最近一条入站消息 ID：qq_official 的被动回复必须带它。
-        self._last_msg_ids: dict[str, str] = {}
+        # 每个会话"这次回复正在用"的被动回复 msg_id。
+        # 一条回复被拆成多句时，只有第一句带 reply 段；第 2~5 句靠这里续上同一个
+        # msg_id，才能继续挂在触发消息下面回（且不消耗主动推送额度）。
+        self._reply_msg_ids: dict[str, str] = {}
         # 每个会话的 msg_seq 计数器（官方 API 要求同一 msg_id 下唯一）。
         self._msg_seq: dict[str, int] = {}
         # 入站消息 ID / 哈希 ID → REFIDX，供出站引用使用。
@@ -705,18 +707,6 @@ class OneBotBridge(Star):
                 if mention_name:
                     self._self_names[platform_id] = mention_name
 
-        message_id = str(getattr(msg, "message_id", "") or "")
-        session_id = str(getattr(msg, "session_id", "") or group_id)
-        if message_id:
-            # AstrBot 的 session_id 可能带平台前缀，而 Go 侧只回传 group_openid；
-            # 多个键都记一份，确保被动回复窗口能命中。key 里带平台实例，
-            # 两个账号同群时各自的 msg_id 不会互相覆盖。
-            for key in (
-                self._account_key(platform_id, session_id),
-                self._account_key(platform_id, group_id),
-            ):
-                if key:
-                    self._last_msg_ids[key] = message_id
         group = getattr(msg, "group", None)
         group_name = str(getattr(group, "group_name", "") or "")
         if group_id and group_name:
@@ -1199,9 +1189,17 @@ class OneBotBridge(Star):
         ref_idx = self._resolve_ref_idx(reply_id)
         platform_id = self._platform_for_action(self_id, group_id)
         account_key = self._account_key(platform_id, group_id)
-        msg_id = self._last_msg_ids.get(account_key) or self._last_msg_ids.get(
-            self._account_key("", group_id), ""
-        )
+        # 挂靠点就是触发这次回复的那条入站消息：
+        # - 有 reply 段（一条回复的第一句）：直接用它的 message_id 当被动回复 msg_id，
+        #   顺手记下来给同一条回复的后续分句用；
+        # - 没有 reply 段（第 2~5 句）：续上刚才记的那个 msg_id。少了这一步就只能
+        #   按主动推送发，受官方额度限制，长回复从第二句起会被平台拒；
+        # - 都没有（这个会话还没发过回复）：不带 msg_id，直接按主动推送发。
+        if reply_id:
+            msg_id = reply_id
+            self._reply_msg_ids[account_key] = reply_id
+        else:
+            msg_id = self._reply_msg_ids.get(account_key, "")
         payload = self._qqofficial_payload(content, markdown, ref_idx, msg_id)
         payload["msg_seq"] = self._next_seq(account_key)
 
