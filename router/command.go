@@ -131,6 +131,12 @@ type Router struct {
 	// 实际语义是 (workspace, group) 联合——同一个群里的两个机器人互不阻塞。
 	proactive proactiveRegistry
 
+	// judgeAnchors 各群上次裁判窗口的首条 messageID。
+	// 裁判要接着上次的起点往后加，user 消息前缀才不变、缓存才命中；
+	// 窗口涨到 llm_send_count 的两倍就重置一次。进程重启后丢失，等于重新开始。
+	judgeAnchorMu sync.Mutex
+	judgeAnchors  map[string]string
+
 	// personaStore 可选：把群人格的**源关键字**持久化到共享 state.db（带 workspace_id）。
 	// 只存关键字而不是渲染后的文本：提示词热更新后要按新版本重新绑定。
 	personaStore PersonaStore
@@ -165,6 +171,7 @@ func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient
 		store:        cache.DefaultStore(),
 		starter:      async.New(shutdownCtx),
 		groupPersona: make(map[string]*groupPersonaBinding),
+		judgeAnchors: make(map[string]string),
 		ledger:       NewMemoryLedger(),
 	}
 	r.handlerMap = map[string]HandlerFunc{
@@ -471,12 +478,15 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement st
 	if identity != "" {
 		identity += "。"
 	}
-	systemPrompt := fmt.Sprintf("你是一个AI，模型是%s。【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
+	// 开头不写「你是一个AI，模型是XXX」：模型自己就是 AI，这句话没有信息量；
+	// 写死模型名更糟——换一次模型或改一次别名，整段前缀就从头断开，而这是所有请求
+	// 最前面、最值钱的那几十个 token。身份由下面的 identity 行交代。
+	systemPrompt := fmt.Sprintf("【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
 		"%s【聊天记录】每行一条群消息，message_id 是这条消息的编号（同一条消息每次都一样，按它引用），user_id 是发言者的稳定ID，nickname 是昵称，message 是正文；"+
 		"@昵称(ID) 表示 @ 了该用户，昵称可能变化，以括号里的 ID 为准。"+
 		"reply_id 表示该消息引用了哪条 message_id。"+
 		requirement,
-		cfg.LLMConfig.ModelName, identity)
+		identity)
 	// 看图说明不放在这里：它只该在有图的时候出现。
 	// 窗口里真有图时，user 消息尾部会拼【群内图片候选】段（imageCandidatesBlock），
 	// 里面已经写了"候选只是文字 / low 不看 / url 逐字复制 / 最多看 N 张 / 别编造"。

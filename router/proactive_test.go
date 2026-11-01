@@ -65,20 +65,60 @@ func TestJudgeWindow以候选消息为右边界(t *testing.T) {
 		{MessageID: "4", Content: "d"},
 	}
 
-	got := judgeWindow(msgs, "2", 10)
+	got, _ := judgeWindowFrom(msgs, "2", 10, "")
 	if len(got) != 2 || got[1].MessageID != "2" {
 		t.Fatalf("应以候选消息为右边界，实际 %+v", got)
 	}
 
-	got = judgeWindow(msgs, "2", 1)
+	got, _ = judgeWindowFrom(msgs, "2", 1, "")
 	if len(got) != 1 || got[0].MessageID != "2" {
 		t.Fatalf("limit 应截断到候选消息本身，实际 %+v", got)
 	}
 
 	// 候选消息已不在缓存（被环形缓冲覆盖）：退回最近 limit 条
-	got = judgeWindow(msgs, "unknown", 2)
+	got, _ = judgeWindowFrom(msgs, "unknown", 2, "")
 	if len(got) != 2 || got[1].MessageID != "4" {
 		t.Fatalf("候选缺失时应取最近 limit 条，实际 %+v", got)
+	}
+}
+
+// 裁判窗口要接着上次的起点往后加，不能每条新消息都从头滑掉一条。
+// 实测（约 3000 token 的真实尺寸）：尾部追加一行命中 82%，滑掉首行只剩 10.5%。
+func TestJudgeWindow接着锚点只往后加(t *testing.T) {
+	msgs := make([]cache.Message, 0, 61)
+	for i := 1; i <= 60; i++ {
+		id := fmt.Sprintf("%d", i)
+		msgs = append(msgs, cache.Message{MessageID: id, Content: "m" + id})
+	}
+
+	// 第一次没有锚点：取最近 10 条，起点是第 51 条
+	got, next := judgeWindowFrom(msgs, "60", 10, "")
+	if len(got) != 10 || got[0].MessageID != "51" || next != "51" {
+		t.Fatalf("首次应取最近 10 条并记住首条，实际 %d 条、起点 %s、next %s", len(got), got[0].MessageID, next)
+	}
+
+	// 又来一条新消息：从锚点开始，窗口是上次的超集（11 条），前缀没动
+	more := append(msgs, cache.Message{MessageID: "61", Content: "m61"})
+	got, next = judgeWindowFrom(more, "61", 10, next)
+	if len(got) != 11 || got[0].MessageID != "51" || got[10].MessageID != "61" || next != "51" {
+		t.Fatalf("应接着上次起点往后加，实际 %d 条、起点 %s", len(got), got[0].MessageID)
+	}
+
+	// 涨过两倍上限（10→20）就重置成最近 10 条
+	wide := make([]cache.Message, 0, 30)
+	for i := 1; i <= 30; i++ {
+		id := fmt.Sprintf("w%d", i)
+		wide = append(wide, cache.Message{MessageID: id, Content: "x"})
+	}
+	got, next = judgeWindowFrom(wide, "w30", 10, "w1")
+	if len(got) != 10 || got[0].MessageID != "w21" || next != "w21" {
+		t.Fatalf("超过两倍上限应重置为最近 10 条，实际 %d 条、起点 %s", len(got), got[0].MessageID)
+	}
+
+	// 锚点被环形缓冲覆盖（找不到）：退回最近 limit 条
+	got, _ = judgeWindowFrom(msgs, "60", 10, "已流走")
+	if len(got) != 10 || got[0].MessageID != "51" {
+		t.Fatalf("锚点丢失应取最近 limit 条，实际 %d 条、起点 %s", len(got), got[0].MessageID)
 	}
 }
 

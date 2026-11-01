@@ -353,9 +353,9 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 	if msgs == nil {
 		msgs = r.cacheStore().GetGroupCache(groupID, cfg.MaxCacheMsg).GetAll()
 	}
-	// 裁判与生成看同一份窗口来源：都用 llm_send_count 条。生成阶段会按缓存命中
-	// 再实时扩展/重置，这里不再单独给裁判准备一份聊天记录。
-	window := judgeWindow(msgs, cand.event.MessageID, cfg.LLMSendCount)
+	// 裁判窗口以 llm_send_count 起步，之后接着上次的起点往后加（见 judgeWindow），
+	// 和生成阶段的"扩展优先"是同一个思路，只是这里按条数控制上限。
+	window := r.judgeWindow(groupID, msgs, cand.event.MessageID, cfg.LLMSendCount)
 	if len(window) == 0 {
 		return judgeVerdict{}, fmt.Errorf("没有可判定的聊天记录")
 	}
@@ -435,19 +435,52 @@ func (r *Router) judgeImages(ctx context.Context, event onebot.Event, cfg *confi
 	return out
 }
 
-// judgeWindow 取"截止到候选消息、最多 limit 条"的窗口。
-// limit 用 runtime.llm_send_count，与生成阶段的重置窗口一致。
-// 以候选消息为右边界：worker 判定时缓存里可能已经有更新的消息，不能让裁判去判更晚的内容。
-func judgeWindow(msgs []cache.Message, latestID string, limit int) []cache.Message {
+// judgeWindow 取裁判要看的聊天记录：以候选消息为右边界，能接着上次窗口往后加就加，
+// 涨到上限才重置。只往后加是这件事的全部目的——同样是 20 条起步，每来一条新消息
+// 就从头部滑掉一条的话，整段 user 消息的 token 前缀会立刻失效：实测（约 3000 token
+// 的真实尺寸）尾部追加一行命中 82%，滑掉首行只剩 10.5%，而且滑 1 行和滑 5 行一样惨。
+//
+// 上限取 limit 的两倍：窗口在 limit ~ 2×limit 之间滚，滚得越久命中越多，
+// 但也不能无限长，否则裁判自己的 prompt 会一直涨，本机每槽 8192 装不下。
+func (r *Router) judgeWindow(groupID string, msgs []cache.Message, latestID string, limit int) []cache.Message {
+	r.judgeAnchorMu.Lock()
+	anchorID := r.judgeAnchors[groupID]
+	r.judgeAnchorMu.Unlock()
+
+	window, next := judgeWindowFrom(msgs, latestID, limit, anchorID)
+
+	r.judgeAnchorMu.Lock()
+	if r.judgeAnchors == nil {
+		r.judgeAnchors = make(map[string]string)
+	}
+	r.judgeAnchors[groupID] = next
+	r.judgeAnchorMu.Unlock()
+
+	return window
+}
+
+// judgeWindowFrom 是 judgeWindow 的纯函数部分：给出本次窗口和下次该记住的起点。
+//
+// anchorID 是上次窗口的首条 messageID，所以新窗口以它为起点、包含上次的全部内容，
+// 等于"把已经发过的那段原样放在最前面"。切到候选消息为右边界（cutAtMessage）是原逻辑：
+// worker 判定时缓存里可能已经有更新的消息，不能让裁判去判更晚的内容。
+func judgeWindowFrom(msgs []cache.Message, latestID string, limit int, anchorID string) ([]cache.Message, string) {
 	window := cutAtMessage(msgs, latestID)
 	if len(window) == 0 {
-		return nil
+		return nil, ""
 	}
-	end := len(window)
-	if limit <= 0 || limit > end {
-		limit = end
+	if limit <= 0 || limit > len(window) {
+		limit = len(window)
 	}
-	return window[end-limit : end]
+	start := len(window) - limit
+	if anchorID != "" {
+		// 锚点还在缓存里（没被环形缓冲覆盖）、接上去也没超两倍上限，就沿用它的起点。
+		if idx := cache.FindMsgIndex(window, anchorID); idx >= 0 && len(window)-idx <= limit*2 {
+			start = idx
+		}
+	}
+	out := window[start:]
+	return out, out[0].MessageID
 }
 
 // buildJudgeText 组装裁判的 user 消息。动态内容全部在这里，system prompt 保持稳定。
@@ -457,17 +490,19 @@ func judgeWindow(msgs []cache.Message, latestID string, limit int) []cache.Messa
 //
 // 不再单独写「机器人上次发言」：机器人自己说过的话已经作为一行在聊天记录里
 // （recordSelfReply 写进缓存和 state.db，昵称与 ID 都在），identityLine 又告诉它哪个身份是自己。
-// 而且那一段排在【最近聊天】前面，每次都要带"几分钟前 + 摘要"，等于把后面整段聊天记录
-// 从可命中的前缀里切掉。
+//
+// 身份行也放在聊天记录之后：昵称和 ID 是运行时可变的（改名、换号、多账号），
+// 放在最前面等于让后面整段聊天记录跟着它一起失效。
 func buildJudgeText(window []cache.Message, botName, botID string, hasImage, mention bool) string {
 	var b strings.Builder
-	if line := identityLine(botName, botID); line != "" {
-		b.WriteString(line + "\n")
-	}
 	b.WriteString("【最近聊天】\n")
 	b.WriteString(cache.BuildChatLog(window))
 	if hasImage {
 		b.WriteString("\n【提示】最后一条消息附带图片，图片内容已随本次请求提供。\n")
+	}
+	if line := identityLine(botName, botID); line != "" {
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
 	if mention {
 		// 直答链路：reply 结论不用（@/私聊必须回），只取 long_form 与 focus。
