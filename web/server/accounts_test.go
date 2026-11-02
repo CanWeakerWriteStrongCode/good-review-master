@@ -26,14 +26,14 @@ func TestCollectDetails用库里统计(t *testing.T) {
 		groups[0].SelfID != "openid-a" || !groups[0].HasMessages {
 		t.Fatalf("g1 = %+v", groups[0])
 	}
-	if want := formatTimestamp(1700000000); groups[0].LastActivity != want {
-		t.Fatalf("g1 last_activity = %q, want %q", groups[0].LastActivity, want)
+	if groups[0].LastTS != 1700000000 {
+		t.Fatalf("g1 last_ts = %d, want 1700000000", groups[0].LastTS)
 	}
 	if groups[1].MessageCount != 3 || groups[1].SelfID != "openid-b" {
 		t.Fatalf("g2 = %+v", groups[1])
 	}
 	// 传进来的群号里没有库汇总的（纯内存模式才会出现）：照样列出来，但不带任何统计。
-	if groups[2].HasMessages || groups[2].MessageCount != 0 || groups[2].LastActivity != "" {
+	if groups[2].HasMessages || groups[2].MessageCount != 0 || groups[2].LastTS != 0 {
 		t.Fatalf("g3 = %+v", groups[2])
 	}
 
@@ -45,8 +45,8 @@ func TestCollectDetails用库里统计(t *testing.T) {
 		acc.GroupCount != 3 || acc.ActiveGroupCount != 2 || acc.MessageCount != 45 {
 		t.Fatalf("账号汇总 = %+v", acc)
 	}
-	if want := formatTimestamp(1700000100); acc.LastActivity != want {
-		t.Fatalf("账号最近活动 = %q, want %q", acc.LastActivity, want)
+	if acc.LastTS != 1700000100 {
+		t.Fatalf("账号最近活动 = %d, want 1700000100", acc.LastTS)
 	}
 }
 

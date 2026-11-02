@@ -1,4 +1,10 @@
+import { i18n } from '@/locale'
 import type { AccountInfo, AlertItem, GroupInfo, BotStatus, Message, WorkspaceInfo, APIResponse } from './types'
+
+/** 模块级的接口报错文案同样走语言包，直接问全局实例（这里不是组件） */
+function tt(key: string, named?: Record<string, unknown>): string {
+  return i18n.global.t(key, named || {}) as string
+}
 
 export const BASE_URL = '/api'
 
@@ -20,7 +26,7 @@ export function getAuthHeader(): Record<string, string> {
 export function handleUnauthorized(): never {
   localStorage.removeItem('good_review_token')
   uni.reLaunch({ url: '/pages/login/index' })
-  throw new Error('未授权，请重新登录')
+  throw new Error(tt('api.unauthorized'))
 }
 
 /** 发一个 GET 并拆掉 {code,data} 信封。非信封响应（pprof）见 diagnostics.ts。 */
@@ -35,7 +41,7 @@ export async function request<T>(url: string): Promise<T> {
     handleUnauthorized()
   }
   if (body.code !== 200) {
-    throw new Error(`API error: ${res.statusCode}`)
+    throw new Error(tt('api.httpError', { status: res.statusCode }))
   }
   return body.data
 }
@@ -135,7 +141,7 @@ export async function login(username: string, password: string): Promise<LoginRe
   })
   const body = res.data as APIResponse<LoginResult>
   if (body.code !== 200) {
-    throw new Error((body.data as any)?.msg || '登录失败')
+    throw new Error((body.data as any)?.msg || tt('login.failed'))
   }
   return body.data
 }

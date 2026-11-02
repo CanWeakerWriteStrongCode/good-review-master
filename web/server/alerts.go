@@ -19,8 +19,7 @@ type AlertDetail struct {
 	WorkspaceName string `json:"workspace_name"` // 账号已不在运行时为空，页面显示 ID
 	Kind          string `json:"kind"`
 	Detail        string `json:"detail"`
-	CreatedAt     int64  `json:"created_at"`
-	CreatedAtText string `json:"created_at_text"`
+	CreatedAt     int64  `json:"created_at"` // Unix 秒，日期格式由前端按当前语言拼
 }
 
 // 一次返回多少条报警。报警是异常现场不是流水，翻太多也没人看。
@@ -61,7 +60,6 @@ func (s *Server) handleAPIAlerts() gin.HandlerFunc {
 				Kind:          item.Kind,
 				Detail:        item.Detail,
 				CreatedAt:     item.CreatedAt,
-				CreatedAtText: formatTimestamp(item.CreatedAt),
 			})
 		}
 

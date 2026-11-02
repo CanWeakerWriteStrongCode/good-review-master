@@ -8,24 +8,28 @@
       @click="switchTo(item)"
     >
       <image class="tabbar-icon" :src="iconOf(item.key, item.key === current)" />
-      <text class="tabbar-label">{{ item.label }}</text>
+      <text class="tabbar-label">{{ t(item.labelKey) }}</text>
     </view>
   </view>
 </template>
 
 <script setup lang="ts">
+import { useLocale } from '@/composables/useLocale'
+
 interface TabItem {
   key: string
-  label: string
+  // 存 key 而不是译文：文案跟着语言切换，数组里的字符串只能是 key
+  labelKey: string
   url: string
 }
 
 const props = defineProps<{ current: string }>()
+const { t } = useLocale()
 
 const items: TabItem[] = [
-  { key: 'monitor', label: '监控', url: '/pages/monitor/index' },
-  { key: 'alerts', label: '报警', url: '/pages/alerts/index' },
-  { key: 'diagnostics', label: '诊断', url: '/pages/diagnostics/index' },
+  { key: 'monitor', labelKey: 'nav.monitor', url: '/pages/monitor/index' },
+  { key: 'alerts', labelKey: 'nav.alerts', url: '/pages/alerts/index' },
+  { key: 'diagnostics', labelKey: 'nav.diagnostics', url: '/pages/diagnostics/index' },
 ]
 
 // 图标走内联 SVG 的 data URI：不用引图标库、也不用往 static 里塞图片，

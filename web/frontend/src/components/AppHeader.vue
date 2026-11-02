@@ -11,19 +11,34 @@
 
       <view class="brand-text">
         <text class="brand-name">Dolphin Mind</text>
-        <text class="brand-sub">海豚智章 · 监控面板</text>
+        <text class="brand-sub">{{ t('nav.brandSub') }}</text>
       </view>
     </view>
 
-    <text class="header-title" v-if="title">{{ title }}</text>
+    <view class="header-right">
+      <text class="header-title" v-if="title">{{ title }}</text>
+      <!-- 按钮显示的是「点下去会变成哪种语言」，当前语言从副标题就能看出来 -->
+      <view class="locale-btn" @click="toggle">
+        <text class="locale-text">{{ isZh ? 'EN' : '中文' }}</text>
+      </view>
+    </view>
   </view>
 </template>
 
 <script setup lang="ts">
-withDefaults(defineProps<{ title?: string; back?: boolean }>(), {
+import { toRef } from 'vue'
+import { useLocale, usePageTitle } from '@/composables/useLocale'
+
+const props = withDefaults(defineProps<{ title?: string; back?: boolean }>(), {
   title: '',
   back: false,
 })
+
+const { t, isZh, toggle } = useLocale()
+
+// 顶栏显示页名，顺便把浏览器标签页也对齐；没传 title 的页面就只切语言
+const pageTitle = toRef(props, 'title')
+usePageTitle(() => pageTitle.value)
 
 function goBack() {
   uni.navigateBack({
@@ -123,11 +138,44 @@ function goBack() {
   letter-spacing: 0.4px;
   margin-top: 2px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* 右侧：当前页名 + 语言切换。能压则压，不能让品牌名被挤掉 */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 .header-title {
   font-size: 13px;
   color: #aab;
+  flex-shrink: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.locale-btn {
+  min-width: 30px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+}
+.locale-btn:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+.locale-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: #dbe7f2;
+  letter-spacing: 0.3px;
 }
 </style>

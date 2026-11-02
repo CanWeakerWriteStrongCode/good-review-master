@@ -96,7 +96,15 @@ func Level() string {
 	return currentLevel.String()
 }
 
-// Close 刷新并关闭日志文件（释放句柄；测试收尾或优雅停机时调用）
+// Close 刷新并关闭日志文件（释放句柄）。
+//
+// 调用点：cmd/good-review 在应用完全停机后、os.Exit 之前调一次；测试用 t.Cleanup 收尾。
+// 可重复调用（lumberjack 内部把 file 置空，二次 Close 是空操作）；Sync 的错误特意不返回——
+// Windows 控制台句柄 Sync 会报「句柄无效」，那是 stdout 的正常表现，不代表日志没落盘
+// （zap 写文件是直接 Write，本来就无缓冲，Sync 只是为了顺手 fsync 一次）。
+//
+// 注意：Close 之后再打日志不会报错，lumberjack 会重新打开同一个文件——
+// 所以只能在「确定不再有人写」的时机调（进程退出前、测试收尾），不要在运行中途调。
 func Close() {
 	if sugar != nil {
 		_ = sugar.Sync()

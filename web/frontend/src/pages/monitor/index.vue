@@ -1,6 +1,6 @@
 <template>
   <view class="page">
-    <AppHeader title="监控" />
+    <AppHeader :title="t('nav.monitor')" />
 
     <!-- 报警：一进页面就能看到有没有出事（alerts 表） -->
     <view class="alerts" :class="store.alertTotal > 0 ? 'alerts-bad' : 'alerts-ok'">
@@ -8,7 +8,7 @@
         <view class="alerts-title-wrap">
           <view class="alerts-dot"></view>
           <text class="alerts-title">
-            {{ store.alertTotal > 0 ? `报警 ${store.alertTotal} 条` : '暂无报警' }}
+            {{ store.alertTotal > 0 ? t('monitor.alerts.count', { count: store.alertTotal }) : t('monitor.alerts.none') }}
           </text>
         </view>
         <text
@@ -16,7 +16,7 @@
           v-if="store.alerts.length > ALERT_PREVIEW"
           @click="alertsOpen = !alertsOpen"
         >
-          {{ alertsOpen ? '收起' : `展开 ${store.alerts.length} 条` }}
+          {{ alertsOpen ? t('common.collapse') : t('monitor.alerts.expandMore', { count: store.alerts.length }) }}
         </text>
       </view>
 
@@ -24,11 +24,11 @@
         <view class="alert-row" v-for="a in visibleAlerts" :key="a.id" @click="toggleAlert(a.id)">
           <view class="alert-row-top">
             <text class="alert-kind">{{ alertKindLabel(a.kind) }}</text>
-            <text class="alert-time">{{ a.created_at_text }}</text>
+            <text class="alert-time">{{ formatDateTime(a.created_at) }}</text>
           </view>
           <view class="alert-row-bottom">
-            <text class="alert-owner">{{ a.workspace_name || a.workspace_id || '全局' }}</text>
-            <text class="alert-more" v-if="a.detail">{{ openAlert === a.id ? '收起现场' : '看现场' }}</text>
+            <text class="alert-owner">{{ a.workspace_name || a.workspace_id || t('monitor.alerts.global') }}</text>
+            <text class="alert-more" v-if="a.detail">{{ openAlert === a.id ? t('monitor.alerts.hideDetail') : t('monitor.alerts.showDetail') }}</text>
           </view>
           <text class="alert-detail" v-if="openAlert === a.id">{{ a.detail }}</text>
         </view>
@@ -39,12 +39,12 @@
     <view class="overview">
       <view class="overview-nums">
         <text class="overview-num">{{ store.botStatus?.account_count ?? 0 }}</text>
-        <text class="overview-unit">个账号</text>
+        <text class="overview-unit">{{ t('monitor.overview.accountUnit', store.botStatus?.account_count ?? 0) }}</text>
         <text class="overview-sep">·</text>
         <text class="overview-num">{{ store.botStatus?.group_count ?? 0 }}</text>
-        <text class="overview-unit">个会话在监控</text>
+        <text class="overview-unit">{{ t('monitor.overview.convUnit', store.botStatus?.group_count ?? 0) }}</text>
       </view>
-      <text class="logout" @click="doLogout">退出</text>
+      <text class="logout" @click="doLogout">{{ t('monitor.logout') }}</text>
     </view>
 
     <!-- 本页选项 -->
@@ -56,21 +56,21 @@
         <view class="ws-head">
           <text class="ws-name">{{ ws.name || ws.id }}</text>
           <view class="ws-badge" :class="ws.message_count > 0 ? 'badge-active' : 'badge-empty'">
-            {{ ws.message_count > 0 ? '有数据' : '等消息' }}
+            {{ ws.message_count > 0 ? t('monitor.ws.live') : t('monitor.ws.idle') }}
           </view>
         </view>
         <text class="ws-id">{{ ws.id }}</text>
         <view class="ws-stats">
           <view class="ws-stat">
-            <text class="stat-label">群 / 会话</text>
+            <text class="stat-label">{{ t('monitor.ws.statChats') }}</text>
             <text class="stat-value">{{ ws.group_count }}</text>
           </view>
           <view class="ws-stat">
-            <text class="stat-label">有消息</text>
+            <text class="stat-label">{{ t('monitor.ws.statActive') }}</text>
             <text class="stat-value">{{ ws.active_group_count }}</text>
           </view>
           <view class="ws-stat">
-            <text class="stat-label">消息总数</text>
+            <text class="stat-label">{{ t('monitor.ws.statMessages') }}</text>
             <text class="stat-value">{{ ws.message_count }}</text>
           </view>
         </view>
@@ -78,8 +78,8 @@
         <!-- 这个账号下的群，直接列在卡片里，不用再跳进二级页 -->
         <view class="ws-groups">
           <view class="ws-groups-head">
-            <text class="ws-groups-title">群列表</text>
-            <text class="ws-groups-count">{{ groupList(ws.id).length }} 个</text>
+            <text class="ws-groups-title">{{ t('monitor.ws.chatList') }}</text>
+            <text class="ws-groups-count">{{ t('monitor.ws.chatCount', { count: groupList(ws.id).length }) }}</text>
           </view>
 
           <view
@@ -94,21 +94,25 @@
                 <text class="ws-group-id">{{ g.group_id }}</text>
               </view>
               <view class="ws-group-badge" :class="g.has_messages ? 'badge-active' : 'badge-empty'">
-                {{ g.has_messages ? '有记录' : '无数据' }}
+                {{ g.has_messages ? t('common.hasRecords') : t('common.noData') }}
               </view>
             </view>
 
             <!-- 字段跟「按群」卡片对齐：消息数、已收录成员、最近活动 -->
             <view class="ws-group-stats" v-if="g.has_messages">
-              <text class="ws-group-stat">消息 <text class="ws-group-num">{{ g.message_count }}</text></text>
-              <text class="ws-group-stat">成员 <text class="ws-group-num">{{ g.member_count }}</text></text>
-              <text class="ws-group-time">{{ g.last_activity || '-' }}</text>
+              <text class="ws-group-stat">
+                {{ t('monitor.group.messages') }} <text class="ws-group-num">{{ g.message_count }}</text>
+              </text>
+              <text class="ws-group-stat">
+                {{ t('monitor.group.members') }} <text class="ws-group-num">{{ g.member_count }}</text>
+              </text>
+              <text class="ws-group-time">{{ formatDateTime(g.last_ts) }}</text>
             </view>
-            <text class="ws-group-no-data" v-else>等待接收消息...</text>
+            <text class="ws-group-no-data" v-else>{{ t('common.waiting') }}</text>
           </view>
 
           <view class="ws-group-empty" v-if="groupList(ws.id).length === 0">
-            <text>{{ store.groupsByWorkspace[ws.id] ? '该账号还没有群数据' : '读取中...' }}</text>
+            <text>{{ store.groupsByWorkspace[ws.id] ? t('monitor.group.emptyOwn') : t('monitor.group.reading') }}</text>
           </view>
 
           <text
@@ -116,18 +120,18 @@
             v-if="groupList(ws.id).length > PREVIEW"
             @click.stop="toggleMore(ws.id)"
           >
-            {{ expanded[ws.id] ? '收起' : `展开全部 ${groupList(ws.id).length} 个群` }}
+            {{ expanded[ws.id] ? t('common.collapse') : t('monitor.group.expandAll', { count: groupList(ws.id).length }) }}
           </text>
         </view>
 
         <view class="ws-foot">
-          <text class="ws-foot-label">最近活动 {{ ws.last_activity || '-' }}</text>
-          <text class="ws-foot-go">完整列表 ›</text>
+          <text class="ws-foot-label">{{ t('monitor.foot.lastActive', { time: formatDateTime(ws.last_ts) }) }}</text>
+          <text class="ws-foot-go">{{ t('monitor.foot.fullList') }}</text>
         </view>
       </view>
 
       <view class="empty" v-if="!store.loading && store.workspaces.length === 0">
-        <text>还没有账号在监控</text>
+        <text>{{ t('monitor.empty.accounts') }}</text>
       </view>
     </view>
 
@@ -145,39 +149,39 @@
             <text class="ws-id">{{ s.group_id }}</text>
           </view>
           <view class="ws-badge" :class="s.has_messages ? 'badge-active' : 'badge-empty'">
-            {{ s.has_messages ? '有记录' : '无数据' }}
+            {{ s.has_messages ? t('common.hasRecords') : t('common.noData') }}
           </view>
         </view>
         <view class="ws-stats" v-if="s.has_messages">
           <view class="ws-stat">
-            <text class="stat-label">消息数</text>
+            <text class="stat-label">{{ t('common.stat.messages') }}</text>
             <text class="stat-value">{{ s.message_count }}</text>
           </view>
           <view class="ws-stat">
-            <text class="stat-label">已收录成员</text>
+            <text class="stat-label">{{ t('common.stat.members') }}</text>
             <text class="stat-value">{{ s.member_count }}</text>
           </view>
           <view class="ws-stat ws-stat-wide">
-            <text class="stat-label">最近活动</text>
-            <text class="stat-value stat-time">{{ s.last_activity || '-' }}</text>
+            <text class="stat-label">{{ t('common.stat.lastActive') }}</text>
+            <text class="stat-value stat-time">{{ formatDateTime(s.last_ts) }}</text>
           </view>
         </view>
         <view class="ws-stats" v-else>
-          <text class="no-data">等待接收消息...</text>
+          <text class="no-data">{{ t('common.waiting') }}</text>
         </view>
         <view class="ws-foot">
-          <text class="ws-foot-label">监控账号</text>
+          <text class="ws-foot-label">{{ t('common.stat.monitorAccount') }}</text>
           <text class="ws-foot-owner">{{ s.workspace_name || s.account_name || s.workspace_id }}</text>
         </view>
       </view>
 
       <view class="empty" v-if="!store.loading && store.sessions.length === 0">
-        <text>还没有任何会话记录</text>
+        <text>{{ t('monitor.empty.chats') }}</text>
       </view>
     </view>
 
     <view class="loading" v-if="store.loading">
-      <text>加载中...</text>
+      <text>{{ t('common.loading') }}</text>
     </view>
 
     <TabBar current="monitor" />
@@ -188,6 +192,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useGroupsStore, sessionLabel, alertKindLabel } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
+import { useLocale } from '@/composables/useLocale'
+import { formatDateTime } from '@/utils/format'
 import { logout as apiLogout } from '@/api'
 import AppHeader from '@/components/AppHeader.vue'
 import TabBar from '@/components/TabBar.vue'
@@ -197,14 +203,15 @@ import type { GroupInfo, WorkspaceInfo } from '@/api/types'
 
 const authStore = useAuthStore()
 const store = useGroupsStore()
+const { t } = useLocale()
 
 // 本页自己的两种看法，跟群列表页的 viewMode 互不干扰：
 // 那边关心「一个账号里有哪些群」，这边关心「有几个账号在跑」。
 const mode = ref<'account' | 'group'>('account')
 
 const options = computed<SegmentOption[]>(() => [
-  { key: 'account', label: '按账号', badge: store.workspaces.length || undefined },
-  { key: 'group', label: '按群', badge: store.sessions.length || undefined },
+  { key: 'account', label: t('monitor.mode.byAccount'), badge: store.workspaces.length || undefined },
+  { key: 'group', label: t('monitor.mode.byChat'), badge: store.sessions.length || undefined },
 ])
 
 // 每个账号卡片里默认先摆几个群，剩下的点「展开全部」再看。

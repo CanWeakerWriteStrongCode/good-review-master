@@ -1,18 +1,24 @@
 <template>
   <view class="page">
-    <AppHeader title="消息详情" back />
+    <AppHeader :title="t('nav.messages')" back />
 
     <!-- 群信息头 -->
     <view class="msg-header">
       <view class="header-main">
-        <text class="header-group-id">{{ store.groupName || sessionLabel(store.groupId) }}（{{ store.groupId }}）</text>
-        <text class="header-account" v-if="store.workspaceName">工作空间：{{ store.workspaceName }}</text>
-        <text class="header-account">接收账号：{{ store.accountName || store.selfId || '未知' }}</text>
+        <text class="header-group-id">
+          {{ t('messages.header.labeled', { name: store.groupName || sessionLabel(store.groupId), id: store.groupId }) }}
+        </text>
+        <text class="header-account" v-if="store.workspaceName">
+          {{ t('messages.header.workspace', { name: store.workspaceName }) }}
+        </text>
+        <text class="header-account">
+          {{ t('messages.header.account', { name: store.accountName || store.selfId || t('common.unknown') }) }}
+        </text>
       </view>
       <text class="header-count" v-if="!store.empty">
         {{ store.total > store.messages.length
-          ? `共 ${store.total} 条，显示最近 ${store.messages.length} 条`
-          : `${store.total} 条消息` }}
+          ? t('messages.header.partial', { total: store.total, shown: store.messages.length })
+          : t('messages.header.total', store.total, { count: store.total }) }}
       </text>
     </view>
 
@@ -22,7 +28,7 @@
         <view class="msg-meta">
           <view class="msg-sender-col">
             <view class="msg-sender-line">
-              <text class="msg-sender">{{ msg.card || msg.nick || msg.user_id || '机器人' }}</text>
+              <text class="msg-sender">{{ msg.card || msg.nick || msg.user_id || t('messages.senderBot') }}</text>
               <text class="msg-user-id" v-if="msg.user_id">{{ msg.user_id }}</text>
             </view>
             <text class="msg-card" v-if="msg.card && msg.card !== msg.nick">{{ msg.nick }}</text>
@@ -35,12 +41,12 @@
 
     <!-- 空态 -->
     <view class="empty" v-else-if="!store.loading">
-      <text>该群暂无消息记录</text>
+      <text>{{ t('messages.empty') }}</text>
     </view>
 
     <!-- 加载中 -->
     <view class="loading" v-if="store.loading">
-      <text>加载中...</text>
+      <text>{{ t('common.loading') }}</text>
     </view>
   </view>
 </template>
@@ -49,10 +55,12 @@
 import { onMounted } from 'vue'
 import { useMessagesStore, sessionLabel } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
+import { useLocale } from '@/composables/useLocale'
 import AppHeader from '@/components/AppHeader.vue'
 
 const authStore = useAuthStore()
 const store = useMessagesStore()
+const { t } = useLocale()
 
 // uni.navigateTo 在 h5 下会把 query 值再 encodeURIComponent 一次，
 // 拼好的链接里 %3A 会变成 %253A，URLSearchParams 解一次后还会剩一层。

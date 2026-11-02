@@ -18,9 +18,8 @@ type AccountDetail struct {
 	GroupCount       int    `json:"group_count"`
 	ActiveGroupCount int    `json:"active_group_count"` // 库里有消息记录的群数
 	MessageCount     int    `json:"message_count"`
-	LastActivity     string `json:"last_activity"`
-
-	lastTime int64
+	// LastTS 是最近一条消息的时间（Unix 秒），0 表示还没有任何记录
+	LastTS int64 `json:"last_ts"`
 }
 
 // WorkspaceInfo 面板上的工作空间概览。
@@ -35,7 +34,7 @@ type WorkspaceInfo struct {
 	GroupCount       int      `json:"group_count"`
 	ActiveGroupCount int      `json:"active_group_count"`
 	MessageCount     int      `json:"message_count"`
-	LastActivity     string   `json:"last_activity"`
+	LastTS           int64    `json:"last_ts"`    // 最近一条消息时间（Unix 秒），0 = 没有记录
 	Persistent       bool     `json:"persistent"` // state.db 是否可用；false 表示纯内存运行
 }
 
@@ -165,10 +164,7 @@ func (s *Server) collectDetails(groupIDs []string, account, wsID, wsName string,
 			MessageCount:  overview.MessageCount,
 			MemberCount:   overview.MemberCount,
 			HasMessages:   overview.MessageCount > 0,
-			lastTime:      overview.LastTime,
-		}
-		if overview.LastTime > 0 {
-			info.LastActivity = formatTimestamp(overview.LastTime)
+			LastTS:        overview.LastTime,
 		}
 		if info.HasMessages {
 			info.AccountName = wsName
@@ -177,8 +173,8 @@ func (s *Server) collectDetails(groupIDs []string, account, wsID, wsName string,
 				acc.GroupCount++
 				acc.ActiveGroupCount++
 				acc.MessageCount += overview.MessageCount
-				if overview.LastTime > acc.lastTime {
-					acc.lastTime = overview.LastTime
+				if overview.LastTime > acc.LastTS {
+					acc.LastTS = overview.LastTime
 				}
 			}
 		}
@@ -192,9 +188,6 @@ func (s *Server) collectDetails(groupIDs []string, account, wsID, wsName string,
 	ensure().GroupCount = len(groups)
 	list := make([]AccountDetail, 0, 1)
 	if detail != nil {
-		if detail.lastTime > 0 {
-			detail.LastActivity = formatTimestamp(detail.lastTime)
-		}
 		list = append(list, *detail)
 	}
 	return groups, list
@@ -221,18 +214,14 @@ func workspaceInfoOf(view workspace.View, groups []GroupDetail) WorkspaceInfo {
 	if view.Account != "" {
 		info.SelfIDs = []string{view.Account}
 	}
-	var lastTime int64
 	for _, g := range groups {
 		if g.HasMessages {
 			info.ActiveGroupCount++
 		}
 		info.MessageCount += g.MessageCount
-		if g.lastTime > lastTime {
-			lastTime = g.lastTime
+		if g.LastTS > info.LastTS {
+			info.LastTS = g.LastTS
 		}
-	}
-	if lastTime > 0 {
-		info.LastActivity = formatTimestamp(lastTime)
 	}
 	return info
 }

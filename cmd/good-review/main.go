@@ -11,18 +11,32 @@ import (
 	"good-review-master/version"
 )
 
-// main 只保留三件不属于装配的事：日志初始化、首跑提示、把错误翻译成进程退出码。
+// main 只保留三件不属于装配的事：日志生命周期、首跑提示、把错误翻译成进程退出码。
 // 组件如何构造、如何接线、如何按序启停，全部在 app 包（组合根）里。
 func main() {
 	logutil.SetupLogger()
 	logutil.Info("版本：" + version.String())
 	logutil.Debug("日志初始化完成", "level", logutil.Level())
 
+	code := run()
+
+	// 日志句柄由 main 拥有，和 SetupLogger 对称：Run 返回时所有 goroutine 与 MCP 子进程
+	// 都已经停完，这里关闭不会再有写入，末尾几句日志也已经落盘。
+	// 不写成 defer：下面的首跑与配置非法两条 os.Exit 路径不执行 defer，而它们恰恰最需要
+	// 把句柄放干净（Windows 上句柄没关会让临时目录删不掉）。Close 只做 Sync + 关文件，
+	// 重复调用安全，所以放在 os.Exit 之前而不是每条返回路径里各写一遍。
+	logutil.Close()
+	os.Exit(code)
+}
+
+// run 是真正的启动流程，返回进程退出码（0 正常退出，1 配置不合法）。
+// 退出码外置成返回值而不是直接 os.Exit：调用方要先跑完 logutil.Close 再退。
+func run() int {
 	// 首跑：补全模板配置文件，提示用户配置后再启动
 	if config.InitDefaultFiles() {
 		fmt.Println("已创建 config.yaml 文件，请配置 config.yaml 后再次启动程序，按回车键退出...")
 		fmt.Scanln()
-		os.Exit(0)
+		return 0
 	}
 
 	application, err := app.New(app.Options{
@@ -35,9 +49,10 @@ func main() {
 		// 配置不合法的具体原因（哪一段、当前值、该怎么改）已经在 config 包里写清楚了，
 		// 这里不再按错误类型分派不同文案——那种分派会随着校验规则增加而不断膨胀。
 		logutil.Error(err.Error())
-		os.Exit(1)
+		return 1
 	}
 
 	// 阻塞运行，直到收到退出信号并完成优雅关闭
 	application.Run()
+	return 0
 }

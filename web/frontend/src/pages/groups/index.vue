@@ -1,6 +1,6 @@
 <template>
   <view class="page">
-    <AppHeader title="群列表" back />
+    <AppHeader :title="t('nav.groups')" back />
 
     <!-- 本页选项：按监控账号分组看，或所有账号的会话平铺 -->
     <SegmentTabs v-model="viewMode" :options="modeOptions" />
@@ -17,7 +17,7 @@
           @click="store.selectWorkspace(ws.id)"
         >
           <text class="workspace-name">{{ ws.name }}</text>
-          <text class="workspace-meta">{{ ws.group_count }} 群 · {{ ws.message_count }} 条</text>
+          <text class="workspace-meta">{{ t('groups.workspace.meta', { groups: ws.group_count, messages: ws.message_count }) }}</text>
         </view>
       </view>
 
@@ -35,7 +35,7 @@
               v-if="section.self_id && section.self_id !== 'qq_official' && section.self_id !== 'unknown_selfid'"
             >{{ section.self_id }}</text>
           </view>
-          <text class="account-meta">{{ section.group_count }} 群 · {{ section.message_count }} 条</text>
+          <text class="account-meta">{{ t('groups.account.meta', { groups: section.group_count, messages: section.message_count }) }}</text>
         </view>
 
         <view class="group-list">
@@ -51,31 +51,31 @@
                 <text class="group-id-sub">{{ group.group_id }}</text>
               </view>
               <view class="group-badge" :class="group.has_messages ? 'badge-active' : 'badge-empty'">
-                {{ group.has_messages ? '有记录' : '无数据' }}
+                {{ group.has_messages ? t('common.hasRecords') : t('common.noData') }}
               </view>
             </view>
             <view class="group-card-body" v-if="group.has_messages">
               <view class="group-stat">
-                <text class="stat-label">消息数</text>
+                <text class="stat-label">{{ t('common.stat.messages') }}</text>
                 <text class="stat-value">{{ group.message_count }}</text>
               </view>
               <view class="group-stat">
-                <text class="stat-label">已收录成员</text>
+                <text class="stat-label">{{ t('common.stat.members') }}</text>
                 <text class="stat-value">{{ group.member_count }}</text>
               </view>
               <view class="group-stat">
-                <text class="stat-label">最近活动</text>
-                <text class="stat-value stat-time">{{ group.last_activity || '-' }}</text>
+                <text class="stat-label">{{ t('common.stat.lastActive') }}</text>
+                <text class="stat-value stat-time">{{ formatDateTime(group.last_ts) }}</text>
               </view>
             </view>
             <view class="group-card-body" v-else>
-              <text class="no-data">等待接收消息...</text>
+              <text class="no-data">{{ t('common.waiting') }}</text>
             </view>
           </view>
         </view>
 
         <view class="account-empty" v-if="section.groups.length === 0">
-          <text>该账号暂无群数据</text>
+          <text>{{ t('groups.empty.own') }}</text>
         </view>
       </view>
     </template>
@@ -94,28 +94,28 @@
             <text class="group-id-sub">{{ session.group_id }}</text>
           </view>
           <view class="group-badge" :class="session.has_messages ? 'badge-active' : 'badge-empty'">
-            {{ session.has_messages ? '有记录' : '无数据' }}
+            {{ session.has_messages ? t('common.hasRecords') : t('common.noData') }}
           </view>
         </view>
         <view class="group-card-body" v-if="session.has_messages">
           <view class="group-stat">
-            <text class="stat-label">消息数</text>
+            <text class="stat-label">{{ t('common.stat.messages') }}</text>
             <text class="stat-value">{{ session.message_count }}</text>
           </view>
           <view class="group-stat">
-            <text class="stat-label">已收录成员</text>
+            <text class="stat-label">{{ t('common.stat.members') }}</text>
             <text class="stat-value">{{ session.member_count }}</text>
           </view>
           <view class="group-stat">
-            <text class="stat-label">最近活动</text>
-            <text class="stat-value stat-time">{{ session.last_activity || '-' }}</text>
+            <text class="stat-label">{{ t('common.stat.lastActive') }}</text>
+            <text class="stat-value stat-time">{{ formatDateTime(session.last_ts) }}</text>
           </view>
         </view>
         <view class="group-card-body" v-else>
-          <text class="no-data">等待接收消息...</text>
+          <text class="no-data">{{ t('common.waiting') }}</text>
         </view>
         <view class="group-monitors">
-          <text class="monitor-label">监控账号</text>
+          <text class="monitor-label">{{ t('common.stat.monitorAccount') }}</text>
           <text class="monitor-name">{{
             session.workspace_name || session.account_name || session.workspace_id
           }}</text>
@@ -130,7 +130,7 @@
 
     <!-- 加载中 -->
     <view class="loading" v-if="store.loading">
-      <text>加载中...</text>
+      <text>{{ t('common.loading') }}</text>
     </view>
   </view>
 </template>
@@ -140,12 +140,15 @@ import { computed, onMounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { useGroupsStore, sessionLabel, type ViewMode } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
+import { useLocale } from '@/composables/useLocale'
+import { formatDateTime } from '@/utils/format'
 import AppHeader from '@/components/AppHeader.vue'
 import SegmentTabs from '@/components/SegmentTabs.vue'
 import type { SegmentOption } from '@/components/SegmentTabs.vue'
 
 const authStore = useAuthStore()
 const store = useGroupsStore()
+const { t } = useLocale()
 
 // v-model 用 computed 中转：读的是 store 里的当前视图，写入交给 switchMode，
 // 它会顺手把该拉的列表拉一次。
@@ -157,8 +160,8 @@ const viewMode = computed<ViewMode>({
 })
 
 const modeOptions = computed<SegmentOption[]>(() => [
-  { key: 'account', label: '按监控账号', badge: store.workspaces.length || undefined },
-  { key: 'all', label: '全部列表', badge: store.sessions.length || undefined },
+  { key: 'account', label: t('groups.mode.byAccount'), badge: store.workspaces.length || undefined },
+  { key: 'all', label: t('groups.mode.all'), badge: store.sessions.length || undefined },
 ])
 
 // 从监控页点某个账号跳进来时链接上带了 ?ws=，先把这个账号设成选中：
@@ -178,8 +181,8 @@ const isEmpty = computed(() =>
 )
 const emptyHint = computed(() =>
   store.viewMode === 'account'
-    ? '暂未配置群组，请在 config.yaml 中设置 allow_groups'
-    : '还没有任何会话记录',
+    ? t('groups.empty.config')
+    : t('groups.empty.all'),
 )
 
 onMounted(() => {

@@ -1,24 +1,24 @@
 <template>
   <view class="page">
-    <AppHeader title="诊断" />
+    <AppHeader :title="t('nav.diagnostics')" />
 
     <!-- 概览卡片 -->
     <view class="cards" v-if="data">
       <view class="card">
         <text class="card-num">{{ data.runtime.goroutines }}</text>
-        <text class="card-label">goroutine</text>
+        <text class="card-label">{{ t('diagnostics.card.goroutines') }}</text>
       </view>
       <view class="card">
         <text class="card-num">{{ formatBytes(data.runtime.heap_inuse_bytes) }}</text>
-        <text class="card-label">堆占用</text>
+        <text class="card-label">{{ t('diagnostics.card.heap') }}</text>
       </view>
       <view class="card">
         <text class="card-num">{{ data.runtime.num_gc }}</text>
-        <text class="card-label">GC 次数</text>
+        <text class="card-label">{{ t('diagnostics.card.gc') }}</text>
       </view>
       <view class="card">
         <text class="card-num">{{ formatDuration(data.runtime.uptime_seconds) }}</text>
-        <text class="card-label">已运行</text>
+        <text class="card-label">{{ t('diagnostics.card.uptime') }}</text>
       </view>
     </view>
 
@@ -29,18 +29,18 @@
 
     <!-- 操作栏 -->
     <view class="toolbar">
-      <text class="btn" @click="reload">刷新</text>
+      <text class="btn" @click="reload">{{ t('common.refresh') }}</text>
       <text class="btn" :class="{ 'btn-on': autoRefresh }" @click="toggleAuto">
-        {{ autoRefresh ? '停止自动' : '自动 10s' }}
+        {{ autoRefresh ? t('diagnostics.toolbar.stopAuto') : t('diagnostics.toolbar.auto') }}
       </text>
     </view>
 
     <!-- goroutine 分组：找泄漏的关键视图 -->
     <view class="panel" v-if="data">
       <view class="panel-head">
-        <text class="panel-title">goroutine 按栈顶函数分组</text>
+        <text class="panel-title">{{ t('diagnostics.goroutines.title') }}</text>
         <text class="panel-sub">
-          {{ data.goroutines.total }} 个 / {{ data.goroutines.group_count }} 组
+          {{ t('diagnostics.goroutines.count', { total: data.goroutines.total, groups: data.goroutines.group_count }) }}
         </text>
       </view>
       <view class="group-row" v-for="group in data.goroutines.groups" :key="group.frame">
@@ -50,33 +50,29 @@
       </view>
       <view class="tabs" v-if="data.goroutines.group_count > 0">
         <text class="tab" @click="toggleDump">
-          {{ showDump ? '收起完整栈' : '展开完整栈' }}
+          {{ showDump ? t('diagnostics.dump.collapse') : t('diagnostics.dump.expand') }}
         </text>
-        <text class="tab" v-if="showDump" @click="copyDump">复制</text>
+        <text class="tab" v-if="showDump" @click="copyDump">{{ t('diagnostics.dump.copy') }}</text>
       </view>
       <scroll-view class="dump" scroll-y v-if="showDump && dumpText">
         <text class="dump-text">{{ dumpText }}</text>
       </scroll-view>
       <view class="note" v-if="dumpTruncated">
-        栈较长，仅显示前 {{ formatBytes(DUMP_DISPLAY_LIMIT) }}（完整内容可复制）
+        {{ t('diagnostics.dump.truncated', { size: formatBytes(DUMP_DISPLAY_LIMIT) }) }}
       </view>
     </view>
 
     <!-- pprof 未开启 -->
     <view class="panel hint" v-if="data && !data.runtime.pprof_enabled">
-      <text class="hint-title">pprof 未开启</text>
-      <text class="hint-body">
-        上面的 goroutine 分组不依赖它。要看 heap / block / mutex 等 profile、
-        或下载 profile 用 go tool pprof 出火焰图，需在 config.yaml 设置
-        runtime.enable_pprof: true 后重启。
-      </text>
+      <text class="hint-title">{{ t('diagnostics.pprofOff.title') }}</text>
+      <text class="hint-body">{{ t('diagnostics.pprofOff.body') }}</text>
     </view>
 
     <!-- pprof 已开启 -->
     <view v-if="data && data.runtime.pprof_enabled">
       <view class="panel">
         <view class="panel-head">
-          <text class="panel-title">profile 文本视图</text>
+          <text class="panel-title">{{ t('diagnostics.profile.title') }}</text>
         </view>
         <view class="tabs">
           <text
@@ -90,14 +86,14 @@
           </text>
         </view>
         <scroll-view class="dump" scroll-y>
-          <text class="dump-text">{{ profileText || '加载中...' }}</text>
+          <text class="dump-text">{{ profileText || t('common.loading') }}</text>
         </scroll-view>
       </view>
 
       <view class="panel">
         <view class="panel-head">
-          <text class="panel-title">下载</text>
-          <text class="panel-sub">用 go tool pprof -http=:8081 &lt;文件&gt; 看火焰图</text>
+          <text class="panel-title">{{ t('diagnostics.download.title') }}</text>
+          <text class="panel-sub">{{ t('diagnostics.download.hint') }}</text>
         </view>
         <view class="tabs">
           <text
@@ -127,6 +123,7 @@ import { fetchDiagnostics, fetchPprofBinary, fetchPprofText } from '@/api/diagno
 import type { DiagnosticsData } from '@/api/types'
 import AppHeader from '@/components/AppHeader.vue'
 import TabBar from '@/components/TabBar.vue'
+import { useLocale } from '@/composables/useLocale'
 
 interface ProfileSpec {
   name: string
@@ -164,6 +161,7 @@ const DOWNLOADS: DownloadSpec[] = [
 const DUMP_DISPLAY_LIMIT = 256 * 1024
 
 const authStore = useAuthStore()
+const { t } = useLocale()
 
 const data = ref<DiagnosticsData | null>(null)
 const error = ref('')
@@ -226,7 +224,7 @@ async function copyDump() {
   const full = await fetchDiagnostics(true)
   uni.setClipboardData({
     data: full.goroutines.stack_dump || '',
-    success: () => uni.showToast({ title: '已复制完整栈', icon: 'none' }),
+    success: () => uni.showToast({ title: t('diagnostics.dump.copied'), icon: 'none' }),
   })
 }
 
@@ -257,13 +255,13 @@ async function download(item: DownloadSpec) {
     anchor.click()
     document.body.removeChild(anchor)
     URL.revokeObjectURL(url)
-    uni.showToast({ title: `已下载 ${item.name}.pprof`, icon: 'none' })
+    uni.showToast({ title: t('diagnostics.download.done', { file: `${item.name}.pprof` }), icon: 'none' })
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   }
   // #endif
   // #ifndef H5
-  uni.showToast({ title: '下载仅 H5 端支持', icon: 'none' })
+  uni.showToast({ title: t('diagnostics.download.h5Only'), icon: 'none' })
   // #endif
 }
 

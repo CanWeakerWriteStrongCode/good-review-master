@@ -1,25 +1,25 @@
 <template>
   <view class="page">
-    <AppHeader title="报警" />
+    <AppHeader :title="t('nav.alerts')" />
 
     <!-- 汇总：总数 + 刷新。报警只增不删，没有分页，只能看最近一批 -->
     <view class="summary">
       <view class="summary-nums">
         <text class="summary-num">{{ store.alertTotal }}</text>
-        <text class="summary-unit">条报警</text>
+        <text class="summary-unit">{{ t('alerts.summary.unit', store.alertTotal) }}</text>
         <text class="summary-hint" v-if="store.alertTotal > store.alerts.length">
-          显示最近 {{ store.alerts.length }} 条
+          {{ t('alerts.summary.showing', { count: store.alerts.length }) }}
         </text>
       </view>
-      <text class="summary-refresh" @click="reload">{{ loading ? '刷新中' : '刷新' }}</text>
+      <text class="summary-refresh" @click="reload">{{ loading ? t('common.refreshing') : t('common.refresh') }}</text>
     </view>
 
     <view class="empty" v-if="!loading && store.alertTotal === 0">
       <view class="empty-icon">
         <text class="empty-icon-text">✓</text>
       </view>
-      <text class="empty-title">暂无报警</text>
-      <text class="empty-sub">窗口太小、阶段重试超限这类异常会记在这里</text>
+      <text class="empty-title">{{ t('alerts.empty.title') }}</text>
+      <text class="empty-sub">{{ t('alerts.empty.hint') }}</text>
     </view>
 
     <view class="list" v-else-if="store.alerts.length > 0">
@@ -31,12 +31,12 @@
       >
         <view class="card-head">
           <text class="kind">{{ alertKindLabel(a.kind) }}</text>
-          <text class="time">{{ a.created_at_text }}</text>
+          <text class="time">{{ formatDateTime(a.created_at) }}</text>
         </view>
         <view class="card-meta">
-          <text class="owner">{{ a.workspace_name || a.workspace_id || '全局' }}</text>
+          <text class="owner">{{ a.workspace_name || a.workspace_id || t('alerts.ownerGlobal') }}</text>
           <text class="toggle" v-if="a.detail" @click="toggle(a.id)">
-            {{ open === a.id ? '收起现场' : '看现场' }}
+            {{ open === a.id ? t('alerts.action.hide') : t('alerts.action.detail') }}
           </text>
         </view>
         <!-- 现场是完整 JSON，保留换行 + 强制断行，不撑破卡片 -->
@@ -45,7 +45,7 @@
     </view>
 
     <view class="loading" v-if="loading">
-      <text>加载中...</text>
+      <text>{{ t('common.loading') }}</text>
     </view>
 
     <TabBar current="alerts" />
@@ -56,11 +56,14 @@
 import { onMounted, ref } from 'vue'
 import { useGroupsStore, alertKindLabel, alertSeverity } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
+import { useLocale } from '@/composables/useLocale'
+import { formatDateTime } from '@/utils/format'
 import AppHeader from '@/components/AppHeader.vue'
 import TabBar from '@/components/TabBar.vue'
 
 const store = useGroupsStore()
 const authStore = useAuthStore()
+const { t } = useLocale()
 
 /** 展开了「现场」的那条报警 id；null = 都收起 */
 const open = ref<number | null>(null)

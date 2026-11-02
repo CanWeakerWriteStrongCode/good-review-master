@@ -14,7 +14,8 @@ export interface GroupInfo {
   message_count: number
   /** 已收录成员数（说过话或被 @ 过的人） */
   member_count: number
-  last_activity: string
+  /** 最近一条消息的时间（Unix 秒），0 = 没有记录。显示用的日期由前端按语言拼 */
+  last_ts: number
   /** 库里有这个群的消息记录；false 时整块统计不显示 */
   has_messages: boolean
 }
@@ -29,8 +30,8 @@ export interface AlertItem {
   kind: string
   /** 发生时的完整现场 JSON */
   detail: string
+  /** Unix 秒，显示格式由前端按当前语言拼 */
   created_at: number
-  created_at_text: string
 }
 
 /** 一个机器人账号的工作空间汇总 */
@@ -43,7 +44,8 @@ export interface WorkspaceInfo {
   /** 库里有消息记录的群数 */
   active_group_count: number
   message_count: number
-  last_activity: string
+  /** 最近一条消息时间（Unix 秒），0 = 没有记录 */
+  last_ts: number
 }
 
 /** 一个机器人账号的汇总（多账号面板用） */
@@ -53,7 +55,7 @@ export interface AccountInfo {
   group_count: number
   active_group_count: number
   message_count: number
-  last_activity: string
+  last_ts: number
 }
 
 export interface BotStatus {

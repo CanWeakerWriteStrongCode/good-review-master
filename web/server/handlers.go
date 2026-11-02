@@ -4,7 +4,6 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"sort"
-	"time"
 
 	"good-review-master/config"
 	"good-review-master/conversation"
@@ -33,12 +32,13 @@ type GroupDetail struct {
 	AccountName   string `json:"account_name"` // 账号昵称；解析不到时为空
 	MessageCount  int    `json:"message_count"`
 	MemberCount   int    `json:"member_count"` // 已收录成员数（说过话或被 @ 过）
-	LastActivity  string `json:"last_activity"`
+	// LastTS 是最近一条消息的时间（Unix 秒），0 表示没有记录。
+	// 接口只传原始时间戳，不在后端拼日期字符串：面板要中英两套显示，
+	// 后端按语言拼的话得引一套 i18n，改格式还得两边一起动。
+	LastTS int64 `json:"last_ts"`
 	// HasMessages 表示 state.db 里这个群有消息记录。名字不叫 cached：
 	// 面板已经不看内存缓存了，这个值来自 messages 表的条数。
 	HasMessages bool `json:"has_messages"`
-
-	lastTime int64 // 原始时间戳，给工作空间汇总用；不对外
 }
 
 // BotStatus 面板顶部的运行时状态。
@@ -171,8 +171,8 @@ func (s *Server) collectSessions(views []workspace.View) []GroupDetail {
 	}
 	// 时间相同的按账号、再按群号，保证同一个库每次打开顺序一致。
 	sort.SliceStable(all, func(i, j int) bool {
-		if all[i].lastTime != all[j].lastTime {
-			return all[i].lastTime > all[j].lastTime
+		if all[i].LastTS != all[j].LastTS {
+			return all[i].LastTS > all[j].LastTS
 		}
 		if all[i].WorkspaceID != all[j].WorkspaceID {
 			return all[i].WorkspaceID < all[j].WorkspaceID
@@ -379,11 +379,6 @@ func (s *Server) handleAPIStatus() gin.HandlerFunc {
 			Data: s.botStatusTotal(s.cfg()),
 		})
 	}
-}
-
-// formatTimestamp 将 Unix 时间戳格式化为本地时间字符串
-func formatTimestamp(ts int64) string {
-	return time.Unix(ts, 0).Format("2006-01-02 15:04:05")
 }
 
 // handleLogin 登录校验，成功返回 token（web_password 必填，无免密通道）。

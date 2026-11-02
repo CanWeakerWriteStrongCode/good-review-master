@@ -11,6 +11,16 @@ import {
   fetchWorkspaceMessages,
 } from '@/api'
 import type { AccountInfo, AlertItem, GroupInfo, BotStatus, Message, WorkspaceInfo } from '@/api/types'
+import { i18n } from '@/locale'
+import { formatDateTime } from '@/utils/format'
+
+/**
+ * store 不是组件，用不了 useI18n()，直接问全局实例。
+ * 读到的是同一个 locale ref，所以在模板里调这些函数照样会跟着切语言重算。
+ */
+function tt(key: string, named?: Record<string, unknown>): string {
+  return i18n.global.t(key, named || {}) as string
+}
 
 /** 群列表的两种看法：按账号分、所有账号的会话平铺 */
 export type ViewMode = 'account' | 'all'
@@ -29,14 +39,15 @@ export function sessionLabel(chatID: string, type?: string): string {
   const prefix = 'private:'
   const isPrivate = type === 'private' || chatID.startsWith(prefix)
   if (!isPrivate) return chatID
-  return `私聊 ${chatID.slice(prefix.length, prefix.length + 8)}`
+  // 只露 openid 前 8 位，整串摆不下、也没必要
+  return tt('common.privateLabel', { id: chatID.slice(prefix.length, prefix.length + 8) })
 }
 
 // 账号显示名：昵称优先；占位值是适配器还没学到身份，显示「未知账号」。
 function accountLabel(selfID: string, nickname: string): string {
   if (nickname) return nickname
-  if (!selfID) return '未归属账号'
-  if (selfID === 'qq_official' || selfID === 'unknown_selfid') return '未知账号'
+  if (!selfID) return tt('common.unassignedAccount')
+  if (selfID === 'qq_official' || selfID === 'unknown_selfid') return tt('common.unknownAccount')
   return selfID
 }
 
@@ -46,9 +57,9 @@ function accountLabel(selfID: string, nickname: string): string {
  * 直接摆在页面上没人看得懂。监控页和报警页共用这一份，两边措辞不会跑偏。
  */
 export function alertKindLabel(kind: string): string {
-  if (kind === 'window_too_small') return '窗口太小，放弃回复'
+  if (kind === 'window_too_small') return tt('alerts.kind.windowTooSmall')
   if (kind.startsWith('dead_letter_')) {
-    return `${kind.slice('dead_letter_'.length)} 阶段重试超限，已隔离`
+    return tt('alerts.kind.deadLetter', { stage: kind.slice('dead_letter_'.length) })
   }
   return kind
 }
@@ -102,7 +113,7 @@ export const useGroupsStore = defineStore('groups', () => {
         group_count: 0,
         active_group_count: 0,
         message_count: 0,
-        last_activity: '',
+        last_ts: 0,
         displayName: accountLabel(first.self_id || '', first.account_name || ''),
         groups: [...groups.value],
       }
@@ -183,9 +194,9 @@ export const useGroupsStore = defineStore('groups', () => {
       all.push(...list)
     }
     all.sort((a, b) => {
-      const ta = a.last_activity || ''
-      const tb = b.last_activity || ''
-      if (ta !== tb) return ta < tb ? 1 : -1
+      const ta = a.last_ts || 0
+      const tb = b.last_ts || 0
+      if (ta !== tb) return tb - ta
       const wa = a.workspace_id || ''
       const wb = b.workspace_id || ''
       if (wa !== wb) return wa < wb ? -1 : 1
@@ -235,7 +246,7 @@ export const useGroupsStore = defineStore('groups', () => {
       group_count: ws.group_count,
       active_group_count: ws.active_group_count,
       message_count: ws.message_count,
-      last_activity: ws.last_activity,
+      last_ts: ws.last_ts,
     }
   }
 
@@ -272,10 +283,7 @@ export const useGroupsStore = defineStore('groups', () => {
   }
 
   function formatTime(ts: number): string {
-    if (!ts) return '-'
-    const d = new Date(ts * 1000)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    return formatDateTime(ts)
   }
 
   return {
@@ -339,10 +347,7 @@ export const useMessagesStore = defineStore('messages', () => {
   }
 
   function formatTime(ts: number): string {
-    if (!ts) return '-'
-    const d = new Date(ts * 1000)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    return formatDateTime(ts)
   }
 
   return {

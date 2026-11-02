@@ -1,5 +1,11 @@
 import type { DiagnosticsData } from './types'
+import { i18n } from '@/locale'
 import { BASE_URL, getAuthHeader, handleUnauthorized, request } from './index'
+
+/** 非组件环境取文案，直接问全局实例 */
+function tt(key: string, named?: Record<string, unknown>): string {
+  return i18n.global.t(key, named || {}) as string
+}
 
 /**
  * 运行时诊断接口。
@@ -31,7 +37,7 @@ export async function fetchPprofText(name: string, debug = 1): Promise<string> {
     handleUnauthorized()
   }
   if (res.statusCode !== 200) {
-    throw new Error(`pprof ${name} 返回 HTTP ${res.statusCode}`)
+    throw new Error(tt('api.pprofHttp', { name, status: res.statusCode }))
   }
   return typeof res.data === 'string' ? res.data : ''
 }
@@ -55,10 +61,10 @@ export async function fetchPprofBinary(name: string, seconds?: number): Promise<
     handleUnauthorized()
   }
   if (res.statusCode !== 200) {
-    throw new Error(`pprof ${name} 返回 HTTP ${res.statusCode}`)
+    throw new Error(tt('api.pprofHttp', { name, status: res.statusCode }))
   }
   if (!(res.data instanceof ArrayBuffer)) {
-    throw new Error(`pprof ${name} 未返回二进制数据`)
+    throw new Error(tt('api.pprofBinary', { name }))
   }
   return res.data
 }

@@ -1,27 +1,32 @@
 <template>
   <view class="page">
     <view class="card">
-      <text class="title">海豚智章</text>
-      <text class="subtitle">Dolphin Mind · 监控面板</text>
+      <text class="title">{{ t('login.title') }}</text>
+      <text class="subtitle">{{ t('login.subtitle') }}</text>
 
       <view class="form">
         <input
           class="input"
           v-model="username"
-          placeholder="账号"
+          :placeholder="t('login.username')"
           @confirm="doLogin"
         />
         <input
           class="input"
           type="password"
           v-model="password"
-          placeholder="密码"
+          :placeholder="t('login.password')"
           @confirm="doLogin"
         />
         <view class="btn" @click="doLogin">
-          <text class="btn-text">{{ loading ? '登录中...' : '登录' }}</text>
+          <text class="btn-text">{{ loading ? t('login.submitting') : t('login.submit') }}</text>
         </view>
         <text class="error" v-if="errMsg">{{ errMsg }}</text>
+      </view>
+
+      <!-- 登录页没有顶栏，语言切换放这里：否则一进错语言就没处换 -->
+      <view class="locale-row">
+        <text class="locale-switch" @click="toggle">{{ isZh ? 'EN' : '中文' }}</text>
       </view>
     </view>
   </view>
@@ -31,7 +36,11 @@
 import { ref } from 'vue'
 import { login } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useLocale, usePageTitle } from '@/composables/useLocale'
 
+const { t, isZh, toggle } = useLocale()
+// 登录页没有顶栏，标签页标题得自己同步
+usePageTitle(() => t('login.title'))
 const store = useAuthStore()
 const username = ref('')
 const password = ref('')
@@ -40,11 +49,11 @@ const errMsg = ref('')
 
 async function doLogin() {
   if (!username.value) {
-    errMsg.value = '请输入账号'
+    errMsg.value = t('login.usernameRequired')
     return
   }
   if (!password.value) {
-    errMsg.value = '请输入密码'
+    errMsg.value = t('login.passwordRequired')
     return
   }
   loading.value = true
@@ -56,7 +65,7 @@ async function doLogin() {
       uni.reLaunch({ url: '/pages/monitor/index' })
     }
   } catch (e: any) {
-    errMsg.value = e.message || '登录失败'
+    errMsg.value = e.message || t('login.failed')
   } finally {
     loading.value = false
   }
@@ -140,5 +149,21 @@ async function doLogin() {
   text-align: center;
   color: #e74c3c;
   font-size: 13px;
+}
+
+.locale-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+.locale-switch {
+  font-size: 12px;
+  color: #8a94a6;
+  padding: 4px 12px;
+  border: 1px solid #e2e6ee;
+  border-radius: 11px;
+}
+.locale-switch:active {
+  background: #f2f4f8;
 }
 </style>

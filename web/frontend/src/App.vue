@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { onLaunch } from '@dcloudio/uni-app'
+import { applyLocale, i18n, type AppLocale } from './locale'
 
 onLaunch(() => {
-  console.log('海豚智章 监控面板启动')
+  // uni 启动后 uni.setLocale 才可用：把首屏选定的语言同步给它自带组件
+  // （内置弹窗的按钮），并设好 html lang。
+  // 标签页标题不在这里管，由每个页面的 usePageTitle 跟着页名换。
+  applyLocale(i18n.global.locale.value as AppLocale)
 })
 </script>
 
