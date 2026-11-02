@@ -2,22 +2,24 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
 	"good-review-master/logutil"
 )
 
-// StageConfig 是某个阶段当前生效的一批参数。每次取数/启动 worker 时现读，
-// 这样 settings 表里改批量/并发/重试后不需要重启（容量除外：缓冲已分配）。
+// StageConfig 是某个阶段当前生效的一批参数。取数前现读，
+// 这样 settings 表里改批量/并发/重试后不需要重启。
 type StageConfig struct {
 	Batch       int
 	Linger      time.Duration
 	Concurrency int
 	Retries     int
-	IdleTTL     time.Duration
 }
+
+// maxBurstPerTurn 一个协程一次最多连续处理同一个会话的几批。
+// 吃完就让位，避免活多的会话长期霸着池子把别的会话饿死。
+const maxBurstPerTurn = 3
 
 // BatchHandler 处理一批 Item，返回需要重试的条目。已经处理成功的条目不要放回来。
 type BatchHandler func(ctx context.Context, key string, items []Item) []FailedItem
@@ -37,30 +39,38 @@ type StageOptions struct {
 	OnDeadLetter func(item Item, err error)
 }
 
-// Stage 是“每会话一个 worker、全局并发受限”的阶段消费者。
+// Stage 是“固定协程池 + 每会话串行”的阶段消费者。
 //
-// 同一 Key 只有一个 worker，严格按输入顺序处理；不同 Key 之间并行。
-// worker 按需启动，空闲超过 IdleTTL 后自行退出（只回收处理者，不卸载任何数据）。
+// 池里的协程不绑定任何会话：它从就绪队列里挑一个 key 处理一批，交还之后再挑下一个。
+// 所以协程数等于 Concurrency，与有多少个账号群无关；空闲的会话只是就绪队列里的一项，
+// 一个协程也不占。
+//
+// 同一个 key 同一时刻只会有一个协程持有（inflight 标记），因此“同一个账号在同一个群里
+// 按到达顺序串行处理”这条不变；不同 key 之间并行。不同阶段各有一个 Stage，
+// 名额互不挤占，但一条消息仍然要依次走完三个阶段。
 type Stage struct {
 	opts StageOptions
 
-	mu         sync.Mutex
-	ctx        context.Context
-	running    map[string]bool
-	pending    []string
-	pendingSet map[string]bool
-	active     int
-	wg         sync.WaitGroup
-	closed     bool
+	mu       sync.Mutex
+	cond     *sync.Cond
+	ctx      context.Context
+	ready    []string        // 就绪队列：队首是最久没被处理的 key
+	readySet map[string]bool // ready 的去重索引
+	inflight map[string]bool // 正被某个协程持有的 key
+	workers  int             // 存活的池协程数
+	wg       sync.WaitGroup
+	closed   bool
 }
 
 func NewStage(opts StageOptions) *Stage {
-	return &Stage{
-		opts:       opts,
-		ctx:        context.Background(),
-		running:    make(map[string]bool),
-		pendingSet: make(map[string]bool),
+	s := &Stage{
+		opts:     opts,
+		ctx:      context.Background(),
+		readySet: make(map[string]bool),
+		inflight: make(map[string]bool),
 	}
+	s.cond = sync.NewCond(&s.mu)
+	return s
 }
 
 func (s *Stage) Config() StageConfig {
@@ -80,116 +90,128 @@ func (s *Stage) Config() StageConfig {
 	return cfg
 }
 
-// Run 记录生命周期 ctx，供 worker 使用。实际调度由 Submit/workerDone 驱动。
+// Run 按当时的并发数把池拉起来。之后并发数变化会在 Submit/交还时自动扩缩。
 func (s *Stage) Run(ctx context.Context) {
+	cfg := s.Config()
 	s.mu.Lock()
 	s.ctx = ctx
+	s.resizeLocked(cfg.Concurrency)
 	s.mu.Unlock()
 }
 
-// Submit 告诉阶段“这个分区有数据了”。没有空闲并发时先挂起，
-// worker 退出时按队列顺序补位。Put 之后必须调用；重复调用是幂等的。
+// Submit 告诉阶段“这个分区有数据了”。它只登记到就绪队列，不启动任何协程；
+// 池里哪个协程空出来，谁就去取。Put 之后必须调用，重复调用是幂等的。
 func (s *Stage) Submit(key string) {
 	if key == "" {
 		return
 	}
+	cfg := s.Config()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.running[key] {
-		return
-	}
-	if s.active < s.Config().Concurrency {
-		s.startLocked(key)
-		return
-	}
-	if !s.pendingSet[key] {
-		s.pendingSet[key] = true
-		s.pending = append(s.pending, key)
-	}
-}
-
-func (s *Stage) startLocked(key string) {
-	s.running[key] = true
-	s.active++
-	s.wg.Add(1)
-	go s.worker(key)
-}
-
-func (s *Stage) workerDone(key string) {
-	s.mu.Lock()
-	delete(s.running, key)
-	s.active--
 	if s.closed {
-		s.mu.Unlock()
-		s.wg.Done()
 		return
 	}
-	concurrency := s.Config().Concurrency
-	for len(s.pending) > 0 && s.active < concurrency {
-		key := s.pending[0]
-		s.pending = s.pending[1:]
-		delete(s.pendingSet, key)
-		if s.running[key] {
-			continue
-		}
-		// 队列已经被另一个 worker 清空时不必再起一个空转 worker；
-		// 新数据到达会再次 Submit。
-		if s.opts.Buffer != nil && s.opts.Buffer.Len(key) == 0 {
-			continue
-		}
-		s.startLocked(key)
+	s.resizeLocked(cfg.Concurrency)
+	if s.inflight[key] {
+		// 这个会话正在被处理。处理完那一批协程会自己回头看积压，
+		// 在途期间到达的消息不会漏。
+		return
 	}
-	s.mu.Unlock()
-	s.wg.Done()
+	s.markReadyLocked(key)
+	s.cond.Signal()
 }
 
-func (s *Stage) worker(key string) {
-	defer s.workerDone(key)
+func (s *Stage) markReadyLocked(key string) {
+	if s.readySet[key] {
+		return
+	}
+	s.readySet[key] = true
+	s.ready = append(s.ready, key)
+}
+
+// resizeLocked 把协程数调整到 target。少就补，多就广播一次让超编的协程在 next 里自行退场。
+func (s *Stage) resizeLocked(target int) {
+	if target < 1 {
+		target = 1
+	}
+	for s.workers < target {
+		s.workers++
+		s.wg.Add(1)
+		go s.worker()
+	}
+	if s.workers > target {
+		s.cond.Broadcast()
+	}
+}
+
+// next 阻塞到拿到一个有数据的分区，返回时该 key 已标记为处理中。
+// 第二个返回值 false 表示这个协程该退场了（阶段关闭或并发被调小）；
+// 计数在这里扣，保证判断和减数在同一把锁里，不会几个协程一起退光了。
+func (s *Stage) next() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for {
-		ctx := s.context()
-		if ctx.Err() != nil {
+		if s.closed || s.ctx.Err() != nil {
+			s.workers--
+			return "", false
+		}
+		if s.workers-1 >= s.Config().Concurrency {
+			s.workers--
+			return "", false
+		}
+		for len(s.ready) > 0 {
+			key := s.ready[0]
+			s.ready = s.ready[1:]
+			if !s.readySet[key] {
+				continue
+			}
+			delete(s.readySet, key)
+			if s.inflight[key] {
+				continue
+			}
+			// 队列已经被处理完的分区不必再派活，新数据到达会重新 Submit。
+			if s.opts.Buffer != nil && s.opts.Buffer.Len(key) == 0 {
+				continue
+			}
+			s.inflight[key] = true
+			return key, true
+		}
+		s.cond.Wait()
+	}
+}
+
+func (s *Stage) worker() {
+	defer s.wg.Done()
+	for {
+		key, ok := s.next()
+		if !ok {
 			return
 		}
+		s.drain(key)
+		s.release(key)
+	}
+}
+
+// drain 连续处理同一个会话的积压，最多 maxBurstPerTurn 批就让位。
+// 让位的目的是公平：活多的会话不会一直在池子里转，别的会话能插进来。
+func (s *Stage) drain(key string) {
+	ctx := s.context()
+	for burst := 0; burst < maxBurstPerTurn && ctx.Err() == nil; burst++ {
 		cfg := s.Config()
-		items, err := s.take(ctx, key, cfg)
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, ErrClosed) {
-				return
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				// 空闲超时：回收这个会话的处理者。
-				return
-			}
-			logutil.Warn("阶段取数失败", "stage", s.opts.Name, "key", key, "err", err)
-			continue
-		}
+		items := s.takeBatch(ctx, key, cfg)
 		if len(items) == 0 {
-			continue
+			return
 		}
 		s.process(ctx, key, items, cfg.Retries)
 	}
 }
 
-func (s *Stage) take(ctx context.Context, key string, cfg StageConfig) ([]Item, error) {
-	if cfg.IdleTTL > 0 {
-		idleCtx, cancel := context.WithTimeout(ctx, cfg.IdleTTL)
-		defer cancel()
-		items, err := s.opts.Buffer.Take(idleCtx, key, 1)
-		if err != nil {
-			return nil, err
-		}
-		return s.fillBatch(ctx, key, items, cfg), nil
-	}
-	items, err := s.opts.Buffer.Take(ctx, key, 1)
-	if err != nil {
-		return nil, err
-	}
-	return s.fillBatch(ctx, key, items, cfg), nil
-}
-
-func (s *Stage) fillBatch(ctx context.Context, key string, items []Item, cfg StageConfig) []Item {
-	if len(items) == 0 {
-		return items
+// takeBatch 从分区取一批。有活才会被派过来，所以这里是非阻塞取：
+// 队列空就返回 nil，不去等（等数据是就绪队列的事，不该占着协程）。
+func (s *Stage) takeBatch(ctx context.Context, key string, cfg StageConfig) []Item {
+	items, err := s.opts.Buffer.TakeReady(key, 1)
+	if err != nil || len(items) == 0 {
+		return nil
 	}
 	if cfg.Linger > 0 {
 		timer := time.NewTimer(cfg.Linger)
@@ -200,13 +222,28 @@ func (s *Stage) fillBatch(ctx context.Context, key string, items []Item, cfg Sta
 		}
 	}
 	if remaining := cfg.Batch - len(items); remaining > 0 {
-		more, err := s.opts.Buffer.TakeReady(key, remaining)
-		if err != nil {
-			return items
+		if more, err := s.opts.Buffer.TakeReady(key, remaining); err == nil {
+			items = append(items, more...)
 		}
-		items = append(items, more...)
 	}
 	return items
+}
+
+// release 交还分区：还有积压就重新挂回就绪队列（排到队尾，让别的会话先来），
+// 然后把协程还给池子。
+func (s *Stage) release(key string) {
+	cfg := s.Config()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.inflight, key)
+	if s.closed {
+		return
+	}
+	if s.opts.Buffer != nil && s.opts.Buffer.Len(key) > 0 {
+		s.markReadyLocked(key)
+		s.cond.Signal()
+	}
+	s.resizeLocked(cfg.Concurrency)
 }
 
 func (s *Stage) process(ctx context.Context, key string, items []Item, retries int) {
@@ -238,21 +275,30 @@ func (s *Stage) context() context.Context {
 	return s.ctx
 }
 
-// Active 返回当前正在跑的会话 worker 数（指标与测试用）。
+// Active 返回当前正在处理批次的会话数（指标与测试用）。
+// 空闲会话不计入，池里睡着的协程也不计入。
 func (s *Stage) Active() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.active
+	return len(s.inflight)
 }
 
-// Wait 等待所有在跑的 worker 退出。调用前应先关闭上游缓冲。
+// Workers 返回当前池里的协程数（指标与测试用）。
+func (s *Stage) Workers() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.workers
+}
+
+// Wait 等待池里所有协程退出。调用前应先关闭上游缓冲并调用 Close。
 func (s *Stage) Wait() {
 	s.wg.Wait()
 }
 
-// Close 标记阶段关闭：不再启动新 worker；在跑的 worker 由缓冲 Close 唤醒。
+// Close 标记阶段关闭并唤醒池里所有等活的协程。正在处理的那一批会跑完。
 func (s *Stage) Close() {
 	s.mu.Lock()
 	s.closed = true
+	s.cond.Broadcast()
 	s.mu.Unlock()
 }

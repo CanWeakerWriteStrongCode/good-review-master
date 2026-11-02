@@ -30,7 +30,6 @@ type pipelineSection struct {
 	PerChatCapacity *int `yaml:"per_chat_capacity"`
 	GlobalCapacity  *int `yaml:"global_capacity"`
 
-	IdleTTLSec      *int `yaml:"idle_ttl_sec"`
 	DrainTimeoutSec *int `yaml:"drain_timeout_sec"`
 }
 
@@ -47,7 +46,6 @@ const (
 	defaultStageRetries     = 3
 	defaultPerChatCapacity  = 500
 	defaultGlobalCapacity   = 5000
-	defaultIdleTTLSec       = 600
 	defaultDrainTimeoutSec  = 10
 )
 
@@ -78,7 +76,6 @@ func (s *pipelineSection) SetDefaults() {
 	set(&s.AgentRetries, defaultStageRetries)
 	set(&s.PerChatCapacity, defaultPerChatCapacity)
 	set(&s.GlobalCapacity, defaultGlobalCapacity)
-	set(&s.IdleTTLSec, defaultIdleTTLSec)
 	set(&s.DrainTimeoutSec, defaultDrainTimeoutSec)
 }
 
@@ -111,7 +108,6 @@ func (s *pipelineSection) Validate() error {
 		{"pipeline.asset_retries", s.AssetRetries},
 		{"pipeline.agent_linger_ms", s.AgentLingerMs},
 		{"pipeline.agent_retries", s.AgentRetries},
-		{"pipeline.idle_ttl_sec", s.IdleTTLSec},
 		{"pipeline.drain_timeout_sec", s.DrainTimeoutSec},
 	}
 	for _, item := range nonNegative {
@@ -140,7 +136,6 @@ func (s *pipelineSection) convert() PipelineConf {
 		AgentRetries:     *s.AgentRetries,
 		PerChatCapacity:  *s.PerChatCapacity,
 		GlobalCapacity:   *s.GlobalCapacity,
-		IdleTTL:          sec(s.IdleTTLSec),
 		DrainTimeout:     sec(s.DrainTimeoutSec),
 	}
 }

@@ -68,7 +68,6 @@ type PipelineConf struct {
 	AgentRetries     int
 	PerChatCapacity  int
 	GlobalCapacity   int
-	IdleTTL          time.Duration // 0 = 不回收会话 worker
 	DrainTimeout     time.Duration // 0 = 关停不等待存量
 }
 

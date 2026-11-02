@@ -282,9 +282,9 @@ good-review-master/
 │   ├── schema.go             # 建表 + 版本迁移
 │   └── messages.go / anchors.go / directory.go / persona.go / images.go / jobs.go / ops.go
 ├── kv/                       # 进程内 KV（Ristretto：成员名、群名）
-├── pipeline/                 # 编排：三段缓冲 + 每会话 worker + 重试/死信
+├── pipeline/                 # 编排：三段缓冲 + 协程池 + 重试/死信
 │   ├── buffer.go             # 每会话分区缓冲（有界，满则回 503）
-│   ├── worker.go             # 批量 + linger + 并发上限 + IdleTTL 回收
+│   ├── worker.go             # 协程池 + 就绪队列 + 批量/linger + 每会话串行
 │   └── contracts.go          # Item{ID, Key, Stage, Body, Attempts}
 ├── llm/
 │   └── llm.go                # 大模型客户端（go-openai SDK，连接池，类型安全）

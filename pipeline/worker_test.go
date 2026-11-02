@@ -11,7 +11,7 @@ import (
 
 func stageConfig(batch, concurrency, retries int) func() StageConfig {
 	return func() StageConfig {
-		return StageConfig{Batch: batch, Concurrency: concurrency, Retries: retries, IdleTTL: time.Minute}
+		return StageConfig{Batch: batch, Concurrency: concurrency, Retries: retries}
 	}
 }
 
@@ -132,15 +132,15 @@ func TestStage批量取数与重试死信(t *testing.T) {
 	}
 }
 
-func TestStage空闲回收后重新拉起(t *testing.T) {
-	buf := NewMemoryBuffer(10, 10)
+// 名额只有 1 个时，已经闲下来的会话不该继续占着名额。
+// 老实现里 worker 会挂着等数据直到 IdleTTL，这里 b、c 要等到超时才被处理。
+func TestStage空闲会话不占名额(t *testing.T) {
+	buf := NewMemoryBuffer(10, 100)
 	handled := make(chan string, 10)
 	stage := NewStage(StageOptions{
 		Name:   "test",
 		Buffer: buf,
-		Config: func() StageConfig {
-			return StageConfig{Batch: 1, Concurrency: 1, IdleTTL: 30 * time.Millisecond}
-		},
+		Config: stageConfig(1, 1, 0),
 		Handler: func(ctx context.Context, key string, items []Item) []FailedItem {
 			for _, item := range items {
 				handled <- item.ID
@@ -152,35 +152,118 @@ func TestStage空闲回收后重新拉起(t *testing.T) {
 	defer cancel()
 	stage.Run(ctx)
 
-	put := func(id string) {
-		item := mustItem(t, StageSync, "k", id, struct{}{})
+	put := func(key, id string) {
+		item := mustItem(t, StageSync, key, id, struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}
-		stage.Submit("k")
-	}
-	put("one")
-	select {
-	case <-handled:
-	case <-time.After(time.Second):
-		t.Fatal("第一条未被处理")
+		stage.Submit(key)
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for stage.Active() != 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if stage.Active() != 0 {
-		t.Fatal("空闲后 worker 应退出")
-	}
-
-	put("two")
+	// a 先干完活然后闲着，此时它不该占着唯一的名额。
+	put("a", "a1")
 	select {
 	case id := <-handled:
-		if id != "sync|k|two" {
-			t.Fatalf("重新拉起后处理了 %q", id)
+		if id != "sync|a|a1" {
+			t.Fatalf("处理了 %q", id)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("空闲回收后新消息未重新拉起 worker")
+		t.Fatal("a 未被处理")
+	}
+
+	put("b", "b1")
+	put("c", "c1")
+	got := map[string]bool{}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(got) < 2 && time.Now().Before(deadline) {
+		select {
+		case id := <-handled:
+			got[id] = true
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if !got["sync|b|b1"] || !got["sync|c|c1"] {
+		t.Fatalf("空闲会话占住了名额，b/c 没被处理：%v", got)
+	}
+}
+
+// 并发数改了池子跟着变，不用重启进程。
+func TestStage并发数热调整(t *testing.T) {
+	buf := NewMemoryBuffer(10, 100)
+	var limit atomic.Int32
+	limit.Store(1)
+	stage := NewStage(StageOptions{
+		Name:   "test",
+		Buffer: buf,
+		Config: func() StageConfig {
+			return StageConfig{Batch: 1, Concurrency: int(limit.Load())}
+		},
+		Handler: func(context.Context, string, []Item) []FailedItem { return nil },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stage.Run(ctx)
+	if got := stage.Workers(); got != 1 {
+		t.Fatalf("初始协程数 = %d", got)
+	}
+
+	limit.Store(4)
+	if err := buf.Put(ctx, mustItem(t, StageSync, "k", "1", struct{}{})); err != nil {
+		t.Fatal(err)
+	}
+	stage.Submit("k")
+	if got := stage.Workers(); got != 4 {
+		t.Fatalf("调大后协程数 = %d", got)
+	}
+
+	limit.Store(2)
+	stage.Submit("k")
+	deadline := time.Now().Add(time.Second)
+	for stage.Workers() != 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := stage.Workers(); got != 2 {
+		t.Fatalf("调小后协程数 = %d", got)
+	}
+}
+
+// 池里有多个协程，但同一个会话同时只能有一个在处理。
+func TestStage同一会话不并发(t *testing.T) {
+	buf := NewMemoryBuffer(100, 100)
+	var running, overlapped atomic.Int32
+	stage := NewStage(StageOptions{
+		Name:   "test",
+		Buffer: buf,
+		Config: stageConfig(1, 3, 0),
+		Handler: func(ctx context.Context, key string, items []Item) []FailedItem {
+			if running.Add(1) > 1 {
+				overlapped.Store(1)
+			}
+			time.Sleep(3 * time.Millisecond)
+			running.Add(-1)
+			return nil
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stage.Run(ctx)
+
+	for i := 0; i < 20; i++ {
+		item := mustItem(t, StageSync, "same", string(rune('a'+i)), struct{}{})
+		if err := buf.Put(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		stage.Submit("same")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for buf.Len("same") > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if buf.Len("same") != 0 {
+		t.Fatalf("积压未处理完，剩余 %d", buf.Len("same"))
+	}
+	if overlapped.Load() == 1 {
+		t.Fatal("同一个会话被两个协程同时处理")
 	}
 }

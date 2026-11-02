@@ -10,7 +10,7 @@ func TestApplyRuntimeSettings覆盖与显式零(t *testing.T) {
 	base := &Config{
 		Pipeline: PipelineConf{
 			SyncBatch: 20, SyncLinger: 20 * time.Millisecond, SyncConcurrency: 4,
-			AgentRetries: 3, IdleTTL: 10 * time.Minute, DrainTimeout: 10 * time.Second,
+			AgentRetries: 3, DrainTimeout: 10 * time.Second,
 		},
 		Assets: AssetsConf{
 			BackfillEnabled: true, BackfillInterval: 60 * time.Second,
@@ -18,7 +18,7 @@ func TestApplyRuntimeSettings覆盖与显式零(t *testing.T) {
 		},
 	}
 	raw := map[string]json.RawMessage{
-		"pipeline": json.RawMessage(`{"sync_batch":7,"sync_linger_ms":0,"sync_concurrency":-1,"agent_retries":0,"idle_ttl_sec":0}`),
+		"pipeline": json.RawMessage(`{"sync_batch":7,"sync_linger_ms":0,"sync_concurrency":-1,"agent_retries":0,"drain_timeout_sec":0}`),
 		"assets":   json.RawMessage(`{"backfill_enabled":false,"message_budget_sec":0,"tag_concurrency":5}`),
 	}
 	merged, err := ApplyRuntimeSettings(base, raw)
@@ -34,11 +34,8 @@ func TestApplyRuntimeSettings覆盖与显式零(t *testing.T) {
 	if merged.Pipeline.SyncConcurrency != 4 {
 		t.Fatalf("负数应被忽略，实际 %d", merged.Pipeline.SyncConcurrency)
 	}
-	if merged.Pipeline.AgentRetries != 0 || merged.Pipeline.IdleTTL != 0 {
+	if merged.Pipeline.AgentRetries != 0 || merged.Pipeline.DrainTimeout != 0 {
 		t.Fatalf("显式 0 应生效：%+v", merged.Pipeline)
-	}
-	if merged.Pipeline.DrainTimeout != 10*time.Second {
-		t.Fatalf("未覆盖的值应保留：%v", merged.Pipeline.DrainTimeout)
 	}
 	if merged.Assets.BackfillEnabled || merged.Assets.MessageBudget != 0 || merged.Assets.TagConcurrency != 5 {
 		t.Fatalf("assets = %+v", merged.Assets)

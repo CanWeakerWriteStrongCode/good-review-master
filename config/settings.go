@@ -51,7 +51,6 @@ type runtimePipelineSettings struct {
 	AgentLingerMs    *int `json:"agent_linger_ms"`
 	AgentConcurrency *int `json:"agent_concurrency"`
 	AgentRetries     *int `json:"agent_retries"`
-	IdleTTLSec       *int `json:"idle_ttl_sec"`
 	DrainTimeoutSec  *int `json:"drain_timeout_sec"`
 }
 
@@ -88,7 +87,6 @@ func (s runtimePipelineSettings) applyTo(out *PipelineConf) {
 	applyMs(s.AgentLingerMs, &out.AgentLinger)
 	applyPositive(s.AgentConcurrency, &out.AgentConcurrency)
 	applyNonNegative(s.AgentRetries, &out.AgentRetries)
-	applySec(s.IdleTTLSec, &out.IdleTTL)
 	applySec(s.DrainTimeoutSec, &out.DrainTimeout)
 }
 

@@ -116,7 +116,7 @@ type EnrichedMessage struct {
 | 中层 | account 账号 | 账号身份（平台 + 账号类型 + 账号）、开通、恢复、昵称 | `workspace`（身份部分） |
 | 中层 | policy 策略 | 群白名单、工作空间名单、只记录不回复这三类判断 | 从 `config` 和 `workspace` 抽出 |
 | 中层 | knowledge 分析 | **留位，不建**。信息流 → 摘要/标签 | 无 |
-| 编排 | pipeline 流水线 | 三段缓冲、每会话一个 worker、批量/linger/并发/重试/死信 | `pipeline` `bot` |
+| 编排 | pipeline 流水线 | 三段缓冲、协程池、每会话串行、批量/linger/重试/死信 | `pipeline` `bot` |
 | 编排 | agents Agent | **留位，不建**。主聊天 Agent、工作 Agent 的调度 | 无（现在由 `speech` 顶替） |
 | 编排 | runtime 运行时 | Wire 装配、启动顺序、优雅关闭、派生配置 | `app` `cmd/good-review` |
 | 编排 | admin 管理面 | 登录、账号/群/诊断/调试接口、内嵌前端 | `web/server` |
@@ -241,7 +241,7 @@ policy.IsRecordOnly(cfg, chID)       // 不支持 "*"，全静默等于没有机
 |---|---|
 | `Item` | `{ID, Key, Stage, Body, Attempts}`。`Body` 是 JSON，所以以后换成消息队列时业务代码不用改 |
 | `Buffer` | 每会话分区的内存缓冲，容量 `PerChatCapacity` / `GlobalCapacity`，满了 `Put` 返回错误让入站层回 503 |
-| `Stage` | 批量 + linger + 并发上限 + 重试 + `IdleTTL` 回收 worker。同一会话顺序由分区键保证，不同会话并行 |
+| `Stage` | 固定协程池 + 就绪队列，批量 + linger + 重试。同一会话由 `inflight` 标记保证串行，不同会话并行；并发数就是池子大小 |
 | 死信 | 超过重试上限的落 `alerts` 表，`Kind = "dead_letter_" + stage`，`Detail` 里带完整 item body |
 
 **边界**：`pipeline` 只管"怎么排队、怎么重试、怎么隔离失败"。它不判断"这条消息要不要回"、"这个群放不放行"。现在 `bot/stages.go` 里那些判断要挪走：

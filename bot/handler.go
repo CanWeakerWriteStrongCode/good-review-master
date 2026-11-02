@@ -12,8 +12,8 @@ import (
 
 // Bot 机器人运行时：IM 事件 → B1 → Stage 1 → B2 → Stage 2 → B3 → Stage 3。
 //
-// 每个阶段都是“每会话一个 worker、全局并发受限”的消费者（pipeline.Stage）；
-// 同一群的顺序由分区键保证，不同群之间可以并行。
+// 每个阶段都是一个固定大小的协程池（pipeline.Stage）：同一个会话在阶段内串行，
+// 不同会话并行；会话闲着不占协程。
 type Bot struct {
 	cfg        config.Snapshot
 	workspaces *workspace.Manager
@@ -120,7 +120,7 @@ func (b *Bot) syncConfig() pipeline.StageConfig {
 	p := b.cfg().Pipeline
 	return pipeline.StageConfig{
 		Batch: p.SyncBatch, Linger: p.SyncLinger,
-		Concurrency: p.SyncConcurrency, Retries: p.SyncRetries, IdleTTL: p.IdleTTL,
+		Concurrency: p.SyncConcurrency, Retries: p.SyncRetries,
 	}
 }
 
@@ -128,7 +128,7 @@ func (b *Bot) assetConfig() pipeline.StageConfig {
 	p := b.cfg().Pipeline
 	return pipeline.StageConfig{
 		Batch: p.AssetBatch, Linger: p.AssetLinger,
-		Concurrency: p.AssetConcurrency, Retries: p.AssetRetries, IdleTTL: p.IdleTTL,
+		Concurrency: p.AssetConcurrency, Retries: p.AssetRetries,
 	}
 }
 
@@ -136,7 +136,7 @@ func (b *Bot) agentConfig() pipeline.StageConfig {
 	p := b.cfg().Pipeline
 	return pipeline.StageConfig{
 		Batch: p.AgentBatch, Linger: p.AgentLinger,
-		Concurrency: p.AgentConcurrency, Retries: p.AgentRetries, IdleTTL: p.IdleTTL,
+		Concurrency: p.AgentConcurrency, Retries: p.AgentRetries,
 	}
 }
 
