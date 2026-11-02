@@ -13,8 +13,8 @@
 //	messages.go   messages（消息台账，也是发给大模型的 message_id 来源）
 //	images.go     image_notes（全局图库，不带 workspace_id）
 //	anchors.go    anchors（上次发出去的窗口首尾，前缀缓存的命门）
-//	directory.go  identities / members / groups / 两张 *_info_history
-//	persona.go    group_personas / workspace_profile
+//	directory.go  members / groups / 两张 *_info_history
+//	persona.go    workspace_profile（群人格在 groups.persona_keyword 列上）
 //	jobs.go       asset_tag_jobs（Stage 2 的补标签欠条）
 //	ops.go        send_ledger / alerts / settings / 工作空间列表
 //

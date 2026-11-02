@@ -476,7 +476,7 @@ type SendResult struct {
 - 复杂查询保留 Raw：`LoadRecent` 的 `ROW_NUMBER() OVER`；方言敏感的 upsert 用 `clause.OnConflict`，MySQL 的 `VALUES()` 差异后续在方言层处理。
 - 表边界：
   - 全局表（无 `workspace_id`）：`image_notes`、未来的全局配置/统计；
-  - 工作空间表（有 `workspace_id`）：`messages`、`members`、`member_info_history`、`groups`、`group_info_history`、`anchors`、`group_personas`、`workspace_profile`、`asset_tag_jobs`；
+  - 工作空间表（有 `workspace_id`）：`messages`、`members`、`member_info_history`、`groups`（群名、机器人身份、当前人格都在这一行）、`group_info_history`、`anchors`、`workspace_profile`、`asset_tag_jobs`；
   - 不使用空 `workspace_id` 表示全局。
 
 ### 8.2 workspace 画像表（替换 meta）

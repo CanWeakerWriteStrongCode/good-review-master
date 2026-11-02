@@ -586,6 +586,91 @@ func TestV11升级把身份并进群档案(t *testing.T) {
 	}
 }
 
+// TestV12升级去掉群人格表 v13 把 group_personas 整张表去掉，人格改存 groups.persona_keyword。
+// 旧表里的关键字不搬：升级后那几行直接没了，但群档案本身（群名/身份/计数）必须原样留着，
+// 补出来的列得能正常读写。
+func TestV12升级去掉群人格表(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE groups (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL DEFAULT 'group', self_user_id TEXT NOT NULL DEFAULT '',
+			message_count INTEGER NOT NULL DEFAULT 0, member_count INTEGER NOT NULL DEFAULT 0,
+			last_ts INTEGER NOT NULL DEFAULT 0, extra TEXT NOT NULL DEFAULT '{}',
+			updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, group_id))`,
+		`CREATE TABLE group_personas (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, keyword TEXT NOT NULL,
+			PRIMARY KEY (workspace_id, group_id))`,
+		`INSERT INTO groups
+			(workspace_id, group_id, name, type, self_user_id, message_count, member_count, last_ts, updated_at)
+			VALUES ('qq_a', 'g1', '群一', 'group', 'openid-a', 2, 1, 300, 500)`,
+		`INSERT INTO group_personas (workspace_id, group_id, keyword) VALUES
+			('qq_a', 'g1', '锐评下'),
+			('qq_a', 'g9', '温柔')`,
+		`PRAGMA user_version = 12`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("造 v12 库失败：%v", err)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+
+	var left int
+	st.db.Raw(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'group_personas'`).Scan(&left)
+	if left != 0 {
+		t.Fatal("group_personas 表应已删掉")
+	}
+
+	// 旧人格不搬，也不该凭空补出群档案行：sqlite_master 里不见了、groups 还是原来那一行。
+	var rows int
+	st.db.Raw(`SELECT COUNT(*) FROM groups WHERE workspace_id = 'qq_a'`).Scan(&rows)
+	if rows != 1 {
+		t.Fatalf("groups 行数应保持 1，实际 %d", rows)
+	}
+
+	scope := st.Scope("qq_a")
+	if personas, err := scope.LoadGroupPersonas(); err != nil || len(personas) != 0 {
+		t.Fatalf("升级后不应有人格残留：%+v, %v", personas, err)
+	}
+
+	// 原有档案不能被补列冲掉。
+	var name, selfID string
+	var messages, last int64
+	if err := st.db.Raw(`SELECT name, self_user_id, message_count, last_ts FROM groups
+		WHERE workspace_id = 'qq_a' AND group_id = 'g1'`).Row().Scan(&name, &selfID, &messages, &last); err != nil {
+		t.Fatalf("读 g1 档案失败：%v", err)
+	}
+	if name != "群一" || selfID != "openid-a" || messages != 2 || last != 300 {
+		t.Fatalf("g1 升级后档案不对：name=%q self=%q messages=%d last=%d", name, selfID, messages, last)
+	}
+
+	// 补出来的列能正常读写：#切换人格 → 读回来 → #取消人格，档案行留着。
+	scope.SaveGroupPersona("g1", "锐评下")
+	if personas, err := scope.LoadGroupPersonas(); err != nil || personas["g1"] != "锐评下" {
+		t.Fatalf("写入后 personas = %+v, %v", personas, err)
+	}
+	scope.DeleteGroupPersona("g1")
+	if personas, _ := scope.LoadGroupPersonas(); len(personas) != 0 {
+		t.Fatalf("取消人格后 personas = %+v", personas)
+	}
+	var remains int
+	st.db.Raw(`SELECT COUNT(*) FROM groups WHERE workspace_id = 'qq_a' AND group_id = 'g1'`).Scan(&remains)
+	if remains != 1 {
+		t.Fatal("取消人格不该删掉群档案行")
+	}
+}
+
 // Test身份与群档案共用一行 并表之后同一行有两个写入者：哪个先到都不能清掉对方，
 // 而且群名第一次写入仍然要记进历史（判断“新行”不能靠 updated_at）。
 func Test身份与群档案共用一行(t *testing.T) {

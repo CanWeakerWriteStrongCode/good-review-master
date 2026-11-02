@@ -112,7 +112,8 @@ func (s *Scope) ResetData() error {
 	if err != nil {
 		return err
 	}
-	for _, table := range []string{"messages", "anchors", "members", "groups", "group_personas"} {
+	// groups 一张表就带着群名、身份和人格（v12 / v13 先后并进来），不用单独清。
+	for _, table := range []string{"messages", "anchors", "members", "groups"} {
 		if err := s.store.db.Exec(`DELETE FROM `+table+` WHERE workspace_id = ?`, s.workspaceID).Error; err != nil {
 			s.store.noteFailure("清空 "+table, err)
 			return err

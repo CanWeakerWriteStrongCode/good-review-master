@@ -29,7 +29,8 @@ const (
 	//     面板群列表只读这一张表，不再扫 messages 全表 GROUP BY。
 	// v12 identities 并进 groups.self_user_id：两张表都是每会话一行，
 	//     没必要分开存，并过来后面板查询少一次 JOIN、启动恢复少一次全表查询。
-	schemaVersion = 12
+	// v13 group_personas 直接去掉，人格改存 groups.persona_keyword（旧值不搬）。
+	schemaVersion = 13
 )
 
 // ensureFile 先以 0600 建出文件再交给驱动：消息原文与昵称属于隐私数据。
@@ -62,6 +63,8 @@ func migrate(db *gorm.DB, path string) error {
 		logutil.Warn("state.db 是旧版结构（无 workspace_id），重建档案表", "path", path, "version", version)
 	}
 	if version < 2 {
+		// group_personas 现在的库里已经没有了，但 v1 的库里有，而且没有 workspace_id 列：
+		// 留着它会让 v13 的合并语句读不到 workspace_id，所以这里照旧先清掉。
 		for _, table := range []string{
 			"messages", "anchors", "identities", "members", "group_personas", "meta", "groups",
 			"workspace_profile", "member_info_history", "group_info_history",
@@ -106,22 +109,17 @@ func migrate(db *gorm.DB, path string) error {
 			PRIMARY KEY (workspace_id, group_id, user_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups (
-			workspace_id  TEXT NOT NULL,
-			group_id      TEXT NOT NULL,
-			name          TEXT NOT NULL DEFAULT '',
-			type          TEXT NOT NULL DEFAULT 'group',
-			self_user_id  TEXT NOT NULL DEFAULT '',
-			message_count INTEGER NOT NULL DEFAULT 0,
-			member_count  INTEGER NOT NULL DEFAULT 0,
-			last_ts       INTEGER NOT NULL DEFAULT 0,
-			extra         TEXT NOT NULL DEFAULT '{}',
-			updated_at    INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, group_id)
-		)`,
-		`CREATE TABLE IF NOT EXISTS group_personas (
-			workspace_id TEXT NOT NULL,
-			group_id     TEXT NOT NULL,
-			keyword      TEXT NOT NULL,
+			workspace_id    TEXT NOT NULL,
+			group_id        TEXT NOT NULL,
+			name            TEXT NOT NULL DEFAULT '',
+			type            TEXT NOT NULL DEFAULT 'group',
+			self_user_id    TEXT NOT NULL DEFAULT '',
+			persona_keyword TEXT NOT NULL DEFAULT '',
+			message_count   INTEGER NOT NULL DEFAULT 0,
+			member_count    INTEGER NOT NULL DEFAULT 0,
+			last_ts         INTEGER NOT NULL DEFAULT 0,
+			extra           TEXT NOT NULL DEFAULT '{}',
+			updated_at      INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS workspace_profile (
@@ -286,6 +284,17 @@ func migrate(db *gorm.DB, path string) error {
 		}
 		if err := mergeIdentitiesIntoGroups(db); err != nil {
 			return err
+		}
+	}
+	// v13：group_personas 整个不要了，人格改存 groups.persona_keyword。
+	// 老库的 groups 不会因为建表语句变了就多出列（CREATE TABLE IF NOT EXISTS 不动已存在的表），
+	// 所以必须显式补；旧表里的关键字不搬 —— 就几个群的人格设置，升级后重新 #切换人格 一次即可。
+	if version < 13 {
+		if err := ensureColumn(db, "groups", "persona_keyword", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if err := db.Exec(`DROP TABLE IF EXISTS group_personas`).Error; err != nil {
+			return fmt.Errorf("删除旧 group_personas 表失败：%w", err)
 		}
 	}
 

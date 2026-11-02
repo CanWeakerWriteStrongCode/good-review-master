@@ -1,6 +1,9 @@
 package state
 
-// group_personas / workspace_profile：这个群用的哪套人格，这个账号是谁。
+// persona.go：这个群用的哪套人格，这个账号是谁。
+//
+// 群人格存在 groups.persona_keyword（v13 起从 group_personas 表并进来）；
+// 工作空间画像仍是单独一张表。
 
 import (
 	"errors"
@@ -10,14 +13,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
-
-type groupPersonaRow struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	GroupID     string `gorm:"column:group_id;primaryKey"`
-	Keyword     string `gorm:"column:keyword"`
-}
-
-func (groupPersonaRow) TableName() string { return "group_personas" }
 
 // WorkspaceProfile 是工作空间画像：常用字段建列，其余进 Extra JSON。
 type WorkspaceProfile struct {
@@ -36,35 +31,47 @@ type WorkspaceProfile struct {
 
 func (WorkspaceProfile) TableName() string { return "workspace_profile" }
 
-// SaveGroupPersona 记录某群当前人格的源关键字。
+// SaveGroupPersona 记录某群当前人格的源关键字（写 groups.persona_keyword）。
+//
+// 用 UPSERT 而不是 UPDATE：切换人格要求先命中一个带人格的关键字，那时群里
+// 通常已经有消息、groups 行早建出来了；但「一条消息都没存过」的极端情况
+// 也不该把人格丢掉。updated_at 写 0，表示档案本身还没写过。
 func (s *Scope) SaveGroupPersona(groupID, keyword string) {
 	if s == nil || s.store == nil || s.store.closed.Load() {
 		return
 	}
-	row := groupPersonaRow{WorkspaceID: s.workspaceID, GroupID: groupID, Keyword: keyword}
-	if err := s.store.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+	if err := s.store.db.Exec(`INSERT INTO groups
+			(workspace_id, group_id, type, persona_keyword, extra, updated_at)
+		VALUES (?, ?, CASE WHEN ? LIKE 'private:%' THEN 'private' ELSE 'group' END, ?, '{}', 0)
+		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+			persona_keyword = excluded.persona_keyword`,
+		s.workspaceID, groupID, groupID, keyword).Error; err != nil {
 		s.store.noteFailure("保存群人格", err)
 	}
 }
 
-// DeleteGroupPersona 清除某群人格。
+// DeleteGroupPersona 清除某群人格（#取消人格）。群档案行保留，只把关键字清空。
 func (s *Scope) DeleteGroupPersona(groupID string) {
 	if s == nil || s.store == nil || s.store.closed.Load() {
 		return
 	}
-	if err := s.store.db.Where("workspace_id = ? AND group_id = ?", s.workspaceID, groupID).
-		Delete(&groupPersonaRow{}).Error; err != nil {
+	if err := s.store.db.Exec(`UPDATE groups SET persona_keyword = ''
+		WHERE workspace_id = ? AND group_id = ?`, s.workspaceID, groupID).Error; err != nil {
 		s.store.noteFailure("删除群人格", err)
 	}
 }
 
-// LoadGroupPersonas 返回 group → 人格关键字。
+// LoadGroupPersonas 返回 group → 人格关键字（只取设过人格的行）。
 func (s *Scope) LoadGroupPersonas() (map[string]string, error) {
 	if s == nil || s.store == nil {
 		return nil, nil
 	}
-	var rows []groupPersonaRow
-	if err := s.store.db.Where("workspace_id = ?", s.workspaceID).Find(&rows).Error; err != nil {
+	var rows []struct {
+		GroupID string `gorm:"column:group_id"`
+		Keyword string `gorm:"column:persona_keyword"`
+	}
+	if err := s.store.db.Raw(`SELECT group_id, persona_keyword FROM groups
+		WHERE workspace_id = ? AND persona_keyword <> ''`, s.workspaceID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make(map[string]string, len(rows))

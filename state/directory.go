@@ -43,12 +43,15 @@ type groupRow struct {
 	Type string `gorm:"column:type"`
 	// SelfUserID 本群学到的机器人 user_id（QQ 官方是群作用域 openid）。
 	// 用来在 members 里认出哪一行是机器人自己；哨兵值不可用于 @ 比较。
-	SelfUserID   string `gorm:"column:self_user_id"`
-	MessageCount int    `gorm:"column:message_count"`
-	MemberCount  int    `gorm:"column:member_count"`
-	LastTS       int64  `gorm:"column:last_ts"`
-	Extra        string `gorm:"column:extra"`
-	UpdatedAt    int64  `gorm:"column:updated_at"`
+	SelfUserID string `gorm:"column:self_user_id"`
+	// PersonaKeyword 本群当前人格的源关键字（#切换人格 设置，空串表示没有）。
+	// 只由 persona.go 读写，这里列出来是为了让结构体和表列对得上。
+	PersonaKeyword string `gorm:"column:persona_keyword"`
+	MessageCount   int    `gorm:"column:message_count"`
+	MemberCount    int    `gorm:"column:member_count"`
+	LastTS         int64  `gorm:"column:last_ts"`
+	Extra          string `gorm:"column:extra"`
+	UpdatedAt      int64  `gorm:"column:updated_at"`
 }
 
 func (groupRow) TableName() string { return "groups" }
