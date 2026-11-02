@@ -1,6 +1,8 @@
 export interface GroupInfo {
   group_id: string
   group_name: string
+  /** 会话类型：group = 群聊，private = 私聊 */
+  type?: string
   /** 所属工作空间（稳定 ID / 展示名） */
   workspace_id?: string
   workspace_name?: string
@@ -8,11 +10,13 @@ export interface GroupInfo {
   self_id: string
   /** 账号昵称；解析不到时为空 */
   account_name: string
+  /** 该群在库里的消息总条数 */
   message_count: number
   /** 已收录成员数（说过话或被 @ 过的人） */
   member_count: number
   last_activity: string
-  cached: boolean
+  /** 库里有这个群的消息记录；false 时整块统计不显示 */
+  has_messages: boolean
 }
 
 /** 一个机器人账号的工作空间汇总 */
@@ -22,7 +26,8 @@ export interface WorkspaceInfo {
   platform_id: string
   self_ids: string[]
   group_count: number
-  cached_group_count: number
+  /** 库里有消息记录的群数 */
+  active_group_count: number
   message_count: number
   last_activity: string
 }
@@ -32,14 +37,13 @@ export interface AccountInfo {
   self_id: string
   nickname: string
   group_count: number
-  cached_group_count: number
+  active_group_count: number
   message_count: number
   last_activity: string
 }
 
 export interface BotStatus {
   bot_nickname: string
-  api_key: string
   group_count: number
   account_count: number
   allow_all_groups: boolean

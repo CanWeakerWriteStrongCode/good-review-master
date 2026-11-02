@@ -169,9 +169,9 @@ Gin + JWT + embedded Vue SPA for group message monitoring.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/api/login` | No | Returns JWT token (validates username/password) |
-| GET | `/api/status` | JWT | Nickname, Masked API Key, group count |
+| GET | `/api/status` | JWT | Nickname, account count, group count |
 | GET | `/api/groups` | JWT | Per-group info with activity stats |
-| GET | `/api/groups/:id` | JWT | Cached messages for one group |
+| GET | `/api/groups/:id` | JWT | Stored messages for one group (latest 500 from state.db) |
 | POST | `/api/logout` | JWT | No-op (stateless token) |
 
 `web_username` / `web_password` are required whenever the web panel is enabled — there is no password-less mode (the bot exits at startup if they're missing). Set `web_port` to 0 or negative to disable the web panel entirely.

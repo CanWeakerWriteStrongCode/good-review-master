@@ -423,6 +423,227 @@ func TestSaveMessage返回自增行号(t *testing.T) {
 	}
 }
 
+// TestV10升级回填群统计 v10 的 groups 只有群名，面板每次打开都要扫 messages 全表算条数。
+// v11 把条数/成员数/最后时间存进 groups，升级时得拿存量数据回填一遍；
+// 只发过消息、从没建过档案的会话（包括私聊）也要补出行来，否则升级后面板上就少了。
+func TestV10升级回填群统计(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			user_id TEXT NOT NULL, content TEXT NOT NULL, images TEXT NOT NULL DEFAULT '[]',
+			image_ids TEXT NOT NULL DEFAULT '[]', reply_to TEXT NOT NULL DEFAULT '',
+			ref_idx TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL,
+			UNIQUE (workspace_id, group_id, message_id))`,
+		`CREATE TABLE members (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
+			extra TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id, user_id))`,
+		`CREATE TABLE groups (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+			extra TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id))`,
+		`INSERT INTO messages (workspace_id, group_id, message_id, user_id, content, ts) VALUES
+			('qq_a', 'g1', 'm1', 'u1', '一', 100),
+			('qq_a', 'g1', 'm2', 'u2', '二', 300),
+			('qq_a', 'private:u9', 'm3', 'u9', '私聊', 200)`,
+		`INSERT INTO members (workspace_id, group_id, user_id, updated_at) VALUES
+			('qq_a', 'g1', 'u1', 1), ('qq_a', 'g1', 'u2', 1)`,
+		`INSERT INTO groups (workspace_id, group_id, name, updated_at)
+			VALUES ('qq_a', 'g1', '群一', 1)`,
+		`PRAGMA user_version = 10`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("造 v10 库失败：%v", err)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+
+	list, err := st.Scope("qq_a").GroupOverviews()
+	if err != nil {
+		t.Fatalf("GroupOverviews: %v", err)
+	}
+	byID := make(map[string]GroupOverview, len(list))
+	for _, item := range list {
+		byID[item.GroupID] = item
+	}
+	if len(byID) != 2 {
+		t.Fatalf("升级后应有群 + 私聊两行：%+v", byID)
+	}
+	if g := byID["g1"]; g.Type != "group" || g.MessageCount != 2 || g.MemberCount != 2 ||
+		g.LastTime != 300 || g.Name != "群一" {
+		t.Fatalf("g1 回填不对：%+v", g)
+	}
+	if p := byID["private:u9"]; p.Type != "private" || p.MessageCount != 1 ||
+		p.MemberCount != 0 || p.LastTime != 200 {
+		t.Fatalf("私聊回填不对：%+v", p)
+	}
+
+	// 升级后触发器要开始工作：再来一条新消息，条数接着加。
+	st.Scope("qq_a").SaveMessage(conversation.Message{MessageID: "m4", GroupID: "g1", Content: "新", Time: 400})
+	waitQueue(t, st)
+	list, err = st.Scope("qq_a").GroupOverviews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range list {
+		if item.GroupID == "g1" && (item.MessageCount != 3 || item.LastTime != 400) {
+			t.Fatalf("升级后计数不跟着新消息走：%+v", item)
+		}
+	}
+}
+
+// TestV11升级把身份并进群档案 v11 之前 identities 是单独一张表，主键和 groups
+// 一样都是 (workspace_id, group_id)。v12 并成 groups.self_user_id：升级时既要把值搬过来，
+// 也要给「只有身份、没有消息」的会话补出行，否则升级后身份就丢了。
+func TestV11升级把身份并进群档案(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE groups (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL DEFAULT 'group', message_count INTEGER NOT NULL DEFAULT 0,
+			member_count INTEGER NOT NULL DEFAULT 0, last_ts INTEGER NOT NULL DEFAULT 0,
+			extra TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id))`,
+		`CREATE TABLE identities (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, self_user_id TEXT NOT NULL,
+			learned_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, group_id))`,
+		`INSERT INTO groups
+			(workspace_id, group_id, name, type, message_count, member_count, last_ts, updated_at)
+			VALUES ('qq_a', 'g1', '群一', 'group', 2, 1, 300, 500)`,
+		// g1 有档案也有身份；g9 只有身份没有消息，升级后得补出一行。
+		`INSERT INTO identities (workspace_id, group_id, self_user_id, learned_at) VALUES
+			('qq_a', 'g1', 'openid-a', 100),
+			('qq_a', 'g9', 'openid-x', 200)`,
+		`PRAGMA user_version = 11`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("造 v11 库失败：%v", err)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+
+	var left int
+	st.db.Raw(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'identities'`).Scan(&left)
+	if left != 0 {
+		t.Fatal("identities 表应已删掉")
+	}
+
+	list, err := st.Scope("qq_a").GroupOverviews()
+	if err != nil {
+		t.Fatalf("GroupOverviews: %v", err)
+	}
+	byID := make(map[string]GroupOverview, len(list))
+	for _, item := range list {
+		byID[item.GroupID] = item
+	}
+	if len(byID) != 2 {
+		t.Fatalf("升级后应有 g1 和 g9 两行：%+v", byID)
+	}
+	// 原有的计数和群名不能被身份搬移冲掉。
+	if g := byID["g1"]; g.SelfID != "openid-a" || g.Name != "群一" ||
+		g.MessageCount != 2 || g.MemberCount != 1 || g.LastTime != 300 {
+		t.Fatalf("g1 迁移不对：%+v", g)
+	}
+	if g := byID["g9"]; g.SelfID != "openid-x" || g.Type != "group" || g.MessageCount != 0 {
+		t.Fatalf("g9 补行不对：%+v", g)
+	}
+
+	identities, err := st.Scope("qq_a").LoadIdentities()
+	if err != nil || identities["g1"] != "openid-a" || identities["g9"] != "openid-x" {
+		t.Fatalf("identities = %+v, %v", identities, err)
+	}
+
+	// 档案更新时间不该被身份覆盖（g1 原来就是 500）。
+	var updatedAt int64
+	st.db.Raw(`SELECT updated_at FROM groups WHERE workspace_id = 'qq_a' AND group_id = 'g1'`).Scan(&updatedAt)
+	if updatedAt != 500 {
+		t.Fatalf("updated_at 被覆盖成 %d", updatedAt)
+	}
+}
+
+// Test身份与群档案共用一行 并表之后同一行有两个写入者：哪个先到都不能清掉对方，
+// 而且群名第一次写入仍然要记进历史（判断“新行”不能靠 updated_at）。
+func Test身份与群档案共用一行(t *testing.T) {
+	_, scope := openTemp(t)
+
+	// 顺序一：身份先到，群名后到。
+	scope.SaveIdentity("g1", "openid-a")
+	changed, err := scope.SaveGroupInfo("g1", "群一", "group_info", "", "{}")
+	if err != nil || !changed {
+		t.Fatalf("首次写群名应记为变更：changed=%v err=%v", changed, err)
+	}
+	var historyCount int
+	scope.store.db.Raw(`SELECT COUNT(*) FROM group_info_history
+		WHERE workspace_id = ? AND group_id = 'g1'`, scope.workspaceID).Scan(&historyCount)
+	if historyCount != 1 {
+		t.Fatalf("群名首次写入应记一条历史，实际 %d 条", historyCount)
+	}
+
+	// 再来新身份：群名不能被清掉，档案更新时间也不该被刷新。
+	// 先把 updated_at 压成一个人造值，免得和“同一秒内写入”混淆。
+	scope.store.db.Exec(`UPDATE groups SET updated_at = 12345 WHERE workspace_id = ? AND group_id = 'g1'`,
+		scope.workspaceID)
+	scope.SaveIdentity("g1", "openid-b")
+	if name := scope.GroupName("g1"); name != "群一" {
+		t.Fatalf("写身份把群名冲掉了：%q", name)
+	}
+	var updatedAt int64
+	scope.store.db.Raw(`SELECT updated_at FROM groups WHERE workspace_id = ? AND group_id = 'g1'`,
+		scope.workspaceID).Scan(&updatedAt)
+	if updatedAt != 12345 {
+		t.Fatalf("写身份把档案更新时间冲成了 %d", updatedAt)
+	}
+
+	// 顺序二：群名先到，身份后到。
+	if _, err := scope.SaveGroupInfo("g2", "群二", "group_info", "", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	scope.SaveIdentity("g2", "openid-c")
+	if name := scope.GroupName("g2"); name != "群二" {
+		t.Fatalf("群名 = %q", name)
+	}
+
+	list, err := scope.GroupOverviews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]GroupOverview, len(list))
+	for _, item := range list {
+		byID[item.GroupID] = item
+	}
+	if byID["g1"].SelfID != "openid-b" || byID["g1"].Name != "群一" {
+		t.Fatalf("g1 = %+v", byID["g1"])
+	}
+	if byID["g2"].SelfID != "openid-c" || byID["g2"].Name != "群二" {
+		t.Fatalf("g2 = %+v", byID["g2"])
+	}
+}
+
 // TestV9升级anchors列改名 老库的 anchors 用的是 start_id / last_sent_id，
 // 光看名字分不清说的是窗口的起止还是时间点；v10 改成 window_first_id / window_last_id。
 // 改名不能丢数据：锚点丢了等于把这个群"上次发到哪"清零，重启后要从头攒前缀。

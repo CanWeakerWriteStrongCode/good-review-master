@@ -128,6 +128,95 @@ func (s *Scope) LoadRecent(limit int) ([]conversation.Message, error) {
 	return out, nil
 }
 
+// Messages 是面板消息详情页的读取入口：最近 limit 条（按时间倒序，最新的在最前），
+// 外加库里这个群的总条数。昵称从 members 表补——messages 只存 user_id，
+// 名字在 members 里，取那里的最新值（成员改过名也能对上人）。
+func (s *Scope) Messages(groupID string, limit int) ([]conversation.Message, int, error) {
+	if s == nil || s.store == nil || groupID == "" || limit <= 0 || s.store.closed.Load() {
+		return []conversation.Message{}, 0, nil
+	}
+	var total int64
+	if err := s.store.db.Model(&messageRow{}).
+		Where("workspace_id = ? AND group_id = ?", s.workspaceID, groupID).
+		Count(&total).Error; err != nil {
+		s.store.noteFailure("统计群消息", err)
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []conversation.Message{}, 0, nil
+	}
+	var rows []messageRow
+	if err := s.store.db.
+		Where("workspace_id = ? AND group_id = ?", s.workspaceID, groupID).
+		Order("ts DESC, id DESC").Limit(limit).
+		Find(&rows).Error; err != nil {
+		s.store.noteFailure("读取群消息", err)
+		return nil, int(total), err
+	}
+	// 查询本来就是按时间倒序取最近 limit 条，这里不再翻转发：
+	// 页面从上往下读，第一条就是库里最新的那条。
+	out := make([]conversation.Message, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, messageFromRow(row))
+	}
+	s.fillMemberNames(groupID, out)
+	return out, int(total), nil
+}
+
+func messageFromRow(row messageRow) conversation.Message {
+	msg := conversation.Message{
+		RowID: row.ID, MessageID: row.MessageID, GroupID: row.GroupID,
+		UserID: row.UserID, Content: row.Content,
+		ReplyToID: row.ReplyTo, RefIdx: row.RefIdx, Time: row.TS,
+	}
+	if row.Images != "" {
+		_ = json.Unmarshal([]byte(row.Images), &msg.Images)
+	}
+	if row.ImageIDs != "" {
+		_ = json.Unmarshal([]byte(row.ImageIDs), &msg.ImageIDs)
+	}
+	return msg
+}
+
+// fillMemberNames 用 members 表里的名字补消息的 nick / card。
+// 查不到的保持空串：那些人多半是早期消息里的，成员目录没收录。
+func (s *Scope) fillMemberNames(groupID string, msgs []conversation.Message) {
+	seen := make(map[string]struct{}, len(msgs))
+	ids := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg.UserID == "" {
+			continue
+		}
+		if _, ok := seen[msg.UserID]; ok {
+			continue
+		}
+		seen[msg.UserID] = struct{}{}
+		ids = append(ids, msg.UserID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	var rows []memberRow
+	if err := s.store.db.Select("user_id, name, display_name").
+		Where("workspace_id = ? AND group_id = ? AND user_id IN ?", s.workspaceID, groupID, ids).
+		Find(&rows).Error; err != nil {
+		s.store.noteFailure("补消息昵称", err)
+		return
+	}
+	names := make(map[string]memberRow, len(rows))
+	for _, row := range rows {
+		names[row.UserID] = row
+	}
+	for i := range msgs {
+		row, ok := names[msgs[i].UserID]
+		if !ok {
+			continue
+		}
+		msgs[i].Nickname = row.Name
+		msgs[i].Card = row.DisplayName
+	}
+}
+
 func (s *Scope) hydrateImageNotes(msgs []conversation.Message) {
 	var ids []conversation.ImageID
 	for _, msg := range msgs {

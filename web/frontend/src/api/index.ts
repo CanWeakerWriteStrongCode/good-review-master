@@ -58,6 +58,12 @@ export interface WorkspaceGroupsData {
   bot_info: BotStatus
 }
 
+/** 所有账号的会话平铺（「全部会话」视图） */
+export interface SessionsData {
+  sessions: GroupInfo[]
+  bot_info: BotStatus
+}
+
 export interface MessagesData {
   group_id: string
   group_name: string
@@ -65,7 +71,10 @@ export interface MessagesData {
   workspace_name: string
   self_id: string
   account_name: string
+  /** 最近一批消息（后端封顶 500 条，时间升序） */
   messages: Message[]
+  /** 库里这个群的消息总条数；messages 只给最近一部分 */
+  total: number
   empty: boolean
 }
 
@@ -91,6 +100,10 @@ export function fetchWorkspaces(): Promise<WorkspacesData> {
 
 export function fetchWorkspaceGroups(workspaceId: string): Promise<WorkspaceGroupsData> {
   return request<WorkspaceGroupsData>(`/workspaces/${encodeURIComponent(workspaceId)}/groups`)
+}
+
+export function fetchSessions(): Promise<SessionsData> {
+  return request<SessionsData>('/sessions')
 }
 
 export function fetchWorkspaceMessages(workspaceId: string, groupId: string): Promise<MessagesData> {

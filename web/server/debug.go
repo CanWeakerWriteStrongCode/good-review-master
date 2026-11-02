@@ -10,25 +10,25 @@ import (
 	"good-review-master/internal/testutil"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
+	"good-review-master/state"
 	"good-review-master/workspace"
 
 	"github.com/gin-gonic/gin"
 )
 
-// debugStore 选择调试接口要操作的缓存：指定工作空间 > 默认工作空间 > 进程级默认。
-func (s *Server) debugStore(workspaceID string) (*conversation.Store, string) {
+// debugView 选调试接口要操作的工作空间：指定 ID > 默认工作空间。
+// 拿不到（没启用工作空间）时返回 false，此时注入只进进程级缓存、不落库。
+func (s *Server) debugView(workspaceID string) (workspace.View, bool) {
 	if s.workspaces == nil {
-		return conversation.DefaultStore(), ""
+		return workspace.View{}, false
 	}
 	if workspaceID != "" {
-		if view, ok := s.workspaces.ViewByID(workspaceID); ok {
-			return view.Store, view.ID
-		}
+		return s.workspaces.ViewByID(workspaceID)
 	}
 	if def := s.workspaces.Default(); def != nil {
-		return def.Cache, def.ID
+		return s.workspaces.ViewByID(def.ID)
 	}
-	return conversation.DefaultStore(), ""
+	return workspace.View{}, false
 }
 
 // debugState 测试模式的调试状态（msg_id 自增序列等）
@@ -59,7 +59,9 @@ type debugMsg struct {
 }
 
 // handleDebugInject 向指定群注入消息填充缓存
-func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
+//
+// dbg 这个名字不能叫 state：本函数要用 state 包里的 MemberInfo。
+func (s *Server) handleDebugInject(dbg *debugState) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logutil.Warn("调试接口被调用", "action", "inject")
 		var body struct {
@@ -78,12 +80,15 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 			s.groupNamesMu.Unlock()
 		}
 
-		store, wsID := s.debugStore(body.WorkspaceID)
-		selfID := ""
-		if s.workspaces != nil {
-			if view, ok := s.workspaces.ViewByID(wsID); ok {
-				selfID = view.Account
-			}
+		// 面板只从 state.db 读数，注入的数据必须落库，否则接口返回后页面上看不到。
+		view, hasWorkspace := s.debugView(body.WorkspaceID)
+		store := conversation.DefaultStore()
+		if hasWorkspace {
+			store = view.Store
+		}
+		selfID := view.Account
+		if hasWorkspace && view.State != nil && body.GroupName != "" {
+			view.State.SaveGroup(body.GroupID, body.GroupName)
 		}
 		gc := store.GetGroupCache(body.GroupID, s.cfg().MaxCacheMsg)
 		now := time.Now().Unix()
@@ -100,10 +105,10 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 			if m.MsgID != 0 {
 				msg.MessageID = strconv.FormatInt(m.MsgID, 10)
 			} else {
-				state.mu.Lock()
-				state.msgSeq++
-				msg.MessageID = strconv.FormatInt(state.msgSeq, 10)
-				state.mu.Unlock()
+				dbg.mu.Lock()
+				dbg.msgSeq++
+				msg.MessageID = strconv.FormatInt(dbg.msgSeq, 10)
+				dbg.mu.Unlock()
 			}
 			if msg.UserID == "" {
 				msg.UserID = "1"
@@ -112,6 +117,20 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 				msg.Time = now
 			}
 			gc.Add(msg)
+			if hasWorkspace && view.State != nil {
+				view.State.SaveMessage(msg)
+				// 身份存在 groups.self_user_id 里，真实链路由 LearnIdentity 写。
+				// 测试注入没有那条链路，这里补一次，否则面板拿不到账号分组用的 self_id。
+				if msg.SelfID != "" {
+					view.State.SaveIdentity(body.GroupID, msg.SelfID)
+				}
+				// 成员表同理：真实链路在处理消息时写，注入跳过了 pipeline，
+				// 这里补一次，否则面板「已收录成员」永远是 0。
+				_, _ = view.State.SaveMemberInfo(state.MemberInfo{
+					GroupID: body.GroupID, UserID: msg.UserID,
+					Name: msg.Nickname, DisplayName: msg.Card,
+				})
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"code": 200, "data": gin.H{"injected": len(body.Messages)}})
 	}

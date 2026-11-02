@@ -4,7 +4,8 @@ import (
 	"sort"
 
 	"good-review-master/config"
-	"good-review-master/conversation"
+	"good-review-master/logutil"
+	"good-review-master/state"
 	"good-review-master/workspace"
 )
 
@@ -15,7 +16,7 @@ type AccountDetail struct {
 	SelfID           string `json:"self_id"`
 	Nickname         string `json:"nickname"`
 	GroupCount       int    `json:"group_count"`
-	CachedGroupCount int    `json:"cached_group_count"`
+	ActiveGroupCount int    `json:"active_group_count"` // 库里有消息记录的群数
 	MessageCount     int    `json:"message_count"`
 	LastActivity     string `json:"last_activity"`
 
@@ -32,7 +33,7 @@ type WorkspaceInfo struct {
 	PlatformID       string   `json:"platform_id"`
 	SelfIDs          []string `json:"self_ids"`
 	GroupCount       int      `json:"group_count"`
-	CachedGroupCount int      `json:"cached_group_count"`
+	ActiveGroupCount int      `json:"active_group_count"`
 	MessageCount     int      `json:"message_count"`
 	LastActivity     string   `json:"last_activity"`
 	Persistent       bool     `json:"persistent"` // state.db 是否可用；false 表示纯内存运行
@@ -51,42 +52,79 @@ func (s *Server) accountName(account string) string {
 	return ""
 }
 
-// collectGroupDetails 旧接口路径：全局白名单 + 进程级默认缓存。
+// collectGroupDetails 没有工作空间时的降级路径：库句柄都拿不到，
+// 只能按配置列出群号，统计一律为空。
 func (s *Server) collectGroupDetails(cfg *config.Config) ([]GroupDetail, []AccountDetail) {
-	return s.collectDetails(panelGroupIDs(cfg), "", conversation.DefaultStore(), "", "")
+	groupIDs := make([]string, 0, len(cfg.AllowGroups))
+	for _, id := range cfg.AllowGroups {
+		if id != "*" {
+			groupIDs = append(groupIDs, id)
+		}
+	}
+	return s.collectDetails(groupIDs, "", "", "", nil)
 }
 
 // collectWorkspaceDetails 构建某个工作空间的群列表与账号汇总。
+//
+// 群列表以库里有的群为准。bot.allow_groups 是所有账号共用的一份白名单，
+// 里面混着别的账号看到的群；直接拿来当群列表，本账号库里没记录的那些群就会
+// 在页面上变成「未归属账号」。group_openid 是按机器人分配的，同一个物理群
+// 在不同账号眼里是两个ID，所以只能靠“谁库里有记录”来判定它属于哪个账号。
+//
+// 没开 state.db（纯内存运行）时没有库可查，才退回配置列表，数字全 0。
 func (s *Server) collectWorkspaceDetails(view workspace.View) ([]GroupDetail, []AccountDetail) {
-	groupIDs := view.Groups
-	if len(groupIDs) == 0 || containsWildcard(groupIDs) {
-		groupIDs = view.Store.ListGroupIDs()
-		sort.Strings(groupIDs)
+	stats := s.groupOverviews(view)
+	groupIDs := make([]string, 0, len(stats))
+	for groupID := range stats {
+		groupIDs = append(groupIDs, groupID)
 	}
-	return s.collectDetails(groupIDs, view.Account, view.Store, view.ID, view.Name)
-}
-
-func containsWildcard(groups []string) bool {
-	for _, g := range groups {
-		if g == "*" {
-			return true
+	if view.State == nil {
+		groupIDs = groupIDs[:0]
+		for _, id := range view.Groups {
+			if id != "*" {
+				groupIDs = append(groupIDs, id)
+			}
 		}
 	}
-	return false
+	// 按最后一条消息的时间倒序：刚聊过的群排最前，一条消息都没收到的（LastTime=0）沉底。
+	// LastTime 就是汇总查询里的 MAX(ts)，已经在 stats 里了，不用再查一次。
+	// 时间相同按群号排，保证同一个库每次打开顺序都一样。
+	sort.Slice(groupIDs, func(i, j int) bool {
+		li, lj := stats[groupIDs[i]].LastTime, stats[groupIDs[j]].LastTime
+		if li != lj {
+			return li > lj
+		}
+		return groupIDs[i] < groupIDs[j]
+	})
+	return s.collectDetails(groupIDs, view.Account, view.ID, view.Name, stats)
 }
 
-// collectDetails 从指定 Store 构建群列表与账号汇总。
+// groupOverviews 读这个工作空间在库里的群汇总。
 //
-// 一个工作空间只对应一个接收账号，所以汇总里最多一条；群里的 self_id 是
-// 事件携带的群内 openid（QQ 官方按群分配），只作展示，不再当账号键。
-func (s *Server) collectDetails(groupIDs []string, account string, store *conversation.Store,
-	wsID, wsName string) ([]GroupDetail, []AccountDetail) {
-	store = storeOr(store)
-	cachedIDs := store.ListGroupIDs()
-	cachedSet := make(map[string]struct{}, len(cachedIDs))
-	for _, id := range cachedIDs {
-		cachedSet[id] = struct{}{}
+// 库不可用（纯内存运行）或查询失败时返回空表：宁可在页面上不显示数字，
+// 也不拿内存缓存冒充——那会让"消息数"变成"最近 500 条"，读数全靠猜。
+func (s *Server) groupOverviews(view workspace.View) map[string]state.GroupOverview {
+	if view.State == nil {
+		return nil
 	}
+	list, err := view.State.GroupOverviews()
+	if err != nil {
+		logutil.Warn("读取群汇总失败，面板按无统计显示", "workspace", view.ID, "err", err)
+		return nil
+	}
+	out := make(map[string]state.GroupOverview, len(list))
+	for _, overview := range list {
+		out[overview.GroupID] = overview
+	}
+	return out
+}
+
+// collectDetails 把群号列表与库里的统计拼成表格行。
+//
+// stats 里没有的群（配置里写了但一条消息都没收到）照样列出来，
+// 只是数字全 0、HasMessages 为 false，页面显示「等待接收消息」。
+func (s *Server) collectDetails(groupIDs []string, account, wsID, wsName string,
+	stats map[string]state.GroupOverview) ([]GroupDetail, []AccountDetail) {
 
 	var detail *AccountDetail
 	ensure := func() *AccountDetail {
@@ -110,52 +148,42 @@ func (s *Server) collectDetails(groupIDs []string, account string, store *conver
 		}
 		seenGroup[groupID] = struct{}{}
 
-		info := GroupDetail{GroupID: groupID, WorkspaceID: wsID, WorkspaceName: wsName}
-		// 群名优先用 state.db 里记录过的值，再退到进程缓存和实现端查询。
-		if s.workspaces != nil {
-			info.GroupName = s.workspaces.GroupName(wsID, groupID)
-			info.MemberCount = s.workspaces.MemberCount(wsID, groupID)
+		overview := stats[groupID]
+		info := GroupDetail{
+			GroupID:       groupID,
+			GroupName:     overview.Name,
+			Type:          overview.Type,
+			WorkspaceID:   wsID,
+			WorkspaceName: wsName,
+			SelfID:        overview.SelfID,
+			MessageCount:  overview.MessageCount,
+			MemberCount:   overview.MemberCount,
+			HasMessages:   overview.MessageCount > 0,
+			lastTime:      overview.LastTime,
 		}
-		s.groupNamesMu.RLock()
-		name, ok := s.groupNames[groupID]
-		s.groupNamesMu.RUnlock()
-		if info.GroupName == "" {
-			info.GroupName = name
+		if overview.LastTime > 0 {
+			info.LastActivity = formatTimestamp(overview.LastTime)
 		}
-		if !ok && info.GroupName == "" && s.obClient != nil {
-			gi, err := s.obClient.For(wsID).GetGroupInfo(groupID)
-			if err == nil && gi.GroupName != "" {
-				info.GroupName = gi.GroupName
-				s.groupNamesMu.Lock()
-				s.groupNames[groupID] = gi.GroupName
-				s.groupNamesMu.Unlock()
-			}
-		}
-
-		if _, ok := cachedSet[groupID]; ok {
-			if gc := store.GetCache(groupID); gc != nil {
-				stats := gc.Stats()
-				info.Cached = true
-				info.MessageCount = stats.Count
-				info.SelfID = stats.SelfID
-				info.AccountName = wsName
-				if stats.LastTime > 0 {
-					info.LastActivity = formatTimestamp(stats.LastTime)
-				}
-				if account != "" {
-					acc := ensure()
-					acc.GroupCount++
-					acc.CachedGroupCount++
-					acc.MessageCount += stats.Count
-					if stats.LastTime > acc.lastTime {
-						acc.lastTime = stats.LastTime
-					}
+		if info.HasMessages {
+			info.AccountName = wsName
+			if account != "" {
+				acc := ensure()
+				acc.GroupCount++
+				acc.ActiveGroupCount++
+				acc.MessageCount += overview.MessageCount
+				if overview.LastTime > acc.lastTime {
+					acc.lastTime = overview.LastTime
 				}
 			}
 		}
 		groups = append(groups, info)
 	}
 
+	if account == "" {
+		return groups, nil
+	}
+	// 群数是全部（含还没收到消息的），ActiveGroupCount 才是有数据的那些。
+	ensure().GroupCount = len(groups)
 	list := make([]AccountDetail, 0, 1)
 	if detail != nil {
 		if detail.lastTime > 0 {
@@ -181,27 +209,16 @@ func (s *Server) workspaceInfo(view workspace.View) WorkspaceInfo {
 	}
 	var lastTime int64
 	for _, g := range groups {
-		if g.Cached {
-			info.CachedGroupCount++
+		if g.HasMessages {
+			info.ActiveGroupCount++
 		}
 		info.MessageCount += g.MessageCount
-	}
-	for _, groupID := range view.Store.ListGroupIDs() {
-		if gc := view.Store.GetCache(groupID); gc != nil {
-			if t := gc.Stats().LastTime; t > lastTime {
-				lastTime = t
-			}
+		if g.lastTime > lastTime {
+			lastTime = g.lastTime
 		}
 	}
 	if lastTime > 0 {
 		info.LastActivity = formatTimestamp(lastTime)
 	}
 	return info
-}
-
-func storeOr(store *conversation.Store) *conversation.Store {
-	if store == nil {
-		return conversation.DefaultStore()
-	}
-	return store
 }

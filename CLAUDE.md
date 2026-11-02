@@ -615,9 +615,9 @@ Gin-based HTTP server + uni-app Vue 3 SPA, embedded into the Go binary via `//go
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | POST | `/api/login` | No | Returns JWT token (validates username/password; rate-limited) |
-| GET | `/api/status` | JWT | Nickname, MaskedAPIKey, GroupCount |
+| GET | `/api/status` | JWT | Nickname, account count, group count |
 | GET | `/api/groups` | JWT | Per-group info with activity stats |
-| GET | `/api/groups/:id` | JWT | Cached messages for one group |
+| GET | `/api/groups/:id` | JWT | Stored messages for one group (latest 500 from state.db) |
 | POST | `/api/logout` | JWT | No-op (stateless token) |
 | GET | `/api/diagnostics` | JWT | Runtime summary + goroutine grouping; `?full=1` adds the stack dump |
 | GET | `/healthz` | **No** | Liveness: always 200 while the process serves |
@@ -792,7 +792,6 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 - `llm.rate_limit_per_sec` / `llm.rate_limit_burst` — outbound rate limit; default 0 = off. Over-limit calls are **rejected**, not queued
 - `llm.breaker_failures` / `llm.breaker_cooldown_sec` — circuit breaker; defaults 5 / 30s, `-1` disables. Same pair under `mcp.` (defaults 5 / 60s, counted **per server**)
 - `mcp.retry_interval_sec` / `llm.breaker_failures` use `-1` as the "explicitly disabled" sentinel — `0` means "unset, use the default". Same idiom, keep it consistent
-- `Config.MaskedAPIKey()` — returns API key with only first 4 and last 4 chars visible (e.g., `sk-9a****d8`), used by web API
 - `apppath.ResolvePath(filename)` searches `./` then `exeDir/`
 - `config.CustomPromptPath(systemPath)` gives `prompt_custom.yaml` path in the same directory as `prompt_system.yaml`
 

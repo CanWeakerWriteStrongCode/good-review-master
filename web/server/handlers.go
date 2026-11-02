@@ -23,8 +23,10 @@ type APIResponse struct {
 
 // GroupDetail 群信息
 type GroupDetail struct {
-	GroupID       string `json:"group_id"`
-	GroupName     string `json:"group_name"`
+	GroupID   string `json:"group_id"`
+	GroupName string `json:"group_name"`
+	// Type 会话类型：group = 群聊，private = 私聊。
+	Type          string `json:"type"`
 	WorkspaceID   string `json:"workspace_id"`
 	WorkspaceName string `json:"workspace_name"`
 	SelfID        string `json:"self_id"`      // 接收该群的机器人账号；空=无法归属
@@ -32,13 +34,17 @@ type GroupDetail struct {
 	MessageCount  int    `json:"message_count"`
 	MemberCount   int    `json:"member_count"` // 已收录成员数（说过话或被 @ 过）
 	LastActivity  string `json:"last_activity"`
-	Cached        bool   `json:"cached"`
+	// HasMessages 表示 state.db 里这个群有消息记录。名字不叫 cached：
+	// 面板已经不看内存缓存了，这个值来自 messages 表的条数。
+	HasMessages bool `json:"has_messages"`
+
+	lastTime int64 // 原始时间戳，给工作空间汇总用；不对外
 }
 
-// BotStatus Bot 运行时状态
+// BotStatus 面板顶部的运行时状态。
+// 不包含 API Key：以后可能同时挂多个模型/接口，顶部只写账号数和群数。
 type BotStatus struct {
 	BotNickname    string `json:"bot_nickname"`
-	APIKey         string `json:"api_key"`
 	GroupCount     int    `json:"group_count"`
 	AccountCount   int    `json:"account_count"`
 	AllowAllGroups bool   `json:"allow_all_groups"`
@@ -79,7 +85,7 @@ func (s *Server) handleAPIGroups() gin.HandlerFunc {
 			Data: gin.H{
 				"groups":   groups,
 				"accounts": accounts,
-				"bot_info": s.botStatus(cfg, len(groups), len(accounts)),
+				"bot_info": s.botStatusTotal(cfg),
 			},
 		})
 	}
@@ -95,38 +101,110 @@ func (s *Server) workspaceViews() []workspace.View {
 func (s *Server) botStatus(cfg *config.Config, groupCount, accountCount int) BotStatus {
 	return BotStatus{
 		BotNickname:    cfg.BotNickname,
-		APIKey:         cfg.MaskedAPIKey(),
 		GroupCount:     groupCount,
 		AccountCount:   accountCount,
 		AllowAllGroups: policy.AllowsAllStreams(cfg),
 	}
 }
 
+// botStatusTotal 是面板顶部状态栏的数字：所有账号加起来多少个群。
+//
+// 不能拿当前选中的那个工作空间的数字。切账号时会被重新拉取，
+// 状态栏就从「2 个账号 | 5 个群」跳成「1 个账号 | 4 个群」，看起来像换了台机器。
+func (s *Server) botStatusTotal(cfg *config.Config) BotStatus {
+	return s.botStatusOf(cfg, s.workspaceViews())
+}
+
+// botStatusOf 按给定的工作空间算状态栏数字。
+// 没有工作空间（旧版本或纯内存运行）时只能按配置里的群白名单数，账号数给 0。
+func (s *Server) botStatusOf(cfg *config.Config, views []workspace.View) BotStatus {
+	if len(views) == 0 {
+		return s.botStatus(cfg, len(panelGroupIDs(cfg)), 0)
+	}
+	list := make([]WorkspaceInfo, 0, len(views))
+	for _, view := range views {
+		list = append(list, s.workspaceInfo(view))
+	}
+	return s.botStatusTotals(cfg, list)
+}
+
+// botStatusTotals 把各工作空间的汇总累加成状态栏数字。
+// 所有接口的 bot_info 都走这里，避免同一个口径写在两处、以后改一处漏一处。
+func (s *Server) botStatusTotals(cfg *config.Config, list []WorkspaceInfo) BotStatus {
+	groupCount, accountCount := 0, 0
+	for _, info := range list {
+		groupCount += info.GroupCount
+		accountCount += len(info.SelfIDs)
+	}
+	return s.botStatus(cfg, groupCount, accountCount)
+}
+
+// handleAPISessions 把所有账号下的会话平铺成一份列表，按最后一条消息的时间倒序。
+//
+// 面板的「全部会话」视图用它：不用先选账号就能看到所有群和私聊，
+// 每条都带 workspace_id / workspace_name，卡片上写清楚归谁监控。
+func (s *Server) handleAPISessions() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg := s.cfg()
+		c.JSON(http.StatusOK, APIResponse{
+			Code: 200,
+			Data: gin.H{
+				"sessions": s.collectSessions(s.workspaceViews()),
+				"bot_info": s.botStatusTotal(cfg),
+			},
+		})
+	}
+}
+
+// collectSessions 把各工作空间的会话拼成一张表，按最近消息时间倒序。
+//
+// 同一个物理群在不同机器人眼里是两个 group_openid，两边群名也拿不到，
+// 没法可靠判重，所以不合并：一条会话就是一条（账号 + 群号）。
+func (s *Server) collectSessions(views []workspace.View) []GroupDetail {
+	all := make([]GroupDetail, 0, len(views)*4)
+	for _, view := range views {
+		groups, _ := s.collectWorkspaceDetails(view)
+		all = append(all, groups...)
+	}
+	// 时间相同的按账号、再按群号，保证同一个库每次打开顺序一致。
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].lastTime != all[j].lastTime {
+			return all[i].lastTime > all[j].lastTime
+		}
+		if all[i].WorkspaceID != all[j].WorkspaceID {
+			return all[i].WorkspaceID < all[j].WorkspaceID
+		}
+		return all[i].GroupID < all[j].GroupID
+	})
+	return all
+}
+
 // handleAPIWorkspaces 返回工作空间列表与各自汇总。
 func (s *Server) handleAPIWorkspaces() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		cfg := s.cfg()
 		views := s.workspaceViews()
 		list := make([]WorkspaceInfo, 0, len(views))
-		groupCount, accountCount := 0, 0
 		for _, view := range views {
-			info := s.workspaceInfo(view)
-			list = append(list, info)
-			groupCount += info.GroupCount
-			accountCount += len(info.SelfIDs)
+			list = append(list, s.workspaceInfo(view))
 		}
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: gin.H{
 				"workspaces": list,
-				"bot_info":   s.botStatus(s.cfg(), groupCount, accountCount),
+				"bot_info":   s.botStatusTotals(cfg, list),
 			},
 		})
 	}
 }
 
 // handleAPIWorkspaceGroups 返回指定工作空间的群与账号汇总。
+//
+// 拉的是单个账号的群，但 bot_info 仍然是全局口径：状态栏写"几个账号、
+// 一共几个群"，不能让切账号把它改成当前账号的数字。
 func (s *Server) handleAPIWorkspaceGroups() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		cfg := s.cfg()
 		view, ok := s.workspaceView(c.Param("wid"))
 		if !ok {
 			c.JSON(http.StatusNotFound, APIResponse{Code: 404, Data: gin.H{"msg": "工作空间不存在"}})
@@ -139,7 +217,7 @@ func (s *Server) handleAPIWorkspaceGroups() gin.HandlerFunc {
 				"workspace": s.workspaceInfo(view),
 				"groups":    groups,
 				"accounts":  accounts,
-				"bot_info":  s.botStatus(s.cfg(), len(groups), len(accounts)),
+				"bot_info":  s.botStatusTotal(cfg),
 			},
 		})
 	}
@@ -157,8 +235,7 @@ func (s *Server) workspaceView(id string) (workspace.View, bool) {
 // 之前这里直读 map，是已知的数据竞争点。
 func (s *Server) handleAPIMessages() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		store := conversation.DefaultStore()
-		var wsID, wsName string
+		var view workspace.View
 		if views := s.workspaceViews(); len(views) > 0 {
 			if len(views) != 1 {
 				c.JSON(http.StatusBadRequest, APIResponse{Code: 400, Data: gin.H{
@@ -166,9 +243,9 @@ func (s *Server) handleAPIMessages() gin.HandlerFunc {
 				}})
 				return
 			}
-			store, wsID, wsName = views[0].Store, views[0].ID, views[0].Name
+			view = views[0]
 		}
-		s.writeMessages(c, c.Param("id"), store, wsID, wsName)
+		s.writeMessages(c, c.Param("id"), view)
 	}
 }
 
@@ -180,16 +257,53 @@ func (s *Server) handleAPIWorkspaceMessages() gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, APIResponse{Code: 404, Data: gin.H{"msg": "工作空间不存在"}})
 			return
 		}
-		s.writeMessages(c, c.Param("gid"), view.Store, view.ID, view.Name)
+		s.writeMessages(c, c.Param("gid"), view)
 	}
 }
 
-func (s *Server) writeMessages(c *gin.Context, groupID string, store *conversation.Store, wsID, wsName string) {
-	s.groupNamesMu.RLock()
-	groupName := s.groupNames[groupID]
-	s.groupNamesMu.RUnlock()
+// panelMessageLimit 是消息详情页一次返回的条数上限。
+// 群里的记录可能上万条，全量吐给前端会卡；页头显示库里总数，列表只给最近这么多条。
+const panelMessageLimit = 500
 
-	gc := storeOr(store).GetCache(groupID)
+// writeMessages 返回某个群的消息记录。
+//
+// 数据来自 state.db 的 messages 表（最近 panelMessageLimit 条，时间升序），
+// 昵称从 members 表补。只有没开 state.db（纯内存运行）或查库失败时才退回内存缓存。
+func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.View) {
+	groupName := ""
+	if view.State != nil {
+		groupName = view.State.GroupName(groupID)
+	}
+	wsID, wsName := view.ID, view.Name
+
+	if view.State != nil {
+		msgs, total, err := view.State.Messages(groupID, panelMessageLimit)
+		if err != nil {
+			logutil.Warn("读取群消息失败，退回内存缓存", "workspace", wsID, "group", groupID, "err", err)
+		} else {
+			c.JSON(http.StatusOK, APIResponse{
+				Code: 200,
+				Data: gin.H{
+					"group_id":       groupID,
+					"group_name":     groupName,
+					"workspace_id":   wsID,
+					"workspace_name": wsName,
+					"self_id":        view.Account,
+					"account_name":   wsName,
+					"messages":       msgs,
+					"total":          total,
+					"empty":          total == 0,
+				},
+			})
+			return
+		}
+	}
+
+	store := view.Store
+	if store == nil {
+		store = conversation.DefaultStore()
+	}
+	gc := store.GetCache(groupID)
 	if gc == nil {
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
@@ -198,9 +312,10 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, store *conversati
 				"group_name":     groupName,
 				"workspace_id":   wsID,
 				"workspace_name": wsName,
-				"self_id":        "",
-				"account_name":   "",
+				"self_id":        view.Account,
+				"account_name":   wsName,
 				"messages":       []conversation.Message{},
+				"total":          0,
 				"empty":          true,
 			},
 		})
@@ -215,9 +330,10 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, store *conversati
 			"group_name":     groupName,
 			"workspace_id":   wsID,
 			"workspace_name": wsName,
-			"self_id":        stats.SelfID,
+			"self_id":        view.Account,
 			"account_name":   wsName,
 			"messages":       gc.GetAll(),
+			"total":          stats.Count,
 			"empty":          stats.Count == 0,
 		},
 	})
@@ -225,21 +341,9 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, store *conversati
 
 func (s *Server) handleAPIStatus() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cfg := s.cfg()
-		groupCount := len(panelGroupIDs(cfg))
-		accountCount := 0
-		if views := s.workspaceViews(); len(views) > 0 {
-			groupCount = 0
-			accountCount = 0
-			for _, view := range views {
-				groups, accounts := s.collectWorkspaceDetails(view)
-				groupCount += len(groups)
-				accountCount += len(accounts)
-			}
-		}
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
-			Data: s.botStatus(cfg, groupCount, accountCount),
+			Data: s.botStatusTotal(s.cfg()),
 		})
 	}
 }

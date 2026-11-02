@@ -56,13 +56,15 @@ npx playwright show-report        # 打开 tests/e2e/playwright-report/index.htm
 
 | 文件 | 覆盖 |
 |------|------|
-| `specs/auth.spec.ts` | 错误密码 401、正确登录拿 token、status 鉴权 |
-| `specs/groups.spec.ts` | inject 后群列表显示已缓存/消息数/群名；未注入群无数据 |
-| `specs/messages.spec.ts` | 注入消息按序返回；未缓存群返回空 |
+| `specs/auth.spec.ts` | 错误密码 401、正确登录拿 token、status 鉴权；`status.group_count` 与 `/api/groups` 的群数一致 |
+| `specs/groups.spec.ts` | inject 后群列表显示有记录/消息数/群名；写在 `allow_groups` 里但本账号库里没记录的群不出现在列表里 |
+| `specs/messages.spec.ts` | 注入消息按序返回（含 `total`）；没消息的群返回空 |
 | `specs/bot-flow.spec.ts` | inject → trigger 锐评 → 轮询 state → FakeLLM 被调用、回复正确、chat_log 含注入内容 |
 | `specs/cache-cost.spec.ts` | 注入超重置窗口（llm_send_count=3）→ 触发：无锚点走**重置**（只发最近 3 条）；再注入再触发：锚点命中走**扩展**（Start 不变、窗口含旧+新消息） |
 
-用例间通过 `POST /api/debug/reset` 隔离；缓存/锚点是进程内全局，因此用例**串行**执行（`workers: 1`）。`debug/trigger` 同步等待 handler 收尾（锚点更新）再返回，保证异步副作用不跨用例泄漏——否则上一用例 handler 的 `SetLLMAnchor` 可能落在下一次 `reset` 之后，污染锚点 `Start`。
+用例间通过 `POST /api/debug/reset` 隔离；缓存/锚点是进程内全局，因此用例**串行**执行（`workers: 1`）。
+`debug/inject` 现在会把注入的消息同时写进 state.db（面板只从库读数），`debug/reset` 也会清掉库里的消息、
+群档、成员与身份，否则上一个用例的群会留在面板上。`debug/trigger` 同步等待 handler 收尾（锚点更新）再返回，保证异步副作用不跨用例泄漏——否则上一用例 handler 的 `SetLLMAnchor` 可能落在下一次 `reset` 之后，污染锚点 `Start`。
 
 ## 测试进程生命周期（谁负责启停）
 

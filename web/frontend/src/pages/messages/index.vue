@@ -3,11 +3,15 @@
     <!-- 群信息头 -->
     <view class="msg-header">
       <view class="header-main">
-        <text class="header-group-id">{{ store.groupName || '群' }}（{{ store.groupId }}）</text>
+        <text class="header-group-id">{{ store.groupName || sessionLabel(store.groupId) }}（{{ store.groupId }}）</text>
         <text class="header-account" v-if="store.workspaceName">工作空间：{{ store.workspaceName }}</text>
         <text class="header-account">接收账号：{{ store.accountName || store.selfId || '未知' }}</text>
       </view>
-      <text class="header-count" v-if="!store.empty">{{ store.messages.length }} 条消息</text>
+      <text class="header-count" v-if="!store.empty">
+        {{ store.total > store.messages.length
+          ? `共 ${store.total} 条，显示最近 ${store.messages.length} 条`
+          : `${store.total} 条消息` }}
+      </text>
     </view>
 
     <!-- 消息列表 -->
@@ -16,8 +20,8 @@
         <view class="msg-meta">
           <view class="msg-sender-col">
             <view class="msg-sender-line">
-              <text class="msg-sender">{{ msg.card || msg.nick }}</text>
-              <text class="msg-user-id">{{ msg.user_id }}</text>
+              <text class="msg-sender">{{ msg.card || msg.nick || msg.user_id || '机器人' }}</text>
+              <text class="msg-user-id" v-if="msg.user_id">{{ msg.user_id }}</text>
             </view>
             <text class="msg-card" v-if="msg.card && msg.card !== msg.nick">{{ msg.nick }}</text>
           </view>
@@ -29,7 +33,7 @@
 
     <!-- 空态 -->
     <view class="empty" v-else-if="!store.loading">
-      <text>该群暂无缓存消息</text>
+      <text>该群暂无消息记录</text>
     </view>
 
     <!-- 加载中 -->
@@ -41,11 +45,26 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { useMessagesStore } from '@/stores/groups'
+import { useMessagesStore, sessionLabel } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
 const store = useMessagesStore()
+
+// uni.navigateTo 在 h5 下会把 query 值再 encodeURIComponent 一次，
+// 拼好的链接里 %3A 会变成 %253A，URLSearchParams 解一次后还会剩一层。
+// 这里最多再解两轮；普通群号是纯十六进制，不含 %，不会受影响。
+function decodeParam(value: string | null): string {
+  let out = value || ''
+  for (let i = 0; i < 2 && /%[0-9a-fA-F]{2}/.test(out); i++) {
+    try {
+      out = decodeURIComponent(out)
+    } catch {
+      break
+    }
+  }
+  return out
+}
 
 onMounted(() => {
   if (!authStore.isAuthenticated()) {
@@ -56,8 +75,8 @@ onMounted(() => {
   const queryIndex = hash.indexOf('?')
   if (queryIndex !== -1) {
     const params = new URLSearchParams(hash.slice(queryIndex))
-    const id = params.get('id')
-    const wid = params.get('wid') || ''
+    const id = decodeParam(params.get('id'))
+    const wid = decodeParam(params.get('wid'))
     if (id) {
       store.loadMessages(wid, id)
     }

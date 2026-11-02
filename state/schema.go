@@ -25,7 +25,11 @@ const (
 	// v8 资产欠条、发送台账、报警、全局 settings、image_notes.prompt_version；
 	// v9 messages 加自增主键 id（三元组降为唯一键），重建表以保留历史消息；
 	// v10 anchors 的 start_id/last_sent_id 改名 window_first_id/window_last_id。
-	schemaVersion = 10
+	// v11 groups 加 type（群聊/私聊）+ 消息数/成员数/最后时间三列，
+	//     面板群列表只读这一张表，不再扫 messages 全表 GROUP BY。
+	// v12 identities 并进 groups.self_user_id：两张表都是每会话一行，
+	//     没必要分开存，并过来后面板查询少一次 JOIN、启动恢复少一次全表查询。
+	schemaVersion = 12
 )
 
 // ensureFile 先以 0600 建出文件再交给驱动：消息原文与昵称属于隐私数据。
@@ -91,13 +95,6 @@ func migrate(db *gorm.DB, path string) error {
 			updated_at      INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS identities (
-			workspace_id TEXT NOT NULL,
-			group_id     TEXT NOT NULL,
-			self_user_id TEXT NOT NULL,
-			learned_at   INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, group_id)
-		)`,
 		`CREATE TABLE IF NOT EXISTS members (
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
@@ -109,11 +106,16 @@ func migrate(db *gorm.DB, path string) error {
 			PRIMARY KEY (workspace_id, group_id, user_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups (
-			workspace_id TEXT NOT NULL,
-			group_id     TEXT NOT NULL,
-			name         TEXT NOT NULL DEFAULT '',
-			extra        TEXT NOT NULL DEFAULT '{}',
-			updated_at   INTEGER NOT NULL,
+			workspace_id  TEXT NOT NULL,
+			group_id      TEXT NOT NULL,
+			name          TEXT NOT NULL DEFAULT '',
+			type          TEXT NOT NULL DEFAULT 'group',
+			self_user_id  TEXT NOT NULL DEFAULT '',
+			message_count INTEGER NOT NULL DEFAULT 0,
+			member_count  INTEGER NOT NULL DEFAULT 0,
+			last_ts       INTEGER NOT NULL DEFAULT 0,
+			extra         TEXT NOT NULL DEFAULT '{}',
+			updated_at    INTEGER NOT NULL,
 			PRIMARY KEY (workspace_id, group_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS group_personas (
@@ -257,6 +259,35 @@ func migrate(db *gorm.DB, path string) error {
 			return err
 		}
 	}
+	// v11：groups 加计数列。先补列、再回填、最后才建触发器——
+	// 顺序反了的话回填会经过触发器，计数变成双倍。
+	if version < 11 {
+		for _, column := range []struct{ name, ddl string }{
+			{"type", "TEXT NOT NULL DEFAULT 'group'"},
+			{"message_count", "INTEGER NOT NULL DEFAULT 0"},
+			{"member_count", "INTEGER NOT NULL DEFAULT 0"},
+			{"last_ts", "INTEGER NOT NULL DEFAULT 0"},
+		} {
+			if err := ensureColumn(db, "groups", column.name, column.ddl); err != nil {
+				return err
+			}
+		}
+		if err := backfillGroupStats(db); err != nil {
+			return err
+		}
+		if err := createGroupStatTriggers(db); err != nil {
+			return err
+		}
+	}
+	// v12：identities 并进 groups。必须先补列再搬数据，最后才删旧表。
+	if version < 12 {
+		if err := ensureColumn(db, "groups", "self_user_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if err := mergeIdentitiesIntoGroups(db); err != nil {
+			return err
+		}
+	}
 
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(workspace_id, group_id, ts)`,
@@ -319,6 +350,104 @@ func ensureColumn(db *gorm.DB, table, column, ddl string) error {
 	}
 	if err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl).Error; err != nil {
 		return fmt.Errorf("给 %s 补列 %s 失败：%w", table, column, err)
+	}
+	return nil
+}
+
+// backfillGroupStats 拿存量数据把 groups 的计数列填一遍，只跑一次（v11 升级）。
+//
+// 消息数直接 GROUP BY messages 算；成员数用关联子查询数 members。
+// messages 里有但 groups 里没有的群（老库可能有）捎带建出档案行，
+// type 按 group_id 前缀认：private: 开头是私聊，其余是群聊。
+func backfillGroupStats(db *gorm.DB) error {
+	// SELECT 必须有 WHERE：SQLite 不允许裸 SELECT 后面跟 ON CONFLICT，会当成语法歧义。
+	if err := db.Exec(`INSERT INTO groups
+			(workspace_id, group_id, name, type, message_count, member_count, last_ts, extra, updated_at)
+		SELECT workspace_id, group_id, '',
+		       CASE WHEN group_id LIKE 'private:%' THEN 'private' ELSE 'group' END,
+		       COUNT(*), 0, COALESCE(MAX(ts), 0), '{}', CAST(strftime('%s','now') AS INTEGER)
+		FROM messages WHERE workspace_id <> ''
+		GROUP BY workspace_id, group_id
+		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+			message_count = excluded.message_count,
+			last_ts = excluded.last_ts,
+			type = excluded.type`).Error; err != nil {
+		return fmt.Errorf("回填群消息统计失败：%w", err)
+	}
+	if err := db.Exec(`UPDATE groups SET member_count = (
+			SELECT COUNT(*) FROM members
+			WHERE members.workspace_id = groups.workspace_id AND members.group_id = groups.group_id
+		)`).Error; err != nil {
+		return fmt.Errorf("回填群成员统计失败：%w", err)
+	}
+	return nil
+}
+
+// createGroupStatTriggers 让 messages / members 的新插入自动维护 groups 的计数列。
+//
+// 用触发器而不是在 Go 里再发一条 UPDATE：插入和计数在同一个语句里原子完成，
+// 不多一次往返；而且 AFTER INSERT 只在真的插了新行时触发，
+// 重复消息走 ON CONFLICT DO UPDATE 分支不会把条数算两遍。
+func createGroupStatTriggers(db *gorm.DB) error {
+	statements := []string{
+		`CREATE TRIGGER IF NOT EXISTS trg_messages_group_stats
+		AFTER INSERT ON messages
+		BEGIN
+			INSERT INTO groups
+				(workspace_id, group_id, name, type, message_count, member_count, last_ts, extra, updated_at)
+			VALUES
+				(NEW.workspace_id, NEW.group_id, '',
+				 CASE WHEN NEW.group_id LIKE 'private:%' THEN 'private' ELSE 'group' END,
+				 1, 0, NEW.ts, '{}', CAST(strftime('%s','now') AS INTEGER))
+			ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+				message_count = message_count + 1,
+				last_ts = MAX(last_ts, NEW.ts),
+				updated_at = excluded.updated_at;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS trg_members_group_stats
+		AFTER INSERT ON members
+		BEGIN
+			INSERT INTO groups
+				(workspace_id, group_id, name, type, message_count, member_count, last_ts, extra, updated_at)
+			VALUES
+				(NEW.workspace_id, NEW.group_id, '',
+				 CASE WHEN NEW.group_id LIKE 'private:%' THEN 'private' ELSE 'group' END,
+				 0, 1, 0, '{}', CAST(strftime('%s','now') AS INTEGER))
+			ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+				member_count = member_count + 1;
+		END`,
+	}
+	for _, statement := range statements {
+		if err := db.Exec(statement).Error; err != nil {
+			return fmt.Errorf("创建群统计触发器失败：%w", err)
+		}
+	}
+	return nil
+}
+
+// mergeIdentitiesIntoGroups 把旧 identities 表并进 groups，然后删掉旧表（v12 升级）。
+//
+// 身份是从消息里学到的，所以只发过消息的会话一般已经有 groups 行（由 messages
+// 触发器建的），这里走 UPSERT 只补列；反过来只有身份没有消息的会话，这里补一行，
+// 免得升级后身份丢掉。updated_at 写 0 表示“档案还没写过”，
+// SaveGroupInfo 靠这个判断历史该不该记。
+func mergeIdentitiesIntoGroups(db *gorm.DB) error {
+	if !tableExists(db, "identities") {
+		return nil
+	}
+	// SELECT 必须有 WHERE：SQLite 不允许裸 SELECT 后面跟 ON CONFLICT，会当成语法歧义。
+	if err := db.Exec(`INSERT INTO groups
+			(workspace_id, group_id, name, type, self_user_id, extra, updated_at)
+		SELECT workspace_id, group_id, '',
+		       CASE WHEN group_id LIKE 'private:%' THEN 'private' ELSE 'group' END,
+		       self_user_id, '{}', 0
+		FROM identities WHERE self_user_id <> ''
+		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+			self_user_id = excluded.self_user_id`).Error; err != nil {
+		return fmt.Errorf("把身份并进群档案失败：%w", err)
+	}
+	if err := db.Exec(`DROP TABLE identities`).Error; err != nil {
+		return fmt.Errorf("删除旧 identities 表失败：%w", err)
 	}
 	return nil
 }

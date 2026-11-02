@@ -122,6 +122,9 @@ type Workspace struct {
 }
 
 // View 是面板用的只读视图（不含 Router/Prompt 等运行时对象）。
+//
+// Store 是内存缓存，State 是同一个工作空间的库句柄：面板的统计数字走 State，
+// 只有 State 为 nil（纯内存运行）时才退回 Store。
 type View struct {
 	ID          string
 	Name        string
@@ -130,6 +133,7 @@ type View struct {
 	Account     string
 	Groups      []string
 	Store       *conversation.Store
+	State       *state.Scope
 	HasState    bool
 }
 
@@ -807,6 +811,7 @@ func (m *Manager) Views() []View {
 			Account:     ws.Account,
 			Groups:      append([]string(nil), ws.Snapshot()().AllowGroups...),
 			Store:       ws.Cache,
+			State:       ws.State,
 			HasState:    ws.State != nil,
 		})
 	}
@@ -883,10 +888,18 @@ func (m *Manager) Close() {
 	}
 }
 
-// ResetAll 清空全部工作空间缓存（仅测试/调试）。
+// ResetAll 清空全部工作空间的内存缓存与库里的业务数据（仅测试/调试）。
+//
+// 面板现在只从库读数，只清内存会让重置后的页面继续显示上一次注入的群。
 func (m *Manager) ResetAll() {
 	for _, ws := range m.snapshot() {
 		ws.Cache.ResetAll()
+		if ws.State == nil {
+			continue
+		}
+		if err := ws.State.ResetData(); err != nil {
+			logutil.Warn("清空工作空间数据失败", "workspace", ws.ID, "err", err)
+		}
 	}
 }
 

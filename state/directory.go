@@ -1,7 +1,7 @@
 package state
 
-// identities / members / groups / member_info_history / group_info_history：
-// 这个群叫什么、群里谁叫什么、机器人自己的号是哪个。
+// members / groups / member_info_history / group_info_history：
+// 这个群叫什么、群里谁叫什么、机器人自己的号是哪个（groups.self_user_id）。
 //
 // 读路径先走 Ristretto（key 见 memberKVKey / groupKVKey），miss 再回源。
 // 写路径先写历史再更新当前值，不依赖跨表事务；历史表的 source_message_id
@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // 缓存 TTL：成员/群信息会被平台改写，不能永久缓存。
@@ -22,15 +21,6 @@ const (
 	memberCacheTTL = 7 * 24 * time.Hour
 	groupCacheTTL  = 7 * 24 * time.Hour
 )
-
-type identityRow struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	GroupID     string `gorm:"column:group_id;primaryKey"`
-	SelfUserID  string `gorm:"column:self_user_id"`
-	LearnedAt   int64  `gorm:"column:learned_at"`
-}
-
-func (identityRow) TableName() string { return "identities" }
 
 type memberRow struct {
 	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
@@ -48,8 +38,17 @@ type groupRow struct {
 	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
 	GroupID     string `gorm:"column:group_id;primaryKey"`
 	Name        string `gorm:"column:name"`
-	Extra       string `gorm:"column:extra"`
-	UpdatedAt   int64  `gorm:"column:updated_at"`
+	// Type 会话类型：group = 群聊，private = 私聊。
+	// 私聊在库里的 group_id 是 private:<openid>，和群号一样按会话存。
+	Type string `gorm:"column:type"`
+	// SelfUserID 本群学到的机器人 user_id（QQ 官方是群作用域 openid）。
+	// 用来在 members 里认出哪一行是机器人自己；哨兵值不可用于 @ 比较。
+	SelfUserID   string `gorm:"column:self_user_id"`
+	MessageCount int    `gorm:"column:message_count"`
+	MemberCount  int    `gorm:"column:member_count"`
+	LastTS       int64  `gorm:"column:last_ts"`
+	Extra        string `gorm:"column:extra"`
+	UpdatedAt    int64  `gorm:"column:updated_at"`
 }
 
 func (groupRow) TableName() string { return "groups" }
@@ -85,24 +84,34 @@ type GroupInfoHistory struct {
 func (GroupInfoHistory) TableName() string { return "group_info_history" }
 
 // SaveIdentity 记录本群学到的机器人 user_id（可能是哨兵）。
+//
+// 存在 groups.self_user_id 里：身份和会话档案都是每会话一行，没必要分两张表。
+// updated_at 写 0，表示“档案还没写过”，不会把档案的更新时间冲掉。
 func (s *Scope) SaveIdentity(groupID, selfUserID string) {
 	if s == nil || s.store == nil || selfUserID == "" || s.store.closed.Load() {
 		return
 	}
-	row := identityRow{WorkspaceID: s.workspaceID, GroupID: groupID, SelfUserID: selfUserID,
-		LearnedAt: time.Now().Unix()}
-	if err := s.store.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+	if err := s.store.db.Exec(`INSERT INTO groups
+			(workspace_id, group_id, type, self_user_id, extra, updated_at)
+		VALUES (?, ?, CASE WHEN ? LIKE 'private:%' THEN 'private' ELSE 'group' END, ?, '{}', 0)
+		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+			self_user_id = excluded.self_user_id`,
+		s.workspaceID, groupID, groupID, selfUserID).Error; err != nil {
 		s.store.noteFailure("保存身份", err)
 	}
 }
 
-// LoadIdentities 返回各群学到的机器人 user_id。
+// LoadIdentities 返回各会话学到的机器人 user_id（读 groups 表）。
 func (s *Scope) LoadIdentities() (map[string]string, error) {
 	if s == nil || s.store == nil {
 		return nil, nil
 	}
-	var rows []identityRow
-	if err := s.store.db.Where("workspace_id = ?", s.workspaceID).Find(&rows).Error; err != nil {
+	var rows []struct {
+		GroupID    string `gorm:"column:group_id"`
+		SelfUserID string `gorm:"column:self_user_id"`
+	}
+	if err := s.store.db.Raw(`SELECT group_id, self_user_id FROM groups
+		WHERE workspace_id = ? AND self_user_id <> ''`, s.workspaceID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make(map[string]string, len(rows))
@@ -331,6 +340,7 @@ func (s *Scope) SaveGroupInfo(groupID, name, source, sourceMessageID, extra stri
 	}
 	var current groupRow
 	err := s.store.db.Where("workspace_id = ? AND group_id = ?", s.workspaceID, groupID).First(&current).Error
+	exists := err == nil
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		s.store.noteFailure("读取群档案", err)
 		return false, err
@@ -339,8 +349,10 @@ func (s *Scope) SaveGroupInfo(groupID, name, source, sourceMessageID, extra stri
 	if effectiveName == "" {
 		effectiveName = current.Name
 	}
-	extraChanged := current.UpdatedAt == 0 || (extra != "{}" && extra != current.Extra)
-	changed := current.UpdatedAt == 0 || effectiveName != current.Name || extraChanged
+	// 行可能已经被身份写入建出来了（self_user_id 先到、群名后到），
+	// 所以“是不是新行”看这次查询找没找到，不看 updated_at。
+	extraChanged := !exists || (extra != "{}" && extra != current.Extra)
+	changed := !exists || effectiveName != current.Name || extraChanged
 	if !changed {
 		return false, nil
 	}

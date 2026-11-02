@@ -170,9 +170,9 @@ Gin + JWT + 内嵌 Vue SPA，提供群消息监控页面。
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | POST | `/api/login` | 否 | 返回 JWT token（账号密码校验） |
-| GET | `/api/status` | JWT | 昵称、脱敏 API Key、群数量 |
-| GET | `/api/groups` | JWT | 各群信息 + 活跃状态 |
-| GET | `/api/groups/:id` | JWT | 单群缓存消息 |
+| GET | `/api/status` | JWT | 昵称、账号数、群数量 |
+| GET | `/api/groups` | JWT | 各群信息 + 活跃状态（只列库里有的群） |
+| GET | `/api/groups/:id` | JWT | 单群消息记录（库里最近 500 条） |
 | POST | `/api/logout` | JWT | 登出（无状态 token，占位） |
 
 `web_password` 必填，登录页面始终需要账号密码。`web_port` 设为 0 或负数可以完全禁用 Web 面板。

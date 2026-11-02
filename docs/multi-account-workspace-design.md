@@ -222,22 +222,66 @@ bot:
 
 ```
 GET /api/workspaces
-    → [{ id, name, platform_id, account_count, group_count, cached_group_count, message_count, last_activity }]
+    → [{ id, name, platform_id, account_count, group_count, active_group_count, message_count, last_activity }]
 
 GET /api/workspaces/:wid/groups
     → { workspace, accounts, groups, bot_info }
+    // 群/账号是单个工作空间的，bot_info 仍是全局口径：
+    // 状态栏写"几个账号、一共几个群"，切账号不能把它改成当前账号的数字
 
 GET /api/workspaces/:wid/groups/:gid
-    → { workspace, group_id, group_name, self_id, account_name, messages, empty }
+    → { workspace, group_id, group_name, self_id, account_name, messages, total, empty }
+    // messages 是 messages 表里最近 500 条（时间倒序，最新的在最前），total 是库里这个群的总条数
+
+GET /api/sessions
+    → { sessions, bot_info }
+    // 所有账号的群/私聊平铺在一张表里，按最后一条消息时间倒序，
+    // 每条带 workspace_id / workspace_name，卡片上写清楚归谁监控
 ```
 
 `GroupDetail` 增加 `workspace_id` / `workspace_name`；旧 `/api/groups`、`/api/groups/:id` 仅在只有一个工作空间时保留，否则返回 400 提示选择工作空间（避免两账号数据混排）。
 
+**面板的数据源只有 state.db。** `/api/workspaces`、`/api/workspaces/:wid/groups`、`/api/status` 里的每个数字都由库聚合出来，不再读 `conversation.Store` 的缓存：
+
+| 字段 | 查什么 |
+| --- | --- |
+| `message_count` | `groups.message_count`，`messages` 插入时由触发器累加 |
+| `member_count` | `groups.member_count`，`members` 插入时由触发器累加 |
+| `last_activity` | `groups.last_ts`，取该会话最后一条消息的时间 |
+| `group_name` | `groups.name`（KV 里同一份群名缓存） |
+| `type` | `groups.type`：`group` = 群聊，`private` = 私聊 |
+| `self_id` | `groups.self_user_id`：该会话学到的机器人 openid |
+| `has_messages` | `message_count > 0`，前端据此决定要不要显示这块统计 |
+| `active_group_count` | 该工作空间下 `message_count > 0` 的群数，与 `group_count`（配置里列出的群数）区分开 |
+
+**群列表以库里有的会话为准，不看 `bot.allow_groups`。** 那个白名单是所有账号共用的一份，里面混着别的账号看到的群：同一物理群在不同机器人眼里是两个不同的 `group_openid`，本账号库里没有记录的群，一旦列出来就会在页面上变成一个「未归属账号」分组。所以只列 `groups` 表里有的会话。代价是刚配好、一条消息还没收到的群不会显示；一旦来消息就会自动出现。没开 state.db（纯内存运行）时才退回按配置列。
+
+**私聊也是 `groups` 里的一行，用 `type` 区分。** 私聊在库里的 `group_id` 是 `private:<openid>`（见 `Event.ChatID()`），以前只写 `messages` 表，面板只能靠 `messages` 的 `GROUP BY` 把它捞出来；现在 `groups` 也有一行，`type='private'`，和群一样参与汇总、排序、点进详情。
+
+**计数存在 `groups` 里，靠触发器维护（schema v11）。** `groups` 加了 `type` / `message_count` / `member_count` / `last_ts` 四列，`messages`、`members` 各挂一个 `AFTER INSERT` 触发器：消息入库时 `message_count + 1`、`last_ts = MAX(last_ts, NEW.ts)`，成员首次收录时 `member_count + 1`。
+
+这么做的原因很直接：以前每次打开面板都要跑一次 `SELECT group_id, COUNT(*), MAX(ts) FROM messages GROUP BY group_id`，几百万条消息就是几百万行扫一遍，多开几个页面还会叠加。现在只读 `groups` 一张小表（一个工作空间几十到几百行），消息量再大也不碰 `messages`。
+
+用触发器而不是在 Go 里再发一条 `UPDATE`：插入和计数在同一个语句里原子完成，不多一次往返；`AFTER INSERT` 只在真的插了新行时触发，重复消息走 `ON CONFLICT DO UPDATE` 分支不会把条数算两遍。升级（v10 → v11）时先补列、再拿 `messages`/`members` 存量数据回填、最后建触发器——顺序反了回填会经过触发器，计数会翻倍。
+
+**`identities` 已并进 `groups.self_user_id`（schema v12）。** 两张表主键都是 `(workspace_id, group_id)`，都是每会话一行，而 `identities` 只存「本群学到的机器人 openid」加一个学习时间——为两个字段单开一张表不值。并过来之后，面板汇总只读 `groups` 一张表（少一次 JOIN），启动恢复身份也从两次全表查询变成一次。升级（v11 → v12）先补列、再把 `identities` 的值 UPSERT 进去、最后删旧表；只有身份没有消息的会话会补出一行，不会丢。写身份时 `updated_at` 写 0，表示「档案还没写过」，不会把群名那条记录的更新时间冲掉。
+
+**群列表按最后一条消息的时间倒序。** 排序直接用 `groups.last_ts`，一条消息都没有的会话是 0，自然沉底；时间相同按群号排，保证同一个库每次打开顺序一致。
+
+`/api/sessions` 是上面这张表的跨账号版本：挨个调 `collectWorkspaceDetails` 拼起来再按 `lastTime` 整体排一次，所以小助理的群会插在两个大肥鱼的群中间，而不是账号接着账号排。同一个物理群在两个机器人眼里是两个 `group_openid`、群名也拿不到，没法可靠判重，所以**不合并**——一条会话就是一条（账号 + 群号）。
+
+**消息详情页也读库。** `/api/groups/:id` 与 `/api/workspaces/:wid/groups/:gid` 返回 `messages` 表里最近 500 条（`panelMessageLimit`），时间倒序、最新的在最上面；`total` 是库里总条数，页面写「共 N 条，显示最近 M 条」。`messages` 表只存 `user_id`，昵称和群名片从 `members` 的 `name` / `display_name` 补（取最新值，成员改过名也能对上人）；成员目录里没有的人显示 `user_id`。图片按 `images` / `image_ids` 列还原。
+
+库不可用或聚合查询失败时，面板显示 0 并打一条 warning，不回退到内存缓存——两个来源混着用，页面上会出现前后不一致的数字，比显示 0 更难判断。调试注入 `/api/debug/inject` 相应地会一起落库，重置 `/api/debug/reset` 会清掉库里该工作空间的业务数据，保证注入后页面立刻能看到、重置后立刻归零。
+
 ### 6.2 前端
 
-- 群列表页顶部增加工作空间切换（工作空间数量 > 1 时显示）；当前"按 self_id 分组"降级为工作空间内部的二级分组；
+- 群列表页有两个视图，工作空间数量 > 1 时顶部显示切换：「按账号」和「全部会话」。只有一个账号时两种看法没区别，不显示切换；
+- 「按账号」：先选账号，再看它下面的会话。群全部挂在该账号下，不再按 `self_id` 分组——群里的 `self_id` 是群作用域 openid，与账号 ID 不是一回事，拿它当分组键会拆出一堆重复卡片；
+- 「全部会话」：所有账号的群/私聊平铺成一屏，按最近消息时间倒序，每张卡片底部一行「监控账号」写归属账号；点击进详情时带上卡片自己的 `workspace_id`，不能拿当前选中工作空间的 ID；
+- 顶部状态栏「N 个账号 | 监控 M 个群」始终是全局值（所有工作空间累加），不随切换变化；切账号只影响下方的账号卡头和群列表。之前 `/api/workspaces/:wid/groups` 返回的是当前工作空间的数字，切一次就从「2 个账号 | 5 个群」变成「1 个账号 | 4 个群」；
 - 消息页标题显示"工作空间 / 账号 / 群名"；
-- `stores/groups.ts` 的 `accountSections` 改为 `workspaceSections`，账号分组保留在内部。
+- `stores/groups.ts` 的 `accountSections` 保留名字，但只返回一个 section：一个工作空间 = 一个账号 = 一组群。
 
 ### 6.3 指标与日志
 

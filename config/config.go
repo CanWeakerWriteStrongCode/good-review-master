@@ -179,12 +179,3 @@ func (cfg *Config) WorkspaceAccountsStr() string {
 func (cfg *Config) AllowGroupsStr() string {
 	return strings.Join(cfg.AllowGroups, ",")
 }
-
-// MaskedAPIKey 返回脱敏后的 API Key（仅显示前4位和后4位）
-func (cfg *Config) MaskedAPIKey() string {
-	key := cfg.LLMConfig.APIKey
-	if len(key) <= 8 {
-		return strings.Repeat("*", len(key))
-	}
-	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
-}
