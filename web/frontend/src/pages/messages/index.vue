@@ -24,11 +24,17 @@
           {{ t('messages.header.account', { name: store.accountName || store.selfId || t('common.unknown') }) }}
         </text>
       </view>
-      <text class="header-count" v-if="!store.empty">
-        {{ store.total > store.messages.length
-          ? t('messages.header.partial', { total: store.total, shown: store.messages.length })
-          : t('messages.header.total', store.total, { count: store.total }) }}
-      </text>
+      <view class="header-stats">
+        <!-- 私聊没有「群成员」这回事；群聊照实显示，0 也显示 -->
+        <text class="header-count" v-if="!isPrivateChat(store.chatType)">
+          {{ t('messages.header.members', { count: store.memberCount }) }}
+        </text>
+        <text class="header-count" v-if="!store.empty">
+          {{ store.total > store.messages.length
+            ? t('messages.header.partial', { total: store.total, shown: store.messages.length })
+            : t('messages.header.total', store.total, { count: store.total }) }}
+        </text>
+      </view>
     </view>
 
     <!-- 消息列表 -->
@@ -190,11 +196,18 @@ onMounted(() => {
   margin-top: 2px;
   word-break: break-all;
 }
+/* 右侧统计竖排：已收录成员在上，消息条数在下 */
+.header-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
 .header-count {
   color: #aab;
   font-size: 13px;
-  flex-shrink: 0;
-  margin-left: 12px;
 }
 
 /* 消息列表 */

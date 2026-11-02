@@ -99,7 +99,8 @@ export default {
     },
     group: {
       messages: '消息',
-      members: '成员',
+      // 和群列表、详情页同一个口径：数的是说过话或被 @ 过的人，不是群的真实人数
+      members: '已收录成员',
       emptyOwn: '该账号还没有群数据',
       reading: '读取中...',
       expandAll: '展开全部 {count} 个群',
@@ -157,6 +158,8 @@ export default {
     header: {
       workspace: '工作空间：{name}',
       account: '接收账号：{name}',
+      // QQ 官方没有成员列表接口，这个数是说过话或被 @ 过的人，不是群的真实人数
+      members: '已收录成员 {count} 人',
       total: '{count} 条消息',
       partial: '共 {total} 条，显示最近 {shown} 条',
       // 群名后面跟群号，全角括号中文里更协调

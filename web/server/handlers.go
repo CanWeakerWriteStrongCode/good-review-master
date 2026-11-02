@@ -315,12 +315,16 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 	groupName := ""
 	groupType := ""
 	selfID := ""
+	memberCount := 0
 	if view.State != nil {
 		groupName = view.State.GroupName(groupID)
 		// 详情页顶栏要标出「群聊 / 私聊」，这个标记只认 groups.type。
 		groupType = view.State.GroupType(groupID)
 		// 本账号的机器人 openid（所有群同一个值）：靠它认出哪些消息是它自己说的。
 		selfID = view.State.SelfUserID()
+		// 已收录成员数：和群列表同一个来源（groups.member_count），
+		// 两处数字对不上会让人以为其中一个错了。
+		memberCount = view.State.MemberCount(groupID)
 	}
 	wsID, wsName := view.ID, view.Name
 
@@ -340,6 +344,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 					"workspace_name": wsName,
 					"self_id":        view.Account,
 					"account_name":   wsName,
+					"member_count":   memberCount,
 					"messages":       msgs,
 					"total":          total,
 					"empty":          total == 0,
@@ -365,6 +370,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 				"workspace_name": wsName,
 				"self_id":        view.Account,
 				"account_name":   wsName,
+				"member_count":   memberCount,
 				"messages":       []conversation.Message{},
 				"total":          0,
 				"empty":          true,
@@ -386,6 +392,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 			"workspace_name": wsName,
 			"self_id":        view.Account,
 			"account_name":   wsName,
+			"member_count":   memberCount,
 			"messages":       msgs,
 			"total":          stats.Count,
 			"empty":          stats.Count == 0,

@@ -426,3 +426,30 @@ func Test从旧库升级补出占位待办(t *testing.T) {
 		t.Fatalf("mentions 应从正文补出来，实际 %q", mentions)
 	}
 }
+
+// MemberCount 读的是 groups.member_count（成员表插入时触发器累加），
+// 和面板群列表同一个口径：一个人只算一次，没记录的会话是 0。
+func TestMemberCount读已收录人数(t *testing.T) {
+	_, scope := openTemp(t)
+
+	// 先有消息：触发器建出 groups 行，此时成员数是 0。
+	scope.SaveMessage(conversation.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "hi", Time: 100})
+	if got := scope.MemberCount("g1"); got != 0 {
+		t.Fatalf("只有消息时成员数应为 0，实际 %d", got)
+	}
+
+	for _, userID := range []string{"u1", "u1", "u2"} {
+		if _, err := scope.SaveMemberInfo(MemberInfo{GroupID: "g1", UserID: userID, Name: "群友"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// u1 出现两次（UPSERT 走更新分支，不触发累加）：只算 1 个人。
+	if got := scope.MemberCount("g1"); got != 2 {
+		t.Fatalf("成员数 = %d, want 2", got)
+	}
+
+	// 没进过库的会话不该凭空给出数字。
+	if got := scope.MemberCount("g404"); got != 0 {
+		t.Fatalf("未知会话的成员数 = %d, want 0", got)
+	}
+}

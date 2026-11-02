@@ -28,7 +28,7 @@ export default {
     // field labels shared by chat cards and group cards
     stat: {
       messages: 'Messages',
-      members: 'Members',
+      members: 'Known members',
       lastActive: 'Last active',
       monitorAccount: 'Account',
     },
@@ -97,7 +97,9 @@ export default {
     },
     group: {
       messages: 'Msgs',
-      members: 'Members',
+      // Same wording as the group list and message detail: it counts people who
+      // spoke up or were mentioned, not the real group size.
+      members: 'Known members',
       emptyOwn: 'No chats for this account yet',
       reading: 'Loading...',
       expandAll: 'Show all {count}',
@@ -155,6 +157,9 @@ export default {
     header: {
       workspace: 'Workspace: {name}',
       account: 'Receiving account: {name}',
+      // QQ Official has no member-list API: this counts people who spoke up or
+      // were mentioned, not the real group size.
+      members: '{count} known member | {count} known members',
       total: '{count} message | {count} messages',
       partial: '{total} total, showing latest {shown}',
       labeled: '{name} ({id})',

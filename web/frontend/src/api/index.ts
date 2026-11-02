@@ -118,6 +118,8 @@ export interface MessagesData {
   workspace_name: string
   self_id: string
   account_name: string
+  /** 已收录成员数（说过话或被 @ 过的人），和群列表同一个来源 */
+  member_count: number
   /** 最近一批消息（后端封顶 500 条，时间升序） */
   messages: Message[]
   /** 库里这个群的消息总条数；messages 只给最近一部分 */

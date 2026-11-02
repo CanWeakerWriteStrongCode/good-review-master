@@ -264,6 +264,22 @@ func (s *Scope) RenameSelfMember(groupID, userID, oldName, newName string) {
 	})
 }
 
+// MemberCount 读这个会话已收录的成员数（groups.member_count，插入成员时由触发器累加）。
+//
+// 和面板群列表同一个口径：说过话或被 @ 过的人，不是群的真实人数——QQ 官方没有
+// 成员列表接口，只能数观察到的。私聊也走这张表，那边一般只有对聊的一个人。
+func (s *Scope) MemberCount(groupID string) int {
+	if s == nil || s.store == nil || s.store.closed.Load() || groupID == "" {
+		return 0
+	}
+	var count int
+	if err := s.store.db.Raw(`SELECT member_count FROM groups WHERE workspace_id = ? AND group_id = ?`,
+		s.workspaceID, groupID).Scan(&count).Error; err != nil {
+		s.store.noteFailure("读取会话成员数", err)
+	}
+	return count
+}
+
 // LoadMembers 返回 group → user → 显示名。
 func (s *Scope) LoadMembers() (map[string]map[string]string, error) {
 	if s == nil || s.store == nil {

@@ -324,6 +324,11 @@ export const useMessagesStore = defineStore('messages', () => {
   const empty = ref(true)
   /** 库里这个群的消息总条数；messages 只有最近一批 */
   const total = ref(0)
+  /**
+   * 已收录成员数（说过话或被 @ 过的人）。
+   * 不是群的真实人数——QQ 官方没有成员列表接口，只能数观察到的。
+   */
+  const memberCount = ref(0)
 
   async function loadMessages(wid: string, id: string) {
     groupId.value = id
@@ -342,6 +347,7 @@ export const useMessagesStore = defineStore('messages', () => {
       workspaceName.value = data.workspace_name || ''
       selfId.value = data.self_id || ''
       accountName.value = data.account_name || ''
+      memberCount.value = data.member_count ?? 0
     } catch (e) {
       console.error('加载消息失败', e)
     } finally {
@@ -365,6 +371,7 @@ export const useMessagesStore = defineStore('messages', () => {
     loading,
     empty,
     total,
+    memberCount,
     loadMessages,
     formatTime,
   }
