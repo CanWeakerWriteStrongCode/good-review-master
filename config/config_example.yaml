@@ -189,17 +189,17 @@ pipeline:
   # Stage 1（同步/补全）：一次取几条、凑批最多等多久、同时几个会话在跑、失败重试次数
   sync_batch: 20
   sync_linger_ms: 20              # 0 = 不等，来一条处理一条
-  sync_concurrency: 4
+  sync_concurrency: 8              # 纯库操作，但 state.db 只开 1 个连接，再高只是排队
   sync_retries: 3                 # 0 = 不重试，直接进问题件
   # Stage 2（资产打标签）：一批消息一起打标签，便于统一限流
   asset_batch: 4
   asset_linger_ms: 20             # 0 = 不等
-  asset_concurrency: 2
+  asset_concurrency: 3             # 同时几条消息在打标签；出站请求还要乘 tag_concurrency
   asset_retries: 3                # 0 = 不重试
   # Stage 3（Agent）：当前逐条执行，批量只用于出队效率
   agent_batch: 1
   agent_linger_ms: 0              # 0 = 不等
-  agent_concurrency: 2
+  agent_concurrency: 3             # 同时几条消息在生成回复；对着 llama-server 的 -np 走
   agent_retries: 3                # 0 = 不重试
   # 单群/单私聊最多积压多少条；整个进程最多积压多少条（0 会让流水线停摆，非法）
   per_chat_capacity: 500

@@ -40,9 +40,9 @@ const (
 	defaultSyncLingerMs     = 20
 	defaultAssetLingerMs    = 20
 	defaultAgentLingerMs    = 0
-	defaultSyncConcurrency  = 4
-	defaultAssetConcurrency = 2
-	defaultAgentConcurrency = 2
+	defaultSyncConcurrency  = 8
+	defaultAssetConcurrency = 3
+	defaultAgentConcurrency = 3
 	defaultStageRetries     = 3
 	defaultPerChatCapacity  = 500
 	defaultGlobalCapacity   = 5000
