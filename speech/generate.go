@@ -360,7 +360,6 @@ func (r *Router) imageCandidatesBlock(msgs []conversation.Message) string {
 //
 // **注意一处与文档不符的现状**：本函数原先还接收 `mentionerNick` 与 `extra` 两个参数，
 // 但函数体从未用过它们——也就是说"关键字后面的补充文本"目前**没有**拼进提示词里，
-// 而 CLAUDE.md 把"extra 会作为「用户补充,优先级很高」追加"写成了既有行为。
 // 这次只是把两个死参数删掉（纯机械清理，行为零变化），没有顺手把它加回去：
 // 那会改变发给大模型的内容，属于产品决定，该由人来拍板。
 func BuildUserMsg(chatLog string, keywordPrompt string) string {

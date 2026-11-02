@@ -88,7 +88,7 @@ type EnrichedMessage struct {
 3. **域之间只传值对象，不互相持有对象。** 会话域不存 `*speech.Router`，发言域不存 `*conversation.Store`。需要谁，在编排层注入一个窄接口。
 4. **值对象跟着"谁算出来的"走。** 流水线负责编码成 `Item.Body`，但载荷里的业务字段（消息、资产、判定结论）归各自的域。
 
-还有一条这个项目特有的：**`telemetry` 是唯一允许被任何层直接 import 的包**。指标是进程级单例，为一个 `telemetry.CacheMessages.Set(...)` 去给十几个构造函数加参数换不来解耦。这条在 `CLAUDE.md` 里已经写着，继续遵守。
+还有一条这个项目特有的：**`telemetry` 是唯一允许被任何层直接 import 的包**。指标是进程级单例，为一个 `telemetry.CacheMessages.Set(...)` 去给十几个构造函数加参数换不来解耦。
 
 ---
 
@@ -649,8 +649,6 @@ go test -bench . -benchmem ./conversation/ ./speech/
 `BenchmarkAdd` 的 allocs/op 必须是 0。环形缓存的零分配是这条流水线能扛住消息量的前提，拆包时最容易顺手加个 `fmt.Sprintf` 就破了。
 
 **5. 文档同步**
-
-包改名会让 `CLAUDE.md` 的 `### Package graph` 一段整体过期。这一批已经同步了：`CLAUDE.md` 的 `### Package graph`、`## Command system`（原 `router/`）、`## Ring buffer cache`（原 `cache/`）三处，加上 `README.md` 的目录树、依赖图与「消息处理流程」。
 
 `docs/` 下其余专题文档（`three-stage-pipeline-design.md` 等）**没改**：它们是写作当日的设计记录，里面写 `router/`、`cache/` 是历史语境。读它们时以代码目录为准，本文 §13 是唯一的"落地后现状"。
 
