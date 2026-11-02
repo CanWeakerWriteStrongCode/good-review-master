@@ -91,14 +91,15 @@ func (s runtimePipelineSettings) applyTo(out *PipelineConf) {
 }
 
 type runtimeAssetsSettings struct {
-	BackfillEnabled     *bool   `json:"backfill_enabled"`
-	BackfillIntervalSec *int    `json:"backfill_interval_sec"`
-	BackfillBatch       *int    `json:"backfill_batch"`
-	BackfillMaxAttempts *int    `json:"backfill_max_attempts"`
-	JobRetentionDays    *int    `json:"job_retention_days"`
-	MessageBudgetSec    *int    `json:"message_budget_sec"`
-	TagConcurrency      *int    `json:"tag_concurrency"`
-	PromptVersion       *string `json:"prompt_version"`
+	BackfillEnabled         *bool   `json:"backfill_enabled"`
+	BackfillIntervalSec     *int    `json:"backfill_interval_sec"`
+	BackfillBatch           *int    `json:"backfill_batch"`
+	BackfillMaxAttempts     *int    `json:"backfill_max_attempts"`
+	BackfillClaimTimeoutSec *int    `json:"backfill_claim_timeout_sec"`
+	JobRetentionDays        *int    `json:"job_retention_days"`
+	MessageBudgetSec        *int    `json:"message_budget_sec"`
+	TagConcurrency          *int    `json:"tag_concurrency"`
+	PromptVersion           *string `json:"prompt_version"`
 }
 
 func (s runtimeAssetsSettings) applyTo(out *AssetsConf) {
@@ -123,6 +124,10 @@ func (s runtimeAssetsSettings) applyTo(out *AssetsConf) {
 	applySec(s.BackfillIntervalSec, &out.BackfillInterval)
 	applyPositive(s.BackfillBatch, &out.BackfillBatch)
 	applyNonNegative(s.BackfillMaxAttempts, &out.BackfillMaxAttempts)
+	// 租约不能用 applySec（它允许 0）：0 等于永不过期，崩溃时的手里那几条会永久卡住。
+	if s.BackfillClaimTimeoutSec != nil && *s.BackfillClaimTimeoutSec > 0 {
+		out.BackfillClaimTimeout = time.Duration(*s.BackfillClaimTimeoutSec) * time.Second
+	}
 	if s.JobRetentionDays != nil && *s.JobRetentionDays >= 0 {
 		out.JobRetention = time.Duration(*s.JobRetentionDays) * 24 * time.Hour
 	}

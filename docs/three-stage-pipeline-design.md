@@ -250,6 +250,7 @@ B1 取代现在的全局事件 channel：HTTP 入站 `Put`，Stage 1 按 `worksp
 | 补标签扫描间隔 | 多久扫一次欠条本 | 全局 | 60 秒 | 0=关闭（等同开关关） |
 | 补标签每批条数 | 一次补多少 | 全局 | 20 | 非法（至少 1） |
 | 补标签最多尝试 | 一张欠条最多补几次 | 全局 | 3 | 0=不重试 |
+| 欠条租约 | 领走后多久没动静算那个进程没了 | 全局 | 600 秒 | 非法（至少 1） |
 | 完成记录保留天数 | 完成的欠条留多久 | 全局 | 30 天 | 0=永久保留 |
 
 规则：
@@ -361,7 +362,10 @@ type Tagger interface {
   2. 调用 `Alerter.Record` 记录完整原始事件/消息 JSON + 指标；
   3. 消息带 `AssetStatus = deferred` 照常进入 B3/Stage 3；B3 满时向上游回压，不丢消息。
 
-  后台 backfill worker 定期扫描 `pending/failed` 任务补打标签，成功写 `image_notes` 并标记 `done`。
+  后台 backfill worker 定期扫欠条补打标签：先按 `attempts` + `status` 选出候选，再对每一条发一条
+  条件 UPDATE（`status IN ('pending','failed') OR 租约过期的 running` → `running`，同时 `attempts+1`）；
+  只有改动到 1 行的进程才动手，其余跳过。成功写 `image_notes` 并标记 `done`。进程崩在补的途中时，
+  这条会停在 `running`，等超过租约（`assets.backfill_claim_timeout_sec`）后由别的副本或下次启动接手。
 - **标签失败：继续进入 Stage 3**。`asset_tag_jobs` 保留记录（`status=failed`，`attempts+1`）交给后台重试；`EnrichedMessage.AssetStatus = degraded|failed`，Stage 3 据此做降级处理（见 7.4）。
 
 ```sql

@@ -175,6 +175,8 @@ func migrate(db *gorm.DB, path string) error {
 			updated_at     INTEGER NOT NULL,
 			PRIMARY KEY (sha256, byte_size)
 		)`,
+		// status：pending 待补 / running 已被某个进程领走（updated_at 当租约） /
+		// failed 这次失败、还在重试名额内 / done 补好了 / missing 原始地址没了（终态）。
 		`CREATE TABLE IF NOT EXISTS asset_tag_jobs (
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,

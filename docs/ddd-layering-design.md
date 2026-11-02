@@ -182,7 +182,7 @@ type EnrichedMessage struct {
 | `ImageTagger.TagURLs` | 一条消息的图挨个降采样 → 算 `ImageID{sha, size}` → 查全局图库 → 没有就让视觉模型写描述 → 写 `image_notes`。返回 `TagResult` |
 | 图库 | `image_notes` 表按 `ImageID` 做键。描述只写图本身不写聊天语境，所以能跨群跨账号复用。**不存文件地址**——旧消息的图可能已经被清理，候选列表的 url 永远取当前消息自己的 |
 | 欠条 | 这次打不完的（超时、并发满了）不阻塞，写一行 `AssetTagJob` 进 `asset_tag_jobs`，状态 `pending` 或 `failed` |
-| 后台补打 | `Backfiller.Run(ctx)` 按 `BackfillInterval` 扫欠条，`BackfillMaxAttempts` 次后放弃，结果回写图库 |
+| 后台补打 | `Backfiller.Run(ctx)` 按 `BackfillInterval` 扫欠条：先选候选，再用条件 UPDATE 抢占（`pending/failed` 或租约过期的 `running` → `running`），`BackfillMaxAttempts` 次后放弃，结果回写图库 |
 
 **要动的**：`TagResult.Assets` 现在是 `[]pipeline.Asset`，把 `Asset` 值对象定义挪进本域。
 

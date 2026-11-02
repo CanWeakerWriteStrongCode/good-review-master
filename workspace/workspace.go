@@ -194,11 +194,12 @@ func New(appCfg config.Snapshot, systemPromptPath, customPromptPath string,
 		m.backfiller = assets.NewBackfiller(m.stateStore, m.tagger, func() *assets.BackfillConfig {
 			cfg := m.appCfg()
 			return &assets.BackfillConfig{
-				Enabled:     cfg.Assets.BackfillEnabled,
-				Interval:    cfg.Assets.BackfillInterval,
-				Batch:       cfg.Assets.BackfillBatch,
-				MaxAttempts: cfg.Assets.BackfillMaxAttempts,
-				Retention:   cfg.Assets.JobRetention,
+				Enabled:      cfg.Assets.BackfillEnabled,
+				Interval:     cfg.Assets.BackfillInterval,
+				Batch:        cfg.Assets.BackfillBatch,
+				MaxAttempts:  cfg.Assets.BackfillMaxAttempts,
+				Retention:    cfg.Assets.JobRetention,
+				ClaimTimeout: cfg.Assets.BackfillClaimTimeout,
 			}
 		})
 		if shutdownCtx != nil {

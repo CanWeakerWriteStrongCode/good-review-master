@@ -73,14 +73,15 @@ type PipelineConf struct {
 
 // AssetsConf 资产打标签与后台补标签参数。
 type AssetsConf struct {
-	BackfillEnabled     bool
-	BackfillInterval    time.Duration // 0 = 关闭扫描
-	BackfillBatch       int
-	BackfillMaxAttempts int
-	JobRetention        time.Duration // 0 = 永久保留 done/missing 台账
-	MessageBudget       time.Duration // 0 = 不设单条消息预算
-	TagConcurrency      int
-	PromptVersion       string
+	BackfillEnabled      bool
+	BackfillInterval     time.Duration // 0 = 关闭扫描
+	BackfillBatch        int
+	BackfillMaxAttempts  int
+	BackfillClaimTimeout time.Duration // 领走后多久没动静算那个进程没了，必须 > 0
+	JobRetention         time.Duration // 0 = 永久保留 done/missing 台账
+	MessageBudget        time.Duration // 0 = 不设单条消息预算
+	TagConcurrency       int
+	PromptVersion        string
 }
 
 // IMAccount 一个机器人账号的出站地址覆盖。
