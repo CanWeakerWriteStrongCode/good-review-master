@@ -1,0 +1,18 @@
+# 面板 API 的错误文案（英文）。
+#
+# 与 zh-CN.yaml 保持同样的 key。新增语言只要往这个目录里丢一个
+# <语言标签>.yaml（如 ja-JP.yaml），代码不用改——语言列表按目录里的文件算。
+#
+# Keys must match zh-CN.yaml. Adding a whole new language only requires
+# dropping <tag>.yaml into this directory; no code change needed.
+
+request.bad_json: "Malformed request"
+auth.unauthorized: "Session expired. Please sign in again."
+auth.bad_credentials: "Incorrect username or password"
+auth.token_sign_failed: "Failed to issue a login token. Please try again later."
+auth.rate_limited: "Too many attempts. Please try again later."
+error.internal: "Unknown error. Please contact support."
+alerts.read_failed: "Failed to load alerts. Please try again later."
+workspace.not_found: "Workspace not found"
+workspace.none: "No workspace available"
+workspace.multiple: "Multiple workspaces found. Use {{.Endpoint}} to pick one."

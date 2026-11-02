@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"good-review-master/logutil"
-
 	"github.com/gin-gonic/gin"
 )
 
@@ -45,8 +43,7 @@ func (s *Server) handleAPIAlerts() gin.HandlerFunc {
 		store := s.stateStore()
 		list, total, err := store.LoadAlerts(limit)
 		if err != nil {
-			logutil.Warn("读取报警失败", "err", err)
-			c.JSON(http.StatusInternalServerError, APIResponse{Code: 500, Data: gin.H{"msg": "读取报警失败"}})
+			failWrap(c, CodeAlertsReadFailed, err, nil)
 			return
 		}
 

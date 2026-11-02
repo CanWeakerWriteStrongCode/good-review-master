@@ -7,7 +7,8 @@ import { authHeaders, loginToken } from './helpers'
 test('diagnostics：无 token 返回 401', async ({ request }) => {
   const res = await request.get('/api/diagnostics')
   expect(res.status()).toBe(401)
-  expect((await res.json()).code).toBe(401)
+  // 40100 = 鉴权失败；HTTP 401 与这个码是同一个意思的两层表达
+  expect((await res.json()).code).toBe(40100)
 })
 
 test('diagnostics：有 token 返回运行时概况与 goroutine 分组', async ({ request }) => {

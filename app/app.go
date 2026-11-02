@@ -110,6 +110,13 @@ func (a *App) Start() {
 			logutil.Error("Web 服务异常退出", "err", err)
 		}
 	}()
+	// 错误文案的监听：也挂在这个 ctx 上，退出时一起收。
+	// 它只是轮询一个目录，即使一直不启也不会堵住别的组件，但泄露一个 goroutine 总归不对。
+	go func() {
+		if err := a.Web.RunLocaleWatch(a.ctx); err != nil {
+			logutil.Error("语言文件监听退出", "err", err)
+		}
+	}()
 	logutil.Info("Web 管理面板已启动", "addr", a.webURL)
 }
 

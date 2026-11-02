@@ -64,6 +64,18 @@ var (
 		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	}, []string{"route"})
 
+	// HTTPBusinessErrorsTotal 业务失败次数，按 路由模板 / 业务错误码 分组。
+	//
+	// 为什么需要单独一条：面板的业务错误一律 HTTP 200（见 web/server/errcode.go），
+	// 它们在 HTTPRequestsTotal 里 status 全是 200，跟成功请求混在一起。
+	// 没有这条曲线，“用户在哪些操作上失败”就看不见了。
+	//
+	// 两个标签都**有界**：route 是路由模板而不是真实路径，code 是码表里的几十个。
+	HTTPBusinessErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_business_errors_total",
+		Help: "业务失败次数（body.code != 200），按 route/code 分组",
+	}, []string{"route", "code"})
+
 	// ---------------- 大模型 ----------------
 
 	// LLMRequestsTotal 大模型调用次数。model 用配置里的模型名，
@@ -295,6 +307,7 @@ func allCollectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		HTTPRequestsTotal,
 		HTTPRequestDurationSeconds,
+		HTTPBusinessErrorsTotal,
 
 		LLMRequestsTotal,
 		LLMDurationSeconds,

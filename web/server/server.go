@@ -11,7 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"good-review-master/apppath"
 	"good-review-master/config"
+	"good-review-master/config/store"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
 	"good-review-master/workspace"
@@ -22,6 +24,7 @@ import (
 // Server Web 管理面板服务器
 type Server struct {
 	cfg          config.Snapshot
+	locales      *Locales // 错误文案；改文件后整体热替换，见 RunLocaleWatch
 	engine       *gin.Engine
 	httpServer   *http.Server
 	obClient     *onebot.Client
@@ -31,6 +34,8 @@ type Server struct {
 	loginLimiter *loginRateLimiter
 	draining     atomic.Bool // 优雅关闭开始后置位，/readyz 据此返回 503
 	startedAt    time.Time   // 供 /api/diagnostics 报运行时长
+	// localeReload 盯着 locales/ 目录，一变就重读。生命周期由 RunLocaleWatch 接住。
+	localeReload *store.Observer
 }
 
 // New 创建 Web 服务器实例。
@@ -41,6 +46,11 @@ type Server struct {
 // 而 /api/status、/api/groups 返回的内容每次请求都重新取快照，改了配置下一次请求就能看到。
 func New(cfg config.Snapshot, obClient *onebot.Client, workspaces *workspace.Manager) *Server {
 	startup := cfg()
+
+	// 错误文案住在二进制外面（locales/ 目录），改一句不用重新编译。
+	// 首跑时目录不存在，NewLocales 会把内嵌的出厂版本写出去。
+	localeDir := apppath.GetWorkPath(localeDirName)
+	locales := NewLocales(localeDir)
 
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -54,19 +64,21 @@ func New(cfg config.Snapshot, obClient *onebot.Client, workspaces *workspace.Man
 	// 全局中间件。顺序有讲究：
 	// Recovery 必须最外层——它得罩住后面所有中间件与处理器的 panic；
 	// Telemetry 排在 Logger 前面，日志才能带上 trace_id（ctx 由 Telemetry 注入）。
-	engine.Use(RecoveryMiddleware())
+	engine.Use(RecoveryMiddleware(locales))
 	engine.Use(TelemetryMiddleware())
 	engine.Use(LoggerMiddleware())
 	engine.Use(CORSMiddleware(startup.CorsOrigins))
 
 	s := &Server{
 		cfg:          cfg,
+		locales:      locales,
 		engine:       engine,
 		obClient:     obClient,
 		workspaces:   workspaces,
 		groupNames:   make(map[string]string),
 		loginLimiter: newLoginRateLimiter(),
 		startedAt:    time.Now(),
+		localeReload: store.NewObserver(newLocalePoller(localeDir, localeWatchInterval), locales.Reload),
 	}
 
 	// 探针：无鉴权，注册在 engine 根上（不走 /api 的鉴权中间件）
@@ -75,6 +87,9 @@ func New(cfg config.Snapshot, obClient *onebot.Client, workspaces *workspace.Man
 
 	// API 路由
 	apiGroup := engine.Group("/api")
+	// 统一错误出口挂在最前：鉴权失败也是通过 c.Error 上报的，挂晚了就接不住。
+	// 它只处理错，接住之后按码和语言包写响应，业务 handler 里不再出现任何提示文案。
+	apiGroup.Use(ErrorHandler(locales))
 	apiGroup.POST("/login", handleLogin(startup.WebUsername, startup.WebPassword, startup.JWTSecret, s.loginLimiter))
 	apiGroup.Use(AuthMiddleware(startup.JWTSecret))
 	{
@@ -155,6 +170,15 @@ func (s *Server) Start() error {
 		return err
 	}
 	return nil
+}
+
+// RunLocaleWatch 阻塞监听 locales/ 目录的变化，直到 ctx 取消。
+//
+// 生命周期归调用方（app 的生命周期 ctx）：它不退出会拖住优雅关闭。
+// 单独一个方法而不是塞进 Start：Start 是 httpServer.ListenAndServe，阻塞在那里，
+// 再起一个循环只能靠新的 goroutine，而那正是调用方（app）该决定的事。
+func (s *Server) RunLocaleWatch(ctx context.Context) error {
+	return s.localeReload.Run(ctx)
 }
 
 // Shutdown 优雅关闭 Web 服务，顺序对优雅下线是本质的：

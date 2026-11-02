@@ -1,0 +1,20 @@
+# 面板 API 的错误文案（中文）。
+#
+# 加一条文案的步骤：
+#   1. 在 errcode.go 里登记码（常量 + errTable）；
+#   2. 在这个文件和 en-US.yaml 里各写一行，key 用 errTable 里的 ID；
+#   3. 跑 go test ./web/server —— 漏写哪一份，测试会点名。
+#
+# 这份文件在二进制外面，改完最长 2 秒生效，不用重启也不用重新编译。
+# 带参数的条目用 Go 模板语法 {{.Name}}，参数名和 BizError.Args 的 key 一致。
+
+request.bad_json: "请求格式不正确"
+auth.unauthorized: "登录已过期，请重新登录"
+auth.bad_credentials: "账号或密码错误"
+auth.token_sign_failed: "签发登录凭证失败，请稍后再试"
+auth.rate_limited: "尝试过于频繁，请稍后再试"
+error.internal: "未知错误，请联系客服"
+alerts.read_failed: "读取报警失败，请稍后再试"
+workspace.not_found: "工作空间不存在"
+workspace.none: "还没有任何工作空间"
+workspace.multiple: "存在多个工作空间，请使用 {{.Endpoint}} 指定账号"

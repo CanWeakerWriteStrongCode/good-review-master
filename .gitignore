@@ -27,6 +27,9 @@ state.db-shm
 *.db.bak*
 # 密钥文件：单独一份、权限 0600，绝不能进版本库
 /secret.yaml
+# 运行期落地的语言包：出厂版本内嵌在 web/server/locales/，这份是给现场改文案用的，
+# 改了不该反过来覆盖仓库里的出厂版本
+/locales/
 
 # 日志
 /log/

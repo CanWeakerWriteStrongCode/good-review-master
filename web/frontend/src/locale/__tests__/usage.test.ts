@@ -34,7 +34,9 @@ function sourceFiles(dir: string): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
-      if (full === LOCALE_DIR || entry.name === 'node_modules') continue
+      // locale 是自己扫的对象；node_modules 是依赖；__tests__ 里的中文是**断言用的**
+      // （要验证弹给用户的确实是“账号或密码错误”），不进界面，扫进来全是假阳性
+      if (full === LOCALE_DIR || entry.name === 'node_modules' || entry.name === '__tests__') continue
       out.push(...sourceFiles(full))
     } else if (entry.name.endsWith('.ts') || entry.name.endsWith('.vue')) {
       out.push(full)

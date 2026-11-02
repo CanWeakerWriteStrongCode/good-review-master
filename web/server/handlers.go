@@ -14,10 +14,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// APIResponse 统一 API 响应格式
+// APIResponse 统一 API 响应信封。
+//
+// 成功时只有 code=200 + data；失败时 code 是六位业务码、err 是它的名字、
+// msg 是按请求语言翻好的一句话。**前端只认 code != 200，然后弹 msg**，
+// 不需要认识任何一个具体业务码——所以后端加错误码不用前端跟着发版。
 type APIResponse struct {
 	Code int         `json:"code"`
 	Data interface{} `json:"data"`
+	// Err 是错误码的名字（如 workspace.not_found），给日志和浏览器网络面板看。
+	// 前端不依赖它，但排查时 "60001" 远不如这个名字直观。
+	Err string `json:"err,omitempty"`
+	// Msg 已按请求语言翻译好，前端拿到直接弹。
+	Msg string `json:"msg,omitempty"`
+	// ReqID 只在兜底的未知错误里出现，是给用户报障用的单号。
+	ReqID string `json:"req_id,omitempty"`
 }
 
 // GroupDetail 群信息
@@ -33,8 +44,8 @@ type GroupDetail struct {
 	MessageCount  int    `json:"message_count"`
 	MemberCount   int    `json:"member_count"` // 已收录成员数（说过话或被 @ 过）
 	// LastTS 是最近一条消息的时间（Unix 秒），0 表示没有记录。
-	// 接口只传原始时间戳，不在后端拼日期字符串：面板要中英两套显示，
-	// 后端按语言拼的话得引一套 i18n，改格式还得两边一起动。
+	// 接口只传原始时间戳，不在后端拼日期字符串：日期格式跟习惯走更合适，
+	// 而后端的 i18n 只负责错误文案，不必把日期格式化规则也搬过来。
 	LastTS int64 `json:"last_ts"`
 	// HasMessages 表示 state.db 里这个群有消息记录。名字不叫 cached：
 	// 面板已经不看内存缓存了，这个值来自 messages 表的条数。
@@ -70,9 +81,8 @@ func (s *Server) handleAPIGroups() gin.HandlerFunc {
 		var accounts []AccountDetail
 		if views := s.workspaceViews(); len(views) > 0 {
 			if len(views) != 1 {
-				c.JSON(http.StatusBadRequest, APIResponse{Code: 400, Data: gin.H{
-					"msg": "存在多个工作空间，请使用 /api/workspaces/{id}/groups 指定账号",
-				}})
+				// 多个账号时没法猜用户要看谁的，只能让他明确指定
+				fail(c, CodeMultipleWorkspaces, map[string]any{"Endpoint": "/api/workspaces/{wid}/groups"})
 				return
 			}
 			groups, accounts = s.collectWorkspaceDetails(views[0])
@@ -232,7 +242,7 @@ func (s *Server) handleAPIWorkspaceGroups() gin.HandlerFunc {
 			}
 		}
 		if !found {
-			c.JSON(http.StatusNotFound, APIResponse{Code: 404, Data: gin.H{"msg": "工作空间不存在"}})
+			fail(c, CodeWorkspaceNotFound, nil)
 			return
 		}
 
@@ -271,9 +281,7 @@ func (s *Server) handleAPIMessages() gin.HandlerFunc {
 		var view workspace.View
 		if views := s.workspaceViews(); len(views) > 0 {
 			if len(views) != 1 {
-				c.JSON(http.StatusBadRequest, APIResponse{Code: 400, Data: gin.H{
-					"msg": "存在多个工作空间，请使用 /api/workspaces/{id}/groups/{group_id} 指定账号",
-				}})
+				fail(c, CodeMultipleWorkspaces, map[string]any{"Endpoint": "/api/workspaces/{wid}/groups/{gid}"})
 				return
 			}
 			view = views[0]
@@ -287,7 +295,7 @@ func (s *Server) handleAPIWorkspaceMessages() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		view, ok := s.workspaceView(c.Param("wid"))
 		if !ok {
-			c.JSON(http.StatusNotFound, APIResponse{Code: 404, Data: gin.H{"msg": "工作空间不存在"}})
+			fail(c, CodeWorkspaceNotFound, nil)
 			return
 		}
 		s.writeMessages(c, c.Param("gid"), view)
@@ -390,8 +398,9 @@ func handleLogin(username, password, jwtSecret string, limiter *loginRateLimiter
 		clientIP := c.ClientIP()
 		if limiter.Blocked(clientIP) {
 			logutil.Warn("登录失败次数过多，已限流", "ip", clientIP)
+			// Retry-After 是标准头，网关和浏览器都认，所以留在 HTTP 这一层
 			c.Header("Retry-After", "60")
-			c.JSON(http.StatusTooManyRequests, APIResponse{Code: 429, Data: gin.H{"msg": "尝试过于频繁，请稍后再试"}})
+			fail(c, CodeRateLimited, nil)
 			return
 		}
 
@@ -400,7 +409,7 @@ func handleLogin(username, password, jwtSecret string, limiter *loginRateLimiter
 			Password string `json:"password"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, APIResponse{Code: 400, Data: nil})
+			fail(c, CodeBadJSON, nil)
 			return
 		}
 		// 常量时间比较：避免用响应时间逐字节猜密码（subtle 的用法见 chacha20 文档）
@@ -408,13 +417,14 @@ func handleLogin(username, password, jwtSecret string, limiter *loginRateLimiter
 			subtle.ConstantTimeCompare([]byte(body.Password), []byte(password)) != 1 {
 			limiter.RecordFailure(clientIP)
 			logutil.Warn("登录失败", "ip", clientIP, "username", body.Username)
-			c.JSON(http.StatusOK, APIResponse{Code: 401, Data: gin.H{"msg": "账号或密码错误"}})
+			// 业务判断（比过了、不相等），所以是 HTTP 200 + 业务码，不是 401
+			fail(c, CodeBadCredentials, nil)
 			return
 		}
 		token, err := GenerateJWT(username, jwtSecret)
 		if err != nil {
 			logutil.Error("生成 token 失败", "err", err)
-			c.JSON(http.StatusInternalServerError, APIResponse{Code: 500, Data: gin.H{"msg": "token 生成失败"}})
+			failWrap(c, CodeTokenSignFailed, err, nil)
 			return
 		}
 		c.JSON(http.StatusOK, APIResponse{Code: 200, Data: gin.H{"token": token}})

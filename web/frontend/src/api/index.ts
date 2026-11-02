@@ -17,6 +17,19 @@ export function getAuthHeader(): Record<string, string> {
 }
 
 /**
+ * 告诉后端这次响应用哪种语言。
+ *
+ * 带这个头之后，后端返回的错误文案已经是当前语言，前端直接弹即可；
+ * 后端给已有语言补文案、改措辞都不需要前端重新发版。
+ *
+ * 不用标准的 Accept-Language：那个头浏览器会自动带上（值是浏览器/系统语言），
+ * 和用户在这里选的容易打架，后端也就分不清该信哪个。
+ */
+export function getLangHeader(): Record<string, string> {
+  return { 'X-Lang': i18n.global.locale.value }
+}
+
+/**
  * 401 的统一出口：清 token 并回登录页。
  *
  * 抽出来是因为还有第二个调用面——pprof 那几个端点返回的不是 {code,data} 信封
@@ -29,19 +42,37 @@ export function handleUnauthorized(): never {
   throw new Error(tt('api.unauthorized'))
 }
 
-/** 发一个 GET 并拆掉 {code,data} 信封。非信封响应（pprof）见 diagnostics.ts。 */
+/** 发一个 GET 并拆掉信封。非信封响应（pprof）见 diagnostics.ts。 */
 export async function request<T>(url: string): Promise<T> {
+  // 请求没到服务器（断网、超时）：没有 HTTP 响应，也就没有 msg 可弹
   const res = await uni.request({
     url: BASE_URL + url,
     method: 'GET',
-    header: getAuthHeader(),
-  })
-  const body = res.data as APIResponse<T>
-  if (body.code === 401) {
+    header: { ...getAuthHeader(), ...getLangHeader() },
+  }).catch(() => null)
+  if (!res) {
+    throw new Error(tt('api.network'))
+  }
+
+  // 第一层：HTTP 状态码。非 200 表示请求没走完业务（鉴权拦下、网关挂了、路由不存在），
+  // 这时候 body 可能根本不是 JSON，不要去解构它。
+  if (res.statusCode === 401) {
     handleUnauthorized()
   }
-  if (body.code !== 200) {
+  if (res.statusCode !== 200) {
     throw new Error(tt('api.httpError', { status: res.statusCode }))
+  }
+
+  const body = res.data as APIResponse<T>
+  if (typeof body?.code !== 'number') {
+    // 200 但拿到的不是信封：反代或别的中间层写了一段 HTML
+    throw new Error(tt('api.unknown'))
+  }
+
+  // 第二层：body.code。后端已经把 msg 翻成当前语言，原样弹给用户——
+  // 前端不认识也不该认识具体错误码，后端加码不用这里跟着改。
+  if (body.code !== 200) {
+    throw new Error(body.msg || tt('api.unknown'))
   }
   return body.data
 }
@@ -136,12 +167,18 @@ export async function login(username: string, password: string): Promise<LoginRe
   const res = await uni.request({
     url: BASE_URL + '/login',
     method: 'POST',
-    header: { 'Content-Type': 'application/json' },
+    header: { 'Content-Type': 'application/json', ...getLangHeader() },
     data: { username, password },
-  })
+  }).catch(() => null)
+  if (!res) {
+    throw new Error(tt('api.network'))
+  }
+
+  // 登录失败走的是业务码（密码错是 200 + 40101，不是 HTTP 401——
+  // 那个专门留给“登录态失效”），所以这里看 body 而不是状态码。
   const body = res.data as APIResponse<LoginResult>
-  if (body.code !== 200) {
-    throw new Error((body.data as any)?.msg || tt('login.failed'))
+  if (body?.code !== 200) {
+    throw new Error(body?.msg || tt('login.failed'))
   }
   return body.data
 }
@@ -150,6 +187,6 @@ export async function logout() {
   await uni.request({
     url: BASE_URL + '/logout',
     method: 'POST',
-    header: getAuthHeader(),
+    header: { ...getAuthHeader(), ...getLangHeader() },
   })
 }

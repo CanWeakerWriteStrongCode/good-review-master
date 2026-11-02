@@ -23,6 +23,7 @@ curl -s http://127.0.0.1:9100/metrics | grep '^good\|^llm\|^http\|^poll\|^mcp\|^
 | --- | --- | --- |
 | HTTP | `http_requests_total{method,route,status}` | `route` 是路由模板（`c.FullPath()`），不是原始 URL |
 | | `http_request_duration_seconds{route}` | 请求耗时 |
+| | `http_business_errors_total{route,code}` | 业务失败次数（`body.code != 200`）。业务错误一律 HTTP 200（见 `web/server/errcode.go`），在上一条里和成功请求混在一起；没有它，「用户在哪一步被拒」就看不见了 |
 | 大模型 | `llm_requests_total{model,result}` | 真正发出去的调用，成功/失败 |
 | | `llm_rejected_total{reason}` | **被本地保护拦下、根本没发出去**的调用（`rate_limited` / `circuit_open`） |
 | | `llm_duration_seconds{model}` | 失败也计入（否则超时会从分布里消失） |
@@ -55,9 +56,13 @@ curl -s http://127.0.0.1:9100/metrics | grep '^good\|^llm\|^http\|^poll\|^mcp\|^
 
 ### 看板
 
-`docs/grafana-dashboard.json` 是一份 Grafana 看板（16 个面板：运行时概览、选窗决策、
-大模型成败与拒绝、轮询延迟、MCP、协程池、配置重载）。导入方式：Grafana → Dashboards → Import，
-上传这个 JSON，它会让你选一个 Prometheus 数据源（就是上面那个）。
+`docs/grafana-dashboard.json` 是一份 Grafana 看板（19 个面板：运行时概览、HTTP 速率与延迟、
+业务失败、选窗决策、大模型成败与拒绝、轮询延迟、MCP、协程池、缓存、流水线、配置重载）。
+导入方式：Grafana → Dashboards → Import，上传这个 JSON，它会让你选一个 Prometheus
+数据源（就是上面那个）。
+
+看板最后那块「业务失败：按错误码」值得单独看一眼：业务错误全是 HTTP 200，在别的面板上
+和成功请求混在一起，只有它能回答「用户到底卡在哪一步」。
 
 想自己起一套的话（需要 Docker，**不是本项目的依赖**，不装也不影响任何功能）：
 

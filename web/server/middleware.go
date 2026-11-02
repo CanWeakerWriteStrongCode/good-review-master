@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,9 +47,24 @@ func TelemetryMiddleware() gin.HandlerFunc {
 			attribute.String("http.route", route),
 			attribute.Int("http.response.status_code", status),
 		)
-		if status >= http.StatusInternalServerError {
-			// 只用状态码判错：4xx 是调用方的问题，把它标成 span error
-			// 会让"错误率"这条曲线失去意义（探测、过期 token 都会把它刷满）。
+
+		// 业务失败要在这一层认：它们的 HTTP 状态是 200，结论在 body.code 里，
+		// 不加这一段的话，业务错误在上面那条 http_requests_total 上跟成功请求完全一样。
+		if biz, ok := bizErrorOf(c); ok {
+			telemetry.HTTPBusinessErrorsTotal.
+				WithLabelValues(route, strconv.Itoa(int(biz.Code))).Inc()
+			span.SetAttributes(
+				attribute.Int("app.error.code", int(biz.Code)),
+				attribute.String("app.error.id", biz.Code.messageID()),
+			)
+			if biz.Code.isServerFault() {
+				// 只有服务器自己出问题才标红：密码输错、工作空间不存在都是正常现象，
+				// 标红会把 trace 的错误率刷满，真正要看的那几条反而被淹掉。
+				span.SetStatus(codes.Error, biz.Code.messageID())
+			}
+		} else if status >= http.StatusInternalServerError {
+			// 只剩真·传输/服务故障走这条路（panic、进程内部错误）。
+			// 4xx 仍然不标：探测、过期 token 会把错误率刷满。
 			span.SetStatus(codes.Error, http.StatusText(status))
 		}
 	}
@@ -69,13 +85,25 @@ func LoggerMiddleware() gin.HandlerFunc {
 	}
 }
 
-// RecoveryMiddleware panic 恢复中间件（增强日志格式与项目 logutil 统一）
-func RecoveryMiddleware() gin.HandlerFunc {
+// RecoveryMiddleware panic 恢复中间件。
+//
+// 它必须是**最外层**：panic 会打断 c.Next() 的返回链，其他中间件的后置代码
+// （包括统一错误出口）根本不会执行，所以这里得自己把响应写出来。
+func RecoveryMiddleware(locales *Locales) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
-			if err := recover(); err != nil {
-				logutil.Error("Web 请求 panic", "path", c.Request.URL.Path, "err", err)
-				c.AbortWithStatus(500)
+			if recovered := recover(); recovered != nil {
+				logutil.Error("Web 请求 panic", "path", c.Request.URL.Path, "err", recovered)
+				if c.Writer.Written() {
+					// 响应已经开始写了，补不回来：直接断掉，让前端看到请求失败，
+					// 总比返回一段被截断的 JSON 强
+					c.Abort()
+					return
+				}
+				// 走与普通未知错误同一个出口：响应里只有兜底句 + 单号，
+				// 栈和消息体已经进了上面那条日志
+				writeBizError(c, locales, fmt.Errorf("panic: %v", recovered))
+				c.Abort()
 			}
 		}()
 		c.Next()
@@ -127,12 +155,15 @@ func CORSMiddleware(allowedOrigins []string) gin.HandlerFunc {
 	}
 }
 
-// AuthMiddleware JWT 校验中间件（无免鉴权通道）
+// AuthMiddleware JWT 校验中间件（无免鉴权通道）。
+//
+// 失败时只登记、不自己拼响应：文案与语言由统一错误出口决定，
+// 这里写死一句话就等于把中文又搬回了代码里。
 func AuthMiddleware(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		if _, err := ParseJWT(token, secret); err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "data": nil})
+			fail(c, CodeUnauthorized, nil)
 			return
 		}
 		c.Next()

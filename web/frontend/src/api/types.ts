@@ -77,9 +77,23 @@ export interface Message {
   time: number
 }
 
+/**
+ * 每个接口的统一信封。
+ *
+ * 成功时 code=200 且 data 有值；失败时 code 是六位业务码、msg 是后端按 X-Lang
+ * 翻好的句子。**前端只判断 code != 200，然后弹 msg**，不认任何具体码——
+ * 所以后端加错误码不用前端跟着发版。
+ */
 export interface APIResponse<T> {
+  /** 200 = 成功；其余是六位业务码（4xxxx 请求/身份、5xxxx 服务器、6xxxx 业务拒绝） */
   code: number
   data: T
+  /** 错误码的名字（如 workspace.not_found），排查用，前端不做判断 */
+  err?: string
+  /** 后端翻好的错误文案，直接弹给用户 */
+  msg?: string
+  /** 只有兜底的未知错误才带，是给用户报障用的单号 */
+  req_id?: string
 }
 
 /** 一类 goroutine 的聚合，按栈里第一个"非运行时"帧归类（服务端算好） */

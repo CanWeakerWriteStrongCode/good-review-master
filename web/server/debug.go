@@ -220,11 +220,11 @@ func (s *Server) handleDebugTrigger() gin.HandlerFunc {
 			Content     string `json:"content"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || body.GroupID == "" || body.Content == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "data": nil})
+			fail(c, CodeBadJSON, nil)
 			return
 		}
 		if s.workspaces == nil {
-			c.JSON(http.StatusNotFound, gin.H{"code": 404, "data": gin.H{"msg": "没有工作空间"}})
+			fail(c, CodeNoWorkspace, nil)
 			return
 		}
 		// 工作空间是收到第一条事件才开通的，不能在 Server 构造时就把 Router 定死：
@@ -233,14 +233,14 @@ func (s *Server) handleDebugTrigger() gin.HandlerFunc {
 		if body.WorkspaceID != "" {
 			found, ok := s.workspaces.ByID(body.WorkspaceID)
 			if !ok {
-				c.JSON(http.StatusNotFound, gin.H{"code": 404, "data": gin.H{"msg": "工作空间不存在"}})
+				fail(c, CodeWorkspaceNotFound, nil)
 				return
 			}
 			ws = found
 		} else {
 			ws = s.workspaces.Default()
 			if ws == nil {
-				c.JSON(http.StatusBadRequest, gin.H{"code": 400, "data": gin.H{"msg": "存在多个工作空间，请指定 workspace_id"}})
+				fail(c, CodeMultipleWorkspaces, map[string]any{"Endpoint": "workspace_id"})
 				return
 			}
 		}

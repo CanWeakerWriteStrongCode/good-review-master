@@ -33,10 +33,13 @@ export default {
     },
   },
 
-  // 接口层抛出去的报错。这些字符串会直接展示在页面上，所以也得跟着切语言。
+  // 接口层兜底文案。正常情况下后端会带着翻好的 msg 过来，这里只在
+  // 拿不到信封时用：断网、网关回了 HTML、或者后端漏带了 msg。
   api: {
     unauthorized: '未授权，请重新登录',
     httpError: '接口请求失败（HTTP {status}）',
+    unknown: '未知错误，请稍后重试',
+    network: '网络连接失败，请检查网络后重试',
     pprofHttp: 'pprof {name} 返回 HTTP {status}',
     pprofBinary: 'pprof {name} 未返回二进制数据',
   },

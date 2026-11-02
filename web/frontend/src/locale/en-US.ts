@@ -30,10 +30,14 @@ export default {
     },
   },
 
-  // Errors thrown by the API layer; they surface in the UI, so they translate too.
+  // Fallbacks for the API layer. Normally the backend sends a translated
+  // msg; these are only used when no envelope arrives (offline, an HTML error
+  // page from a proxy, or a missing msg).
   api: {
     unauthorized: 'Session expired, please sign in again',
     httpError: 'Request failed (HTTP {status})',
+    unknown: 'Something went wrong, please try again later',
+    network: 'Network unavailable, please check your connection',
     pprofHttp: 'pprof {name} returned HTTP {status}',
     pprofBinary: 'pprof {name} did not return binary data',
   },

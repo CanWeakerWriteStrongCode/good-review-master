@@ -291,6 +291,19 @@
         { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le, stage) (rate(pipeline_stage_batch_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p50 {{stage}}" },
         { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(pipeline_stage_batch_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p95 {{stage}}" }
       ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "业务失败：按错误码",
+      "description": "业务错误一律回 HTTP 200（见 web/server/errcode.go），所以它们在上面的 HTTP 请求速率里和成功请求混在一起，只有这条曲线看得出「用户在哪一步被拒」。code 是六位业务码：40101 密码错、40103 被限流、60001 工作空间不存在、60003 多个工作空间，完整码表看 errcode.go。还没发生过失败时这条线是空的，不是没采到。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 53 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 20, "lineWidth": 2, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (route, code) (rate(http_business_errors_total[$__rate_interval]))", "legendFormat": "{{route}} {{code}}" }
+      ]
     }
   ],
   "refresh": "10s",
