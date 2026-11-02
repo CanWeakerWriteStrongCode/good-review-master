@@ -49,7 +49,7 @@ DEFAULT_LISTEN_PORT = 6199
 
 ONEBOT_VERSION = "12"
 IMPL_NAME = "astrbot-plugin-onebot-bridge"
-PLUGIN_VERSION = "1.7.10"
+PLUGIN_VERSION = "1.7.11"
 
 # AstrBot 适配器类型 → OB12 平台名。OB12 平台名不允许下划线，
 # 所以 qq_official 这类适配器名必须显式映射；其它（wecom/lark/telegram…）
@@ -94,6 +94,21 @@ AT_TOKEN_RE = re.compile(
     r"|<@!?(?P<angle>[^<>\s]+)>"
     r"|\[CQ:at,qq=(?P<cq>[^,\]]+)[^\]]*\]"
 )
+
+
+# QQ 官方附件的方言声明，AstrBot 会把它原样留在 Plain 文本里：
+#   <attachmentType="image/gif",attachmentIndex=0,description="eyJ0ZXh0IjoiW+WbvueJh10ifQ==">
+# description 是 base64 的 {"text":"[图片]"}，附件本体由同一条消息的 attachments
+# 重新生成 image/record/file 段，这段声明纯属重复。不剥就会一路漏进正文，
+# 面板和发给模型的聊天记录里都会多一串尖括号。
+# 只在插件里剥：这是 AstrBot 适配器的私有语法，Go 的 onebot 包只认 OB12 段类型；
+# 真放进 Go，将来换 NapCat 或直连官方 SDK 还得再删一遍。
+ATTACHMENT_TOKEN_RE = re.compile(r"<attachmentType=[^>]*>", re.IGNORECASE)
+
+
+def _strip_attachment_tokens(text: str) -> str:
+    """去掉正文里的附件方言声明，其余原样保留。"""
+    return ATTACHMENT_TOKEN_RE.sub("", text)
 
 
 def _split_text_at(text: str) -> list[dict]:
@@ -396,10 +411,12 @@ class OneBotBridge(Star):
         for comp in chain:
             name = type(comp).__name__.lower()
             if name == "plain":
-                text = str(getattr(comp, "text", "") or "")
-                if text:
-                    # @ 别人的标记通常只存在于文本里，先拆成 mention 段再上报。
-                    segments.extend(_split_text_at(text))
+                text = _strip_attachment_tokens(str(getattr(comp, "text", "") or ""))
+                # 剥完只剩空白就是纯附件声明，没有可上报的文字。
+                if not text.strip():
+                    continue
+                # @ 别人的标记通常只存在于文本里，先拆成 mention 段再上报。
+                segments.extend(_split_text_at(text))
             elif name == "atall":
                 segments.append({"type": "mention_all", "data": {}})
             elif name == "at":
