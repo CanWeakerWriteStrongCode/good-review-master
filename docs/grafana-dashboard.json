@@ -262,6 +262,35 @@
       "targets": [
         { "refId": "A", "expr": "cache_messages", "legendFormat": "群 {{group}}" }
       ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "流水线：积压 / 排队会话 / 处理中",
+      "description": "积压是消息条数，排队是有几个群等坑位。积压高但排队低，说明是同一个群在刷屏；两者同时抬升，说明这一阶段跟不上，要加并发或查下游。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "pipeline_stage_backlog", "legendFormat": "积压 {{stage}}" },
+        { "refId": "B", "expr": "pipeline_stage_ready", "legendFormat": "排队的群 {{stage}}" },
+        { "refId": "C", "expr": "pipeline_stage_active", "legendFormat": "处理中 {{stage}}" }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "流水线：一批处理多久",
+      "description": "agent 一批是一条消息的完整生成 + 排版 + 分条发送，几十秒正常。分位数突然抬升说明模型或下游变慢，而不是消息变多——那种情况看上一个面板的积压。",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 45 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le, stage) (rate(pipeline_stage_batch_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p50 {{stage}}" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(pipeline_stage_batch_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p95 {{stage}}" }
+      ]
     }
   ],
   "refresh": "10s",

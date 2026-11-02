@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"good-review-master/logutil"
+	"good-review-master/telemetry"
 )
 
 // StageConfig 是某个阶段当前生效的一批参数。取数前现读，
@@ -97,6 +98,7 @@ func (s *Stage) Run(ctx context.Context) {
 	s.ctx = ctx
 	s.resizeLocked(cfg.Concurrency)
 	s.mu.Unlock()
+	s.observe()
 }
 
 // Submit 告诉阶段“这个分区有数据了”。它只登记到就绪队列，不启动任何协程；
@@ -107,18 +109,22 @@ func (s *Stage) Submit(key string) {
 	}
 	cfg := s.Config()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return
 	}
 	s.resizeLocked(cfg.Concurrency)
 	if s.inflight[key] {
 		// 这个会话正在被处理。处理完那一批协程会自己回头看积压，
 		// 在途期间到达的消息不会漏。
+		s.mu.Unlock()
+		s.observe()
 		return
 	}
 	s.markReadyLocked(key)
 	s.cond.Signal()
+	s.mu.Unlock()
+	s.observe()
 }
 
 func (s *Stage) markReadyLocked(key string) {
@@ -187,6 +193,9 @@ func (s *Stage) worker() {
 		if !ok {
 			return
 		}
+		// 先刷一次，让 active 在批次开始的瞬间就 +1，
+		// 不然 Stage 3 跑 40 秒的那段时间里指标还停在旧值。
+		s.observe()
 		s.drain(key)
 		s.release(key)
 	}
@@ -202,7 +211,11 @@ func (s *Stage) drain(key string) {
 		if len(items) == 0 {
 			return
 		}
+		start := time.Now()
 		s.process(ctx, key, items, cfg.Retries)
+		telemetry.PipelineStageBatchDurationSeconds.WithLabelValues(s.opts.Name).
+			Observe(time.Since(start).Seconds())
+		s.observe()
 	}
 }
 
@@ -234,9 +247,9 @@ func (s *Stage) takeBatch(ctx context.Context, key string, cfg StageConfig) []It
 func (s *Stage) release(key string) {
 	cfg := s.Config()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.inflight, key)
 	if s.closed {
+		s.mu.Unlock()
 		return
 	}
 	if s.opts.Buffer != nil && s.opts.Buffer.Len(key) > 0 {
@@ -244,6 +257,23 @@ func (s *Stage) release(key string) {
 		s.cond.Signal()
 	}
 	s.resizeLocked(cfg.Concurrency)
+	s.mu.Unlock()
+	s.observe()
+}
+
+// observe 把当前状态刷到指标上。必须在锁外调用：Buffer.Total() 要拿缓冲层自己的锁。
+// 频度是“每批一次”，对几毫秒到几十秒的处理耗时可忽略不计。
+func (s *Stage) observe() {
+	stage := s.opts.Name
+	s.mu.Lock()
+	workers, active, ready := s.workers, len(s.inflight), len(s.ready)
+	s.mu.Unlock()
+	telemetry.PipelineStageWorkers.WithLabelValues(stage).Set(float64(workers))
+	telemetry.PipelineStageActive.WithLabelValues(stage).Set(float64(active))
+	telemetry.PipelineStageReady.WithLabelValues(stage).Set(float64(ready))
+	if s.opts.Buffer != nil {
+		telemetry.PipelineStageBacklog.WithLabelValues(stage).Set(float64(s.opts.Buffer.Total()))
+	}
 }
 
 func (s *Stage) process(ctx context.Context, key string, items []Item, retries int) {

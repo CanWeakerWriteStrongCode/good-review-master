@@ -7,6 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"good-review-master/telemetry"
 )
 
 func stageConfig(batch, concurrency, retries int) func() StageConfig {
@@ -224,6 +229,66 @@ func TestStage并发数热调整(t *testing.T) {
 	}
 	if got := stage.Workers(); got != 2 {
 		t.Fatalf("调小后协程数 = %d", got)
+	}
+}
+
+// 指标要真的跟着状态走：池子大小、排队会话数、正在处理的会话数、耗时直方图。
+// 标签写错不会报错，只会多一条永远为 0 的时间线，所以这里把名字固定死。
+func TestStage指标跟着状态走(t *testing.T) {
+	const stageName = "metricstest"
+	buf := NewMemoryBuffer(10, 10)
+	handled := make(chan struct{}, 1)
+	stage := NewStage(StageOptions{
+		Name:   stageName,
+		Buffer: buf,
+		Config: stageConfig(1, 2, 0),
+		Handler: func(context.Context, string, []Item) []FailedItem {
+			handled <- struct{}{}
+			return nil
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stage.Run(ctx)
+
+	gauge := func(g *prometheus.GaugeVec) float64 {
+		return testutil.ToFloat64(g.WithLabelValues(stageName))
+	}
+	if got := gauge(telemetry.PipelineStageWorkers); got != 2 {
+		t.Fatalf("workers = %v, want 2", got)
+	}
+
+	if err := buf.Put(ctx, mustItem(t, StageSync, "k", "1", struct{}{})); err != nil {
+		t.Fatal(err)
+	}
+	stage.Submit("k")
+	select {
+	case <-handled:
+	case <-time.After(time.Second):
+		t.Fatal("消息未被处理")
+	}
+
+	// 交还之后：正在处理、排队、积压都应该归零。
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if gauge(telemetry.PipelineStageActive) == 0 &&
+			gauge(telemetry.PipelineStageReady) == 0 &&
+			gauge(telemetry.PipelineStageBacklog) == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := gauge(telemetry.PipelineStageActive); got != 0 {
+		t.Fatalf("active = %v, want 0", got)
+	}
+	if got := gauge(telemetry.PipelineStageReady); got != 0 {
+		t.Fatalf("ready = %v, want 0", got)
+	}
+	if got := gauge(telemetry.PipelineStageBacklog); got != 0 {
+		t.Fatalf("backlog = %v, want 0", got)
+	}
+	if n := testutil.CollectAndCount(telemetry.PipelineStageBatchDurationSeconds); n == 0 {
+		t.Fatal("批次耗时直方图没有记录")
 	}
 }
 

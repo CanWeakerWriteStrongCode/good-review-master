@@ -50,6 +50,7 @@ func TestNewRegistry可重复构造(t *testing.T) {
 	LLMWindowModeTotal.WithLabelValues("default", "extend").Inc()
 	MCPToolCallsTotal.WithLabelValues("server", "tool", ResultOK).Inc()
 	ConfigReloadTotal.WithLabelValues("auto").Inc()
+	PipelineStageActive.WithLabelValues("agent").Set(1)
 
 	families, err := first.Gatherer().Gather()
 	if err != nil {
@@ -63,7 +64,7 @@ func TestNewRegistry可重复构造(t *testing.T) {
 	for _, name := range []string{
 		"http_requests_total", "llm_requests_total", "llm_window_mode_total",
 		"poll_cycle_duration_seconds", "mcp_tool_calls_total", "pool_queue_len",
-		"config_reload_total", "go_goroutines",
+		"config_reload_total", "pipeline_stage_active", "go_goroutines",
 	} {
 		if !found[name] {
 			t.Errorf("注册表里没有 %s（检查 allCollectors 是否漏了它）", name)

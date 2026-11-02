@@ -37,6 +37,11 @@ curl -s http://127.0.0.1:9100/metrics | grep '^good\|^llm\|^http\|^poll\|^mcp\|^
 | MCP | `mcp_tool_calls_total{server,tool,result}` | 工具调用 |
 | | `mcp_sessions_up{server}` | 会话在线（1/0） |
 | 协程池 | `pool_tasks_running` / `pool_queue_len` / `pool_submit_rejected_total` | 被拒绝 = 有锐评没能发出去 |
+| 三段流水线 | `pipeline_stage_backlog{stage}` | 该阶段缓冲区里还没处理的消息条数 |
+| | `pipeline_stage_ready{stage}` | 在排队等坑位的**会话数**（不是消息数） |
+| | `pipeline_stage_active{stage}` | 正在处理批次的会话数，上限就是该阶段的 `*_concurrency` |
+| | `pipeline_stage_workers{stage}` | 池里有几个协程；与 active 的差就是睡着的 |
+| | `pipeline_stage_batch_duration_seconds{stage}` | 一批处理多久；Stage 3 几十秒是正常的，分位数抬升说明模型或下游变慢 |
 | 配置 | `config_reload_total{source}` / `config_reload_errors_total` / `config_last_reload_timestamp` | 重读失败会继续用旧快照跑，只有这里看得见 |
 | 运行时 | `go_*` / `process_*` | 标准 Go / 进程指标 |
 
@@ -117,6 +122,8 @@ Jaeger / OTel Collector / Tempo 在 `/v1/traces` 上收的就是这个格式，�
 
 ```bash
 curl -s 127.0.0.1:9100/metrics | grep -E '^(go_goroutines|process_resident|pool_queue_len|config_last_reload)'
+# 流水线三阶段当下在干什么（刚启动、还没消息时这些指标不会出现）
+curl -s 127.0.0.1:9100/metrics | grep '^pipeline_stage_' | grep -v _bucket
 ```
 
 链路那条需要有个东西在收。手写导出器没有官方库兜底，所以**改完它一定要自己收一次**看
