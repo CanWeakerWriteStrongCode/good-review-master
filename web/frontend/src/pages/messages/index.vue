@@ -32,7 +32,7 @@
         <text class="header-count" v-if="!store.empty">
           {{ store.total > store.messages.length
             ? t('messages.header.partial', { total: store.total, shown: store.messages.length })
-            : t('messages.header.total', store.total, { count: store.total }) }}
+            : t('messages.header.total', { count: store.total }) }}
         </text>
       </view>
     </view>
@@ -50,7 +50,15 @@
           </view>
           <text class="msg-time">{{ store.formatTime(msg.time) }}</text>
         </view>
-        <text class="msg-content">{{ contentWithImageNotes(msg) }}</text>
+        <text class="msg-content">
+          <!-- 图片描述是读图模型写的旁白，不是发送者的原话：拆出来单独上底色，
+               扫消息时一眼能认出来，直接跳过 -->
+          <text
+            v-for="(part, index) in contentParts(msg)"
+            :key="index"
+            :class="{ 'note-text': part.note }"
+          >{{ part.text }}</text>
+        </text>
       </view>
     </view>
 
@@ -78,6 +86,12 @@ const authStore = useAuthStore()
 const store = useMessagesStore()
 const { t } = useLocale()
 
+/** 正文里的一段：note=true 的是图库补的图片描述，模板给它上底色 */
+interface ContentPart {
+  text: string
+  note: boolean
+}
+
 // 正文里的 [图片] 是入站时后端拼的占位（图没法直接显示），
 // 图库里有描述就把它换成 [图片：描述]，一条消息里多张图按顺序各配各的。
 // 描述可能为空（还没跑评估或评估失败），那种情况保持原样。
@@ -86,21 +100,34 @@ function imagePlaceholder(note: string | undefined): string {
   return text ? t('messages.imageWithNote', { note: text }) : t('messages.imagePlaceholder')
 }
 
-function contentWithImageNotes(msg: Message): string {
+function contentParts(msg: Message): ContentPart[] {
   const notes = (msg.image_notes || []).map((item) => item.note)
   const placeholder = t('messages.imagePlaceholder')
   if (!notes.some((note) => (note || '').trim()) || !msg.content.includes(placeholder)) {
-    return msg.content
+    return [{ text: msg.content, note: false }]
   }
-  const parts = msg.content.split(placeholder)
+  const parts: ContentPart[] = []
+  const pieces = msg.content.split(placeholder)
   let index = 0
-  let text = parts[0]
-  for (let i = 1; i < parts.length; i++) {
-    text += imagePlaceholder(notes[index++]) + parts[i]
+  if (pieces[0]) {
+    parts.push({ text: pieces[0], note: false })
+  }
+  for (let i = 1; i < pieces.length; i++) {
+    const note = (notes[index++] || '').trim()
+    // 有描述才标色：空描述的 [图片] 还是原样，别把整句都染成旁白
+    parts.push({ text: imagePlaceholder(note), note: note !== '' })
+    if (pieces[i]) {
+      parts.push({ text: pieces[i], note: false })
+    }
   }
   // 占位符比图片少（比如图在正文里没有对应段）时，剩下的说明补在末尾，别丢。
-  const rest = notes.slice(index).filter((note) => (note || '').trim())
-  return rest.length ? `${text} ${rest.map(imagePlaceholder).join(' ')}` : text
+  for (const note of notes.slice(index)) {
+    const text = (note || '').trim()
+    if (text) {
+      parts.push({ text: ` ${imagePlaceholder(text)}`, note: true })
+    }
+  }
+  return parts
 }
 
 // uni.navigateTo 在 h5 下会把 query 值再 encodeURIComponent 一次，
@@ -260,6 +287,18 @@ onMounted(() => {
   color: #444;
   line-height: 1.5;
   word-break: break-all;
+}
+
+/* 图片描述：浅底 + 小一号字，跟发送者的话分开。
+   长描述会跨行，clone 让每行各自带圆角，不然只有首尾两行有。 */
+.note-text {
+  background: #eef2f6;
+  color: #5f6f7e;
+  font-size: 13px;
+  padding: 0 4px;
+  border-radius: 4px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 /* 空态 / 加载 */
