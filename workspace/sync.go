@@ -25,10 +25,11 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbo
 	// 同一批按会话拆开做批量补名；Stage 1 的 key 本来就是一个会话，
 	// 这里仍按 chatID 分组，防止调用方把多个会话混进来。
 	type batchEntry struct {
-		event   onebot.Event
-		private bool
-		chatID  string
-		nameIDs []string
+		event      onebot.Event
+		private    bool
+		chatID     string
+		nameIDs    []string
+		mentionIDs []string
 	}
 	entries := make([]batchEntry, 0, len(events))
 	nameSets := make(map[string][]string)
@@ -57,6 +58,10 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbo
 
 		nameIDs := make([]string, 0, len(event.Message)+1)
 		nameIDs = append(nameIDs, event.UserID)
+		// mentionIDs 记“这条消息 @ 了谁”，落库后在正文里出现占位时用来回填名字。
+		// 同一个人 @ 两次只记一次；@全体没有 openid，不进名单。
+		mentionIDs := make([]string, 0, len(event.Message))
+		mentioned := make(map[string]struct{}, len(event.Message))
 		if !private {
 			w.EnsureGroupFrom(chatID, event.MessageID)
 			w.ObserveMemberFrom(chatID, event.UserID, event.MessageID)
@@ -70,6 +75,10 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbo
 				continue
 			}
 			nameIDs = append(nameIDs, userID)
+			if _, dup := mentioned[userID]; !dup {
+				mentioned[userID] = struct{}{}
+				mentionIDs = append(mentionIDs, userID)
+			}
 			if !private {
 				w.ObserveMemberFrom(chatID, userID, event.MessageID)
 			}
@@ -79,7 +88,7 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbo
 				gc.SetNickname(event.UserID, name)
 			}
 		}
-		entries = append(entries, batchEntry{event: event, private: private, chatID: chatID, nameIDs: nameIDs})
+		entries = append(entries, batchEntry{event: event, private: private, chatID: chatID, nameIDs: nameIDs, mentionIDs: mentionIDs})
 		nameSets[chatID] = append(nameSets[chatID], nameIDs...)
 	}
 	if len(entries) == 0 {
@@ -115,6 +124,7 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbo
 			UserID:    event.UserID,
 			Nickname:  nameOf(event.UserID),
 			Content:   content,
+			Mentions:  entry.mentionIDs,
 			Images:    event.Images(),
 			ReplyToID: replyTo,
 			RefIdx:    event.QQMsgIdx,
@@ -130,6 +140,12 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbo
 			Event:       event,
 			Message:     msg,
 		})
+	}
+	// 本批落库时可能刚好有人问到名字（成员信息是异步回来的），那几条已经写成了
+	// @用户(id)；收尾给每个群再触发一次回填，别等到下次有人说话才补上。
+	// 没待办时就是一次走索引的空查。
+	for chatID := range nameSets {
+		w.scheduleMentionBackfill(chatID)
 	}
 	return out
 }

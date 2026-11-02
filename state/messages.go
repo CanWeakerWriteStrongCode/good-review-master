@@ -22,11 +22,15 @@ type messageRow struct {
 	MessageID   string `gorm:"column:message_id"`
 	UserID      string `gorm:"column:user_id"`
 	Content     string `gorm:"column:content"`
-	Images      string `gorm:"column:images"`
-	ImageIDs    string `gorm:"column:image_ids"`
-	ReplyTo     string `gorm:"column:reply_to"`
-	RefIdx      string `gorm:"column:ref_idx"`
-	TS          int64  `gorm:"column:ts"`
+	// Mentions 是正文里 @ 到的 openid 列表（JSON 数组文本），MentionsResolved 表示正文里
+	// 已经没有 "@用户(" 占位。两者都由 SaveMessage 从正文算出来，回填时只改正文与后者。
+	Mentions         string `gorm:"column:mentions"`
+	MentionsResolved int    `gorm:"column:mentions_resolved"`
+	Images           string `gorm:"column:images"`
+	ImageIDs         string `gorm:"column:image_ids"`
+	ReplyTo          string `gorm:"column:reply_to"`
+	RefIdx           string `gorm:"column:ref_idx"`
+	TS               int64  `gorm:"column:ts"`
 }
 
 func (messageRow) TableName() string { return "messages" }
@@ -45,9 +49,21 @@ func (s *Scope) SaveMessage(msg conversation.Message) int64 {
 	if err != nil {
 		imageIDs = []byte("[]")
 	}
+	mentions, err := json.Marshal(msg.Mentions)
+	if err != nil || len(msg.Mentions) == 0 {
+		mentions = []byte("[]")
+	}
+	// 正文里还有 @用户( 就是还没学到名字，等回填；
+	// 没占位的消息直接算完了，不进待办索引。
+	resolved := 1
+	if conversation.HasMentionPlaceholder(msg.Content) {
+		resolved = 0
+	}
 	row := messageRow{
 		WorkspaceID: s.workspaceID, GroupID: msg.GroupID, MessageID: msg.MessageID,
-		UserID: msg.UserID, Content: msg.Content, Images: string(images),
+		UserID: msg.UserID, Content: msg.Content,
+		Mentions: string(mentions), MentionsResolved: resolved,
+		Images:   string(images),
 		ImageIDs: string(imageIDs), ReplyTo: msg.ReplyToID, RefIdx: msg.RefIdx, TS: msg.Time,
 	}
 	// 冲突目标必须显式指定三元组：主键换成自增 id 后，默认目标会变成 id，等于永不更新。
@@ -96,7 +112,7 @@ func (s *Scope) LoadRecent(limit int) ([]conversation.Message, error) {
 		return nil, nil
 	}
 	rows, err := s.store.db.Raw(`
-		SELECT id, group_id, message_id, user_id, content, images, image_ids, reply_to, ref_idx, ts FROM (
+		SELECT id, group_id, message_id, user_id, content, mentions, images, image_ids, reply_to, ref_idx, ts FROM (
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY group_id ORDER BY ts DESC) AS rn
 			FROM messages WHERE workspace_id = ?
 		) WHERE rn <= ? ORDER BY group_id, ts`, s.workspaceID, limit).Rows()
@@ -108,10 +124,13 @@ func (s *Scope) LoadRecent(limit int) ([]conversation.Message, error) {
 	var out []conversation.Message
 	for rows.Next() {
 		var msg conversation.Message
-		var images, imageIDs string
+		var mentions, images, imageIDs string
 		if err := rows.Scan(&msg.RowID, &msg.GroupID, &msg.MessageID, &msg.UserID, &msg.Content,
-			&images, &imageIDs, &msg.ReplyToID, &msg.RefIdx, &msg.Time); err != nil {
+			&mentions, &images, &imageIDs, &msg.ReplyToID, &msg.RefIdx, &msg.Time); err != nil {
 			return nil, err
+		}
+		if mentions != "" {
+			_ = json.Unmarshal([]byte(mentions), &msg.Mentions)
 		}
 		if images != "" {
 			_ = json.Unmarshal([]byte(images), &msg.Images)
@@ -171,6 +190,9 @@ func messageFromRow(row messageRow) conversation.Message {
 	}
 	if row.Images != "" {
 		_ = json.Unmarshal([]byte(row.Images), &msg.Images)
+	}
+	if row.Mentions != "" {
+		_ = json.Unmarshal([]byte(row.Mentions), &msg.Mentions)
 	}
 	if row.ImageIDs != "" {
 		_ = json.Unmarshal([]byte(row.ImageIDs), &msg.ImageIDs)
@@ -240,6 +262,64 @@ func (s *Scope) hydrateImageNotes(msgs []conversation.Message) {
 		}
 		msgs[i].ImageNotes = notesForMsg
 	}
+}
+
+// MentionRow 是一行等着换 @ 名字的消息：只要主键和正文，够拼新正文用。
+type MentionRow struct {
+	ID      int64  `gorm:"column:id"`
+	Content string `gorm:"column:content"`
+}
+
+// PendingMentionRows 取该群还没换完 @ 的名字的消息（按 id 升序，先老的先换）。
+//
+// 分批取而不是一次全取：SQLite 只有一个写者，一批改完就释放写锁，
+// 入站消息落库不会被回填挡在后面。
+func (s *Scope) PendingMentionRows(groupID string, limit int) ([]MentionRow, error) {
+	if s == nil || s.store == nil || groupID == "" || limit <= 0 || s.store.closed.Load() {
+		return nil, nil
+	}
+	var rows []MentionRow
+	err := s.store.db.Raw(`SELECT id, content FROM messages
+		WHERE workspace_id = ? AND group_id = ? AND mentions_resolved = 0
+		ORDER BY id LIMIT ?`, s.workspaceID, groupID, limit).Scan(&rows).Error
+	if err != nil {
+		s.store.noteFailure("读取待回填的 @ 占位", err)
+	}
+	return rows, err
+}
+
+// RewriteMention 写回一行改好的正文与待办标记，返回是否真的改到了。
+//
+// WHERE 带上旧正文：多个进程同时改同一行时，慢的那一下会命中 0 行，直接跳过。
+// 下一轮 PendingMentionRows 读到的是别人写进去的新正文，不会丢。
+func (s *Scope) RewriteMention(rowID int64, oldContent, newContent string, resolved int) (bool, error) {
+	if s == nil || s.store == nil || rowID <= 0 || s.store.closed.Load() {
+		return false, nil
+	}
+	result := s.store.db.Model(&messageRow{}).
+		Where("id = ? AND content = ?", rowID, oldContent).
+		Updates(map[string]any{"content": newContent, "mentions_resolved": resolved})
+	if result.Error != nil {
+		s.store.noteFailure("回填 @ 占位", result.Error)
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+// PendingMentionGroups 返回还有 @ 占位等着换的群。启动时用它补一遍——
+// 上次可能在“名字已学到、正文还没换”的位置就退出了。
+func (s *Scope) PendingMentionGroups() ([]string, error) {
+	if s == nil || s.store == nil || s.store.closed.Load() {
+		return nil, nil
+	}
+	var groups []string
+	err := s.store.db.Model(&messageRow{}).
+		Where("workspace_id = ? AND mentions_resolved = 0", s.workspaceID).
+		Distinct().Pluck("group_id", &groups).Error
+	if err != nil {
+		s.store.noteFailure("读取待回填 @ 的群", err)
+	}
+	return groups, err
 }
 
 // ResolveMessageID 用平台引用索引反查本群被引消息的 message_id。

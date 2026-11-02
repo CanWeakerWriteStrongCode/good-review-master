@@ -16,13 +16,16 @@ type Message struct {
 	// RowID 是 state.db 里 messages 表自增主键。发给大模型的 message_id 就用它：
 	// 同一条消息在任何窗口、任何一次请求里都是同一个号，窗口重置也不会重新编号。
 	// 0 表示这条消息没写进库（写库失败、测试注入），聊天记录里就不带 message_id。
-	RowID    int64    `json:"db_id,omitempty"`
-	GroupID  string   `json:"group_id"`
-	SelfID   string   `json:"self_id,omitempty"` // 收到这条消息的机器人账号；同一群多账号时用于去重
-	UserID   string   `json:"user_id"`
-	Nickname string   `json:"nick"`
-	Card     string   `json:"card"`
-	Content  string   `json:"content"`
+	RowID    int64  `json:"db_id,omitempty"`
+	GroupID  string `json:"group_id"`
+	SelfID   string `json:"self_id,omitempty"` // 收到这条消息的机器人账号；同一群多账号时用于去重
+	UserID   string `json:"user_id"`
+	Nickname string `json:"nick"`
+	Card     string `json:"card"`
+	Content  string `json:"content"`
+	// Mentions 是正文里 @ 到的 openid，按出现顺序去重；空表示没 @ 人（@全体不在内）。
+	// 只记 id 不记名字：名字在正文里（@谁是大肥鱼(id)），改名后这里也不会失真。
+	Mentions []string `json:"mentions,omitempty"`
 	Images   []string `json:"images,omitempty"` // 消息里的图片 URL（已 HTML 解码，供 agent「看图」使用）
 	// ImageIDs 与 Images 一一对齐：图片内容标识（sha256 + 字节大小），持久化在 messages.image_ids。
 	ImageIDs []ImageID `json:"image_ids,omitempty"`

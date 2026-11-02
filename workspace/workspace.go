@@ -108,6 +108,14 @@ type Workspace struct {
 	ob      *onebot.Client
 	members *directory
 
+	// ctx 是进程的关闭信号：历史 @ 回填这类后台活儿靠它收手。
+	ctx context.Context
+	// 历史消息里 @ 占位的回填：同一群同时只跑一个协程，
+	// 名字一个个学到时合并成一遍（见 scheduleMentionBackfill）。
+	mentionMu     sync.Mutex
+	mentionQueued map[string]bool
+	mentionAgain  map[string]bool
+
 	nameMu sync.RWMutex
 	name   string // 面板展示名（get_self_info 的 user_name，或 meta 缓存）
 	// 昵称核对（平台侧可能改名）的节流：每工作空间最快 nameSyncInterval 查一次。
@@ -350,11 +358,12 @@ func (m *Manager) load(id, platform, accountKind, account string) (*Workspace, e
 		Cache:       conversation.NewStore(),
 		State:       st,
 		ob:          m.obClient.For(id),
+		ctx:         m.shutdownCtx,
 		identities:  make(map[string]string),
 		groups:      make(map[string]string),
 	}
 	ws.members = newDirectory(ws.ob, st)
-	ws.members.onSelfName = ws.onChangeMemberName
+	ws.members.onName = ws.onChangeMemberName
 	ws.appCfg = func() *config.Config { return ws.snapshot(m.appCfg()) }
 
 	ws.Router = speech.NewRouter(ws.appCfg, m.prompt, m.llmClient, ws.ob, m.mcp, m.shutdownCtx)
@@ -410,6 +419,8 @@ func (w *Workspace) restore(cfg *config.Config) {
 		}
 		logutil.Info("已从 state.db 恢复消息", "workspace", w.ID, "messages", len(msgs))
 	}
+	// 名字已经恢复，正文里还留着的 @用户(id) 顺手换掉（异步，不拦启动）。
+	w.backfillAllMentions()
 	if anchors, err := w.State.LoadAnchors(); err != nil {
 		logutil.Warn("读取选窗锚点失败", "workspace", w.ID, "err", err)
 	} else {
@@ -927,8 +938,9 @@ type directory struct {
 	pending map[string]map[string]struct{}
 	ob      *onebot.Client
 	state   *state.Scope
-	// onSelfName 在机器人自己那一行成员名被更新后回调，用于把名字镜像到 meta。
-	onSelfName func(groupID, userID, name string)
+	// onName 在成员名写入目录之后回调（learn / fetchAsync 两条路）。
+	// 群友的名字用来回填历史消息里的 @ 占位；机器人自己那一行还要镜像到展示名。
+	onName func(groupID, userID, name string)
 }
 
 func newDirectory(ob *onebot.Client, st *state.Scope) *directory {
@@ -1085,8 +1097,8 @@ func (d *directory) learn(groupID, userID, name, sourceMessageID string) bool {
 			Source: "sender", SourceMessageID: sourceMessageID,
 		})
 	}
-	if d.onSelfName != nil {
-		d.onSelfName(groupID, userID, name)
+	if d.onName != nil {
+		d.onName(groupID, userID, name)
 	}
 	return true
 }
@@ -1140,19 +1152,30 @@ func (d *directory) fetchAsync(groupID, userID string) {
 		if d.state != nil {
 			d.state.SaveMember(groupID, userID, info.UserName, info.UserDisplayName)
 		}
-		if d.onSelfName != nil {
-			d.onSelfName(groupID, userID, name)
+		if d.onName != nil {
+			d.onName(groupID, userID, name)
 		}
 	}()
 }
 
-// onChangeMemberName 在成员目录写入新名字之后回调（目前只有 Workspace 注册）。
-// 机器人自己的名字要同步到工作空间展示名（meta），群友的只留在 members。
+// onChangeMemberName 在成员名写入目录之后回调（learn / fetchAsync 两条路都走这里）。
+//
+// 两件事：历史正文里的 @用户(id) 要换成真名；机器人自己那一行还要把名字镜像到展示名。
 func (w *Workspace) onChangeMemberName(groupID, userID, name string) {
+	if name == "" {
+		return
+	}
+	w.scheduleMentionBackfill(groupID)
+	w.mirrorSelfName(groupID, userID, name)
+}
+
+// mirrorSelfName 机器人自己在群里的名字变了，同步到工作空间展示名；
+// 群友的名字只留在 members，不能动 meta。
+func (w *Workspace) mirrorSelfName(groupID, userID, name string) {
 	w.identityMu.RLock()
 	selfID := w.identities[groupID]
 	w.identityMu.RUnlock()
-	if selfID == "" || selfID != userID || name == "" || w.Name() == name {
+	if selfID == "" || selfID != userID || w.Name() == name {
 		return
 	}
 	old := w.Name()

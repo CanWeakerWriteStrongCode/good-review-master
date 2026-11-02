@@ -5,10 +5,12 @@ package state
 // persona.go / jobs.go / ops.go，一张表一个文件。
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"good-review-master/conversation"
 	"good-review-master/logutil"
 
 	"gorm.io/gorm"
@@ -30,7 +32,9 @@ const (
 	// v12 identities 并进 groups.self_user_id：两张表都是每会话一行，
 	//     没必要分开存，并过来后面板查询少一次 JOIN、启动恢复少一次全表查询。
 	// v13 group_personas 直接去掉，人格改存 groups.persona_keyword（旧值不搬）。
-	schemaVersion = 13
+	// v14 messages 加 mentions（这条消息 @ 过谁）与 mentions_resolved（正文里还有没有
+	//     "@用户(" 占位），面板与回填靠它们筛出还没换名字的正文。
+	schemaVersion = 14
 )
 
 // ensureFile 先以 0600 建出文件再交给驱动：消息原文与昵称属于隐私数据。
@@ -83,6 +87,8 @@ func migrate(db *gorm.DB, path string) error {
 			message_id   TEXT NOT NULL,
 			user_id      TEXT NOT NULL,
 			content      TEXT NOT NULL,
+			mentions     TEXT NOT NULL DEFAULT '[]',
+			mentions_resolved INTEGER NOT NULL DEFAULT 1,
 			images       TEXT NOT NULL DEFAULT '[]',
 			image_ids    TEXT NOT NULL DEFAULT '[]',
 			reply_to     TEXT NOT NULL DEFAULT '',
@@ -299,9 +305,25 @@ func migrate(db *gorm.DB, path string) error {
 			return fmt.Errorf("删除旧 group_personas 表失败：%w", err)
 		}
 	}
+	// v14：messages 加 @ 相关两列。老消息只处理“正文里还有占位”的那一类：
+	// 其余行不需要知道 @ 过谁，mentions 留 '[]' 即可。
+	if version < 14 {
+		for _, column := range []struct{ name, ddl string }{
+			{"mentions", "TEXT NOT NULL DEFAULT '[]'"},
+			{"mentions_resolved", "INTEGER NOT NULL DEFAULT 1"},
+		} {
+			if err := ensureColumn(db, "messages", column.name, column.ddl); err != nil {
+				return err
+			}
+		}
+		if err := backfillMentionColumns(db); err != nil {
+			return err
+		}
+	}
 
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(workspace_id, group_id, ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_mention_pending ON messages(workspace_id, group_id, mentions_resolved)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_ref ON messages(workspace_id, group_id, ref_idx)`,
 		`CREATE INDEX IF NOT EXISTS idx_member_info_history ON member_info_history(workspace_id, group_id, user_id, changed_at)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_member_info_history_source
@@ -361,6 +383,49 @@ func ensureColumn(db *gorm.DB, table, column, ddl string) error {
 	}
 	if err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl).Error; err != nil {
 		return fmt.Errorf("给 %s 补列 %s 失败：%w", table, column, err)
+	}
+	return nil
+}
+
+// backfillMentionColumns 把存量消息里的 @ 占位标成待办，并从正文里抽出 openid（v14 升级）。
+//
+// 只扫正文里还有 "@用户(" 的行：别的消息不需要知道 @ 过谁，mentions 留 '[]' 就够了。
+// 名字回填不在这里做——那是运行时的事（见 workspace 的 @ 回填），启动后会自己跑。
+func backfillMentionColumns(db *gorm.DB) error {
+	rows, err := db.Raw(`SELECT id, content FROM messages WHERE content LIKE '%@用户(%'`).Rows()
+	if err != nil {
+		return fmt.Errorf("读取待回填的 @ 占位失败：%w", err)
+	}
+	defer rows.Close()
+	type pendingMention struct {
+		id      int64
+		content string
+	}
+	var pending []pendingMention
+	for rows.Next() {
+		var row pendingMention
+		if err := rows.Scan(&row.id, &row.content); err != nil {
+			return fmt.Errorf("读取待回填的 @ 占位失败：%w", err)
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("读取待回填的 @ 占位失败：%w", err)
+	}
+	for _, row := range pending {
+		payload := "[]"
+		if ids := conversation.MentionIDs(row.content); len(ids) > 0 {
+			if encoded, err := json.Marshal(ids); err == nil {
+				payload = string(encoded)
+			}
+		}
+		if err := db.Exec(`UPDATE messages SET mentions = ?, mentions_resolved = 0 WHERE id = ?`,
+			payload, row.id).Error; err != nil {
+			return fmt.Errorf("回填 @ 占位标记失败：%w", err)
+		}
+	}
+	if len(pending) > 0 {
+		logutil.Info("存量消息里还有未替换的 @ 占位", "rows", len(pending))
 	}
 	return nil
 }

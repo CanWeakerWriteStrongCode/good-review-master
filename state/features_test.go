@@ -306,3 +306,123 @@ func TestV5升级迁移meta到画像(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Test消息占位待办 落库时就定下“这条 @ 了谁”和“正文里还有没有占位”，
+// 回填只改正文与待办标记；where 带旧正文是为了多副本同时改同一行时不互相覆盖。
+func Test消息占位待办(t *testing.T) {
+	_, scope := openTemp(t)
+	const (
+		rice = "ADA3988201B97492C659ADDAB0EAF113"
+		fish = "DBF09B44D411F63340CE2924D744BA86"
+	)
+	placeholder := "@用户(" + rice + ") 你好啊"
+	rowID := scope.SaveMessage(conversation.Message{
+		MessageID: "m1", GroupID: "g1", UserID: "u1", Content: placeholder,
+		Mentions: []string{rice}, Time: 100,
+	})
+	if rowID == 0 {
+		t.Fatal("消息应落库并拿到行号")
+	}
+	// 没 @ 人的消息不进待办；另一个群的行不能串进来。
+	if got := scope.SaveMessage(conversation.Message{MessageID: "m2", GroupID: "g1", UserID: "u1", Content: "今天好热", Time: 101}); got == 0 {
+		t.Fatal("第二条消息应落库")
+	}
+	if got := scope.SaveMessage(conversation.Message{
+		MessageID: "m3", GroupID: "g2", UserID: "u1",
+		Content: "@用户(" + fish + ") 在吗", Mentions: []string{fish}, Time: 102,
+	}); got == 0 {
+		t.Fatal("另一个群的消息应落库")
+	}
+
+	rows, err := scope.PendingMentionRows("g1", 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("g1 的待办 = %+v, %v", rows, err)
+	}
+	if rows[0].ID != rowID || rows[0].Content != placeholder {
+		t.Fatalf("待办行 = %+v", rows[0])
+	}
+	groups, err := scope.PendingMentionGroups()
+	if err != nil || len(groups) != 2 {
+		t.Fatalf("两个群都有待办，实际 %v, %v", groups, err)
+	}
+
+	// 旧正文对不上（别人刚改过）就不写，等下一轮重读。
+	if ok, err := scope.RewriteMention(rowID, "@用户("+rice+") 你好", "@谁是大肥鱼("+rice+") 你好", 1); err != nil || ok {
+		t.Fatalf("旧正文对不上时应改不到：%v, %v", ok, err)
+	}
+	replaced := "@谁是大肥鱼(" + rice + ") 你好啊"
+	if ok, err := scope.RewriteMention(rowID, placeholder, replaced, 1); err != nil || !ok {
+		t.Fatalf("回填应命中一行：%v, %v", ok, err)
+	}
+	if rows, err := scope.PendingMentionRows("g1", 10); err != nil || len(rows) != 0 {
+		t.Fatalf("回填后应出列，实际 %+v, %v", rows, err)
+	}
+
+	// 重启后读回来的正文与 @ 名单都是新的。
+	msgs, err := scope.LoadRecent(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, msg := range msgs {
+		if msg.MessageID != "m1" {
+			continue
+		}
+		found = true
+		if msg.Content != replaced {
+			t.Fatalf("正文应为回填后的，实际 %q", msg.Content)
+		}
+		if len(msg.Mentions) != 1 || msg.Mentions[0] != rice {
+			t.Fatalf("mentions 应读回 [%s]，实际 %v", rice, msg.Mentions)
+		}
+	}
+	if !found {
+		t.Fatal("LoadRecent 应读到 m1")
+	}
+}
+
+// Test从旧库升级补出占位待办 v14 升级要在老库上把两列补出来，
+// 并把正文里还有 @用户( 的行标成待办、把 openid 抽进 mentions。
+func Test从旧库升级补出占位待办(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	const rice = "ADA3988201B97492C659ADDAB0EAF113"
+	placeholder := "@用户(" + rice + ") 你好啊"
+	if st.Scope("qq_test").SaveMessage(conversation.Message{
+		MessageID: "m1", GroupID: "g1", UserID: "u1", Content: placeholder, Time: 100,
+	}) == 0 {
+		t.Fatal("消息应落库")
+	}
+	// 退回 v13 的样子：没有这两列，也没有那条索引。
+	for _, statement := range []string{
+		`DROP INDEX IF EXISTS idx_messages_mention_pending`,
+		`ALTER TABLE messages DROP COLUMN mentions`,
+		`ALTER TABLE messages DROP COLUMN mentions_resolved`,
+		`PRAGMA user_version = 13`,
+	} {
+		if err := st.db.Exec(statement).Error; err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	st.Close()
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后重新 Open: %v", err)
+	}
+	defer reopened.Close()
+	rows, err := reopened.Scope("qq_test").PendingMentionRows("g1", 10)
+	if err != nil || len(rows) != 1 || rows[0].Content != placeholder {
+		t.Fatalf("升级后应把老消息标成待办：%+v, %v", rows, err)
+	}
+	var mentions string
+	if err := reopened.db.Raw(`SELECT mentions FROM messages WHERE message_id = 'm1'`).Scan(&mentions).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mentions != `["`+rice+`"]` {
+		t.Fatalf("mentions 应从正文补出来，实际 %q", mentions)
+	}
+}

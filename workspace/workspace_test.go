@@ -753,3 +753,103 @@ func Test重启恢复历史消息昵称(t *testing.T) {
 		t.Fatalf("历史消息应按 members 表补回昵称，实际 %q", msgs[0].Nickname)
 	}
 }
+
+// Test历史消息里的占位在学到名字后回填 入站时被 @ 的人还没名字，正文只能写成
+// @用户(openid)；名字随后从 sender 透传或 get_group_member_info 学到，
+// 这里验证它会被异步换回正文，并且不再留在待办里。
+func Test历史消息里的占位在学到名字后回填(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_official_bot_a"},
+		MaxCacheMsg:       10,
+	}
+	m, err := New(func() *config.Config { return cfg }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer m.Close()
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
+	}
+
+	const (
+		fish = "DBF09B44D411F63340CE2924D744BA86"
+		rice = "ADA3988201B97492C659ADDAB0EAF113"
+	)
+	event := onebot.Event{
+		MessageID: "m1", GroupID: "g1", UserID: "u1", Time: 100,
+		Message: []onebot.Segment{
+			{Type: onebot.SegmentMention, Data: map[string]any{"user_id": fish}},
+			{Type: onebot.SegmentMention, Data: map[string]any{"user_id": rice}},
+			{Type: onebot.SegmentText, Data: map[string]any{"text": " 你好啊"}},
+		},
+	}
+	synced := ws.PrepareBatch(context.Background(), []conversation.Inbound{{Event: event}})
+	if len(synced) != 1 {
+		t.Fatalf("应落库 1 条消息，实际 %d", len(synced))
+	}
+	placeholder := "@用户(" + fish + ")" + "@用户(" + rice + ") 你好啊"
+	if got := synced[0].Message.Content; got != placeholder {
+		t.Fatalf("没名字时应落占位，实际 %q", got)
+	}
+	if got := synced[0].Message.Mentions; len(got) != 2 || got[0] != fish || got[1] != rice {
+		t.Fatalf("消息上应按出现顺序带 @ 名单，实际 %v", got)
+	}
+	if rows, err := ws.State.PendingMentionRows("g1", 10); err != nil || len(rows) != 1 {
+		t.Fatalf("应留下 1 条待办，实际 %+v, %v", rows, err)
+	}
+
+	// 只认识第一个人：换上他，但另一个还是占位，这条不能出列。
+	ws.LearnMemberName("g1", fish, "谁是大肥鱼")
+	waitMessageContent(t, ws, "m1", "@谁是大肥鱼("+fish+")@用户("+rice+") 你好啊")
+	if rows, err := ws.State.PendingMentionRows("g1", 10); err != nil || len(rows) != 1 {
+		t.Fatalf("第二个人的名字还不知道，应继续留在待办：%+v, %v", rows, err)
+	}
+
+	// 第二个名字到了才出列。
+	ws.LearnMemberName("g1", rice, "给你家白饭倒可乐的大肥鱼")
+	waitMessageContent(t, ws, "m1",
+		"@谁是大肥鱼("+fish+")@给你家白饭倒可乐的大肥鱼("+rice+") 你好啊")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		rows, err := ws.State.PendingMentionRows("g1", 10)
+		if err != nil {
+			t.Fatalf("读待办：%v", err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("两个人的名字都学到了，这条不该再是待办：%+v", rows)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitMessageContent 等异步回填把某条消息的正文改成 want。
+func waitMessageContent(t *testing.T, ws *Workspace, messageID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		msgs, err := ws.State.LoadRecent(10)
+		if err != nil {
+			t.Fatalf("读取消息：%v", err)
+		}
+		for _, msg := range msgs {
+			if msg.MessageID == messageID && msg.Content == want {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("正文没有变成 %q", want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
