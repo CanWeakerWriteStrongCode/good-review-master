@@ -18,7 +18,6 @@ export default {
     noData: 'No data',
     waiting: 'Waiting for messages...',
     unknown: 'Unknown',
-    privateLabel: 'Private {id}',
     // type tag in front of each chat card, taken from groups.type
     chatKind: {
       private: 'DM',

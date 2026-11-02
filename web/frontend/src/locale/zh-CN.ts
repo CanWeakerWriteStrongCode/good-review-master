@@ -20,8 +20,6 @@ export default {
     noData: '无数据',
     waiting: '等待接收消息...',
     unknown: '未知',
-    // 私聊在库里的键是 private:<openid>，只露前几字符给人认
-    privateLabel: '私聊 {id}',
     // 会话卡前面的类型标记，只看 groups.type
     chatKind: {
       private: '私聊',

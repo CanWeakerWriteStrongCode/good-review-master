@@ -47,8 +47,8 @@
           >
             <view class="group-card-header">
               <view class="group-title">
-                <text class="group-name">{{ group.group_name || sessionLabel(group.group_id, group.type) }}</text>
-                <text class="group-id-sub">{{ group.group_id }}</text>
+                <text class="group-name">{{ group.group_name || group.group_id }}</text>
+                <text class="group-id-sub" v-if="group.group_name">{{ group.group_id }}</text>
               </view>
               <view class="group-badge" :class="group.has_messages ? 'badge-active' : 'badge-empty'">
                 {{ group.has_messages ? t('common.hasRecords') : t('common.noData') }}
@@ -90,8 +90,8 @@
       >
         <view class="group-card-header">
           <view class="group-title">
-            <text class="group-name">{{ session.group_name || sessionLabel(session.group_id, session.type) }}</text>
-            <text class="group-id-sub">{{ session.group_id }}</text>
+            <text class="group-name">{{ session.group_name || session.group_id }}</text>
+            <text class="group-id-sub" v-if="session.group_name">{{ session.group_id }}</text>
           </view>
           <view class="group-badge" :class="session.has_messages ? 'badge-active' : 'badge-empty'">
             {{ session.has_messages ? t('common.hasRecords') : t('common.noData') }}
@@ -138,7 +138,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { useGroupsStore, sessionLabel, type ViewMode } from '@/stores/groups'
+import { useGroupsStore, type ViewMode } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
 import { useLocale } from '@/composables/useLocale'
 import { formatDateTime } from '@/utils/format'

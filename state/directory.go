@@ -410,7 +410,8 @@ func (s *Scope) GroupName(groupID string) string {
 }
 
 // GroupType 读会话类型（groups.type）：group = 群聊，private = 私聊。
-// 直接查库不走 KV：消息详情页一次只问一个会话，没必要为它多养一份缓存。
+// 消息详情页要靠它在顶栏标出会话类型；直接查库不走 KV，
+// 那个页面一次只问一个会话，没必要为它多养一份缓存。
 func (s *Scope) GroupType(groupID string) string {
 	if s == nil || s.store == nil || s.store.closed.Load() || groupID == "" {
 		return ""

@@ -32,21 +32,15 @@ export interface AccountSection extends AccountInfo {
 }
 
 // 会话类型只看 groups 表的 type 列：group = 群聊，private = 私聊。
-// 群列表接口把这个字段一起带回来了，卡片上的类型标记就认它，
+// 群列表接口和消息接口都把这个字段带回来了，卡片和顶栏的标记就认它，
 // 不去猜 group_id 前缀（那样私聊改键名就全错）。
 export function isPrivateChat(type?: string): boolean {
   return type === 'private'
 }
 
-// 会话标题：群聊直接用群号（有群名时外面会优先用群名），
-// 私聊在库里的键是 private:<openid>，直接显示没人看得懂。
-// 是不是私聊只看 groups 表的 type，群列表接口和消息接口都带着它，
-// 不再按 group_id 前缀猜。
-export function sessionLabel(chatID: string, type?: string): string {
-  if (!isPrivateChat(type)) return chatID
-  const prefix = 'private:'
-  // 只露 openid 前 8 位，整串摆不下、也没必要
-  return tt('common.privateLabel', { id: chatID.slice(prefix.length, prefix.length + 8) })
+// 标记文案：监控页卡片、详情页顶栏共用这一份，两边措辞不会跑偏。
+export function chatKindLabel(type?: string): string {
+  return isPrivateChat(type) ? tt('common.chatKind.private') : tt('common.chatKind.group')
 }
 
 // 账号显示名：昵称优先；占位值是适配器还没学到身份，显示「未知账号」。
@@ -320,7 +314,7 @@ export const useMessagesStore = defineStore('messages', () => {
   const messages = ref<Message[]>([])
   const groupId = ref('')
   const groupName = ref('')
-  /** 会话类型（groups.type）：detail 页靠它认私聊，不再看 group_id 前缀 */
+  /** 会话类型（groups.type）：详情页顶栏靠它标「群聊 / 私聊」 */
   const chatType = ref('')
   const workspaceId = ref('')
   const workspaceName = ref('')

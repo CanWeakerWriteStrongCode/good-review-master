@@ -94,9 +94,9 @@
                   <text class="chat-kind" :class="isPrivateChat(g.type) ? 'kind-private' : 'kind-group'">
                     {{ chatKindLabel(g.type) }}
                   </text>
-                  <text class="ws-group-name">{{ g.group_name || sessionLabel(g.group_id, g.type) }}</text>
+                  <text class="ws-group-name">{{ g.group_name || g.group_id }}</text>
                 </view>
-                <text class="ws-group-id">{{ g.group_id }}</text>
+                <text class="ws-group-id" v-if="g.group_name">{{ g.group_id }}</text>
               </view>
               <view class="ws-group-badge" :class="g.has_messages ? 'badge-active' : 'badge-empty'">
                 {{ g.has_messages ? t('common.hasRecords') : t('common.noData') }}
@@ -154,9 +154,9 @@
               <text class="chat-kind chat-kind-lg" :class="isPrivateChat(s.type) ? 'kind-private' : 'kind-group'">
                 {{ chatKindLabel(s.type) }}
               </text>
-              <text class="ws-name">{{ s.group_name || sessionLabel(s.group_id, s.type) }}</text>
+              <text class="ws-name">{{ s.group_name || s.group_id }}</text>
             </view>
-            <text class="ws-id">{{ s.group_id }}</text>
+            <text class="ws-id" v-if="s.group_name">{{ s.group_id }}</text>
           </view>
           <view class="ws-badge" :class="s.has_messages ? 'badge-active' : 'badge-empty'">
             {{ s.has_messages ? t('common.hasRecords') : t('common.noData') }}
@@ -200,7 +200,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useGroupsStore, sessionLabel, alertKindLabel, isPrivateChat } from '@/stores/groups'
+import { useGroupsStore, alertKindLabel, isPrivateChat, chatKindLabel } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
 import { useLocale } from '@/composables/useLocale'
 import { formatDateTime } from '@/utils/format'
@@ -247,11 +247,6 @@ function visibleGroups(workspaceId: string): GroupInfo[] {
 
 function toggleMore(workspaceId: string) {
   expanded.value[workspaceId] = !expanded.value[workspaceId]
-}
-
-// 会话卡前面的类型标记：只读 groups 表的 type，group 之外一律当群聊。
-function chatKindLabel(type?: string): string {
-  return isPrivateChat(type) ? t('common.chatKind.private') : t('common.chatKind.group')
 }
 
 const alertsOpen = ref(false)

@@ -315,8 +315,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 	groupType := ""
 	if view.State != nil {
 		groupName = view.State.GroupName(groupID)
-		// 详情页要靠它区分私聊和群聊（私聊的键是 private:<openid>），
-		// 所以这里跟群名一起读出来，前端不用再猜 group_id 前缀。
+		// 详情页顶栏要标出「群聊 / 私聊」，这个标记只认 groups.type。
 		groupType = view.State.GroupType(groupID)
 	}
 	wsID, wsName := view.ID, view.Name

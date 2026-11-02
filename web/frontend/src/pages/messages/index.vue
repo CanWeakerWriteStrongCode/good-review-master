@@ -2,12 +2,21 @@
   <view class="page">
     <AppHeader :title="t('nav.messages')" back />
 
-    <!-- 群信息头 -->
+    <!-- 聊天信息栏：会话类型标在群名前面，类型只认 groups.type -->
     <view class="msg-header">
       <view class="header-main">
-        <text class="header-group-id">
-          {{ t('messages.header.labeled', { name: store.groupName || sessionLabel(store.groupId, store.chatType), id: store.groupId }) }}
-        </text>
+        <view class="header-title-line">
+          <text
+            v-if="store.chatType"
+            class="header-kind"
+            :class="isPrivateChat(store.chatType) ? 'header-kind-private' : 'header-kind-group'"
+          >
+            {{ chatKindLabel(store.chatType) }}
+          </text>
+          <text class="header-group-id">
+            {{ store.groupName ? t('messages.header.labeled', { name: store.groupName, id: store.groupId }) : store.groupId }}
+          </text>
+        </view>
         <text class="header-account" v-if="store.workspaceName">
           {{ t('messages.header.workspace', { name: store.workspaceName }) }}
         </text>
@@ -53,7 +62,7 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { useMessagesStore, sessionLabel } from '@/stores/groups'
+import { useMessagesStore, isPrivateChat, chatKindLabel } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
 import { useLocale } from '@/composables/useLocale'
 import AppHeader from '@/components/AppHeader.vue'
@@ -101,6 +110,25 @@ onMounted(() => {
   padding: 12px;
 }
 
+/* 聊天信息栏里的会话类型标记：这块也是深色底，用半透明底 + 浅色字 */
+.header-kind {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #dbe7f2;
+}
+.header-kind-private {
+  background: rgba(126, 200, 227, 0.22);
+  border-color: rgba(126, 200, 227, 0.5);
+  color: #c9ecfa;
+}
+.header-kind-group {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* 头部 */
 .msg-header {
   background: linear-gradient(135deg, #1a1a2e, #16213e);
@@ -116,11 +144,19 @@ onMounted(() => {
   flex-direction: column;
   min-width: 0;
 }
+/* 类型标记和群名同一行，名字太长就在标记后面换行 */
+.header-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .header-group-id {
   color: #fff;
   font-size: 16px;
   font-weight: 600;
   word-break: break-all;
+  min-width: 0;
 }
 .header-account {
   color: #aab;
