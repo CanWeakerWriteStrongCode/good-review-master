@@ -6,7 +6,7 @@
     <view class="msg-header">
       <view class="header-main">
         <text class="header-group-id">
-          {{ t('messages.header.labeled', { name: store.groupName || sessionLabel(store.groupId), id: store.groupId }) }}
+          {{ t('messages.header.labeled', { name: store.groupName || sessionLabel(store.groupId, store.chatType), id: store.groupId }) }}
         </text>
         <text class="header-account" v-if="store.workspaceName">
           {{ t('messages.header.workspace', { name: store.workspaceName }) }}

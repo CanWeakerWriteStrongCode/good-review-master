@@ -31,14 +31,20 @@ export interface AccountSection extends AccountInfo {
   groups: GroupInfo[]
 }
 
+// 会话类型只看 groups 表的 type 列：group = 群聊，private = 私聊。
+// 群列表接口把这个字段一起带回来了，卡片上的类型标记就认它，
+// 不去猜 group_id 前缀（那样私聊改键名就全错）。
+export function isPrivateChat(type?: string): boolean {
+  return type === 'private'
+}
+
 // 会话标题：群聊直接用群号（有群名时外面会优先用群名），
 // 私聊在库里的键是 private:<openid>，直接显示没人看得懂。
-// 后端现在会给出 type（groups 表的会话类型），有就用它；
-// 消息页拿不到 type，退回看前缀，两边结果一致。
+// 是不是私聊只看 groups 表的 type，群列表接口和消息接口都带着它，
+// 不再按 group_id 前缀猜。
 export function sessionLabel(chatID: string, type?: string): string {
+  if (!isPrivateChat(type)) return chatID
   const prefix = 'private:'
-  const isPrivate = type === 'private' || chatID.startsWith(prefix)
-  if (!isPrivate) return chatID
   // 只露 openid 前 8 位，整串摆不下、也没必要
   return tt('common.privateLabel', { id: chatID.slice(prefix.length, prefix.length + 8) })
 }
@@ -314,6 +320,8 @@ export const useMessagesStore = defineStore('messages', () => {
   const messages = ref<Message[]>([])
   const groupId = ref('')
   const groupName = ref('')
+  /** 会话类型（groups.type）：detail 页靠它认私聊，不再看 group_id 前缀 */
+  const chatType = ref('')
   const workspaceId = ref('')
   const workspaceName = ref('')
   const selfId = ref('')
@@ -335,6 +343,7 @@ export const useMessagesStore = defineStore('messages', () => {
       empty.value = data.empty
       total.value = data.total ?? data.messages.length
       groupName.value = data.group_name || ''
+      chatType.value = data.type || ''
       workspaceId.value = data.workspace_id || wid
       workspaceName.value = data.workspace_name || ''
       selfId.value = data.self_id || ''
@@ -354,6 +363,7 @@ export const useMessagesStore = defineStore('messages', () => {
     messages,
     groupId,
     groupName,
+    chatType,
     workspaceId,
     workspaceName,
     selfId,

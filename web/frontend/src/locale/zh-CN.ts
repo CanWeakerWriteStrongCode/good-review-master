@@ -22,6 +22,11 @@ export default {
     unknown: '未知',
     // 私聊在库里的键是 private:<openid>，只露前几字符给人认
     privateLabel: '私聊 {id}',
+    // 会话卡前面的类型标记，只看 groups.type
+    chatKind: {
+      private: '私聊',
+      group: '群聊',
+    },
     unassignedAccount: '未归属账号',
     unknownAccount: '未知账号',
     // 群卡片和会话卡片共用的一组字段名
@@ -46,7 +51,7 @@ export default {
 
   // 顶栏和底部 tab
   nav: {
-    monitor: '监控',
+    monitor: '聊天记录',
     alerts: '报警',
     diagnostics: '诊断',
     groups: '群列表',

@@ -409,6 +409,20 @@ func (s *Scope) GroupName(groupID string) string {
 	return name
 }
 
+// GroupType 读会话类型（groups.type）：group = 群聊，private = 私聊。
+// 直接查库不走 KV：消息详情页一次只问一个会话，没必要为它多养一份缓存。
+func (s *Scope) GroupType(groupID string) string {
+	if s == nil || s.store == nil || s.store.closed.Load() || groupID == "" {
+		return ""
+	}
+	var kind string
+	if err := s.store.db.Raw(`SELECT type FROM groups WHERE workspace_id = ? AND group_id = ?`,
+		s.workspaceID, groupID).Scan(&kind).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		s.store.noteFailure("读取会话类型", err)
+	}
+	return kind
+}
+
 // LoadGroups 返回 group_id → 群名（没有名字的群值为空串）。
 func (s *Scope) LoadGroups() (map[string]string, error) {
 	if s == nil || s.store == nil {

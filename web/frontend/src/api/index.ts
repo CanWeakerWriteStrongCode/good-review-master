@@ -112,6 +112,8 @@ export interface AlertsData {
 export interface MessagesData {
   group_id: string
   group_name: string
+  /** 会话类型：group = 群聊，private = 私聊（来自 groups.type） */
+  type: string
   workspace_id: string
   workspace_name: string
   self_id: string

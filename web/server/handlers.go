@@ -312,8 +312,12 @@ const panelMessageLimit = 500
 // 昵称从 members 表补。只有没开 state.db（纯内存运行）或查库失败时才退回内存缓存。
 func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.View) {
 	groupName := ""
+	groupType := ""
 	if view.State != nil {
 		groupName = view.State.GroupName(groupID)
+		// 详情页要靠它区分私聊和群聊（私聊的键是 private:<openid>），
+		// 所以这里跟群名一起读出来，前端不用再猜 group_id 前缀。
+		groupType = view.State.GroupType(groupID)
 	}
 	wsID, wsName := view.ID, view.Name
 
@@ -327,6 +331,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 				Data: gin.H{
 					"group_id":       groupID,
 					"group_name":     groupName,
+					"type":           groupType,
 					"workspace_id":   wsID,
 					"workspace_name": wsName,
 					"self_id":        view.Account,
@@ -351,6 +356,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 			Data: gin.H{
 				"group_id":       groupID,
 				"group_name":     groupName,
+				"type":           groupType,
 				"workspace_id":   wsID,
 				"workspace_name": wsName,
 				"self_id":        view.Account,
@@ -369,6 +375,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 		Data: gin.H{
 			"group_id":       groupID,
 			"group_name":     groupName,
+			"type":           groupType,
 			"workspace_id":   wsID,
 			"workspace_name": wsName,
 			"self_id":        view.Account,

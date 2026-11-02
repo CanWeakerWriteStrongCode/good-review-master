@@ -19,6 +19,11 @@ export default {
     waiting: 'Waiting for messages...',
     unknown: 'Unknown',
     privateLabel: 'Private {id}',
+    // type tag in front of each chat card, taken from groups.type
+    chatKind: {
+      private: 'DM',
+      group: 'Group',
+    },
     unassignedAccount: 'Unassigned account',
     unknownAccount: 'Unknown account',
     // field labels shared by chat cards and group cards
@@ -44,7 +49,7 @@ export default {
 
   // Top bar and bottom tab bar
   nav: {
-    monitor: 'Monitor',
+    monitor: 'Chat History',
     alerts: 'Alerts',
     diagnostics: 'Diagnostics',
     groups: 'Chats',

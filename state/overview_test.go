@@ -126,3 +126,22 @@ func TestResetData清空库与群名缓存(t *testing.T) {
 		t.Fatalf("群名缓存没清：%q", name)
 	}
 }
+
+// 消息详情页也靠这一列认私聊（标题要显示成「私聊 xxx」而不是 private:xxx），
+// 所以它必须跟列表的 GroupOverviews 读到同一个值；查不到的会话返回空串。
+func TestGroupType按会话类型返回(t *testing.T) {
+	_, scope := openTemp(t)
+
+	scope.SaveMessage(conversation.Message{GroupID: "g1", MessageID: "1", Content: "a", Time: 100})
+	scope.SaveMessage(conversation.Message{GroupID: "private:u1", MessageID: "2", Content: "b", Time: 200})
+
+	if got := scope.GroupType("g1"); got != "group" {
+		t.Fatalf("群聊 type = %q", got)
+	}
+	if got := scope.GroupType("private:u1"); got != "private" {
+		t.Fatalf("私聊 type = %q", got)
+	}
+	if got := scope.GroupType("没见过的会话"); got != "" {
+		t.Fatalf("不存在的会话 type = %q", got)
+	}
+}

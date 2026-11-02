@@ -90,7 +90,12 @@
           >
             <view class="ws-group-head">
               <view class="ws-group-title">
-                <text class="ws-group-name">{{ g.group_name || sessionLabel(g.group_id, g.type) }}</text>
+                <view class="chat-title-line">
+                  <text class="chat-kind" :class="isPrivateChat(g.type) ? 'kind-private' : 'kind-group'">
+                    {{ chatKindLabel(g.type) }}
+                  </text>
+                  <text class="ws-group-name">{{ g.group_name || sessionLabel(g.group_id, g.type) }}</text>
+                </view>
                 <text class="ws-group-id">{{ g.group_id }}</text>
               </view>
               <view class="ws-group-badge" :class="g.has_messages ? 'badge-active' : 'badge-empty'">
@@ -145,7 +150,12 @@
       >
         <view class="ws-head">
           <view class="ws-title">
-            <text class="ws-name">{{ s.group_name || sessionLabel(s.group_id, s.type) }}</text>
+            <view class="chat-title-line">
+              <text class="chat-kind chat-kind-lg" :class="isPrivateChat(s.type) ? 'kind-private' : 'kind-group'">
+                {{ chatKindLabel(s.type) }}
+              </text>
+              <text class="ws-name">{{ s.group_name || sessionLabel(s.group_id, s.type) }}</text>
+            </view>
             <text class="ws-id">{{ s.group_id }}</text>
           </view>
           <view class="ws-badge" :class="s.has_messages ? 'badge-active' : 'badge-empty'">
@@ -190,7 +200,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useGroupsStore, sessionLabel, alertKindLabel } from '@/stores/groups'
+import { useGroupsStore, sessionLabel, alertKindLabel, isPrivateChat } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
 import { useLocale } from '@/composables/useLocale'
 import { formatDateTime } from '@/utils/format'
@@ -237,6 +247,11 @@ function visibleGroups(workspaceId: string): GroupInfo[] {
 
 function toggleMore(workspaceId: string) {
   expanded.value[workspaceId] = !expanded.value[workspaceId]
+}
+
+// 会话卡前面的类型标记：只读 groups 表的 type，group 之外一律当群聊。
+function chatKindLabel(type?: string): string {
+  return isPrivateChat(type) ? t('common.chatKind.private') : t('common.chatKind.group')
 }
 
 const alertsOpen = ref(false)
@@ -466,6 +481,34 @@ async function doLogout() {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+/* 会话标题第一行：类型标记 + 名称并排 */
+.chat-title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* 类型标记只看 groups.type：私聊蓝、群聊灰（绿留给右边的「有记录」） */
+.chat-kind {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.chat-kind-lg {
+  font-size: 12px;
+  padding: 4px 7px;
+}
+.kind-private {
+  background: #e8f1ff;
+  color: #3a72c4;
+}
+.kind-group {
+  background: #f0f2f5;
+  color: #5a6472;
 }
 .ws-name {
   font-size: 16px;

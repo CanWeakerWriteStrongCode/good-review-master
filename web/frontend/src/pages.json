@@ -10,7 +10,7 @@
     {
       "path": "pages/monitor/index",
       "style": {
-        "navigationBarTitleText": "监控",
+        "navigationBarTitleText": "聊天记录",
         "navigationBarBackgroundColor": "#1a1a2e",
         "navigationBarTextStyle": "white"
       }
