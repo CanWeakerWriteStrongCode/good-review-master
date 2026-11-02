@@ -3,17 +3,17 @@ package server
 import (
 	"testing"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 )
 
 func TestCollectDetails按工作空间归属(t *testing.T) {
-	cache.ResetAll()
-	defer cache.ResetAll()
+	conversation.ResetAll()
+	defer conversation.ResetAll()
 
-	store := cache.NewStore()
-	store.GetGroupCache("g1", 4).Add(cache.Message{MessageID: "1", SelfID: "openid-a", UserID: "u", Content: "a", Time: 100})
-	store.GetGroupCache("g2", 4).Add(cache.Message{MessageID: "2", SelfID: "openid-a", UserID: "u", Content: "b", Time: 200})
+	store := conversation.NewStore()
+	store.GetGroupCache("g1", 4).Add(conversation.Message{MessageID: "1", SelfID: "openid-a", UserID: "u", Content: "a", Time: 100})
+	store.GetGroupCache("g2", 4).Add(conversation.Message{MessageID: "2", SelfID: "openid-a", UserID: "u", Content: "b", Time: 200})
 
 	s := &Server{groupNames: map[string]string{"g1": "群1", "g2": "群2"}}
 
@@ -35,11 +35,11 @@ func TestCollectDetails按工作空间归属(t *testing.T) {
 }
 
 func TestCollectDetails无账号时不造账号行(t *testing.T) {
-	cache.ResetAll()
-	defer cache.ResetAll()
+	conversation.ResetAll()
+	defer conversation.ResetAll()
 
 	s := &Server{groupNames: map[string]string{}}
-	groups, accounts := s.collectDetails([]string{"g1"}, "", cache.NewStore(), "", "")
+	groups, accounts := s.collectDetails([]string{"g1"}, "", conversation.NewStore(), "", "")
 	if len(groups) != 1 {
 		t.Fatalf("groups = %+v", groups)
 	}
@@ -49,10 +49,10 @@ func TestCollectDetails无账号时不造账号行(t *testing.T) {
 }
 
 func TestCollectGroupDetails旧路径(t *testing.T) {
-	cache.ResetAll()
-	defer cache.ResetAll()
+	conversation.ResetAll()
+	defer conversation.ResetAll()
 
-	cache.GetGroupCache("g1", 4).Add(cache.Message{MessageID: "1", SelfID: "openid-a", Content: "a", Time: 1})
+	conversation.GetGroupCache("g1", 4).Add(conversation.Message{MessageID: "1", SelfID: "openid-a", Content: "a", Time: 1})
 
 	cfg := &config.Config{AllowGroups: []string{"g1"}}
 	s := &Server{groupNames: map[string]string{}}

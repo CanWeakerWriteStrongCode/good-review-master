@@ -11,25 +11,24 @@ import (
 	"testing"
 	"time"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/internal/testutil"
-	"good-review-master/pipeline"
 )
 
 // fakeNoteStore 内存版全局图库，记录调用次数供断言。
 type fakeNoteStore struct {
-	notes map[cache.ImageID]cache.ImageNote
+	notes map[conversation.ImageID]conversation.ImageNote
 	saves int
 	fails int
 }
 
 func newFakeNoteStore() *fakeNoteStore {
-	return &fakeNoteStore{notes: make(map[cache.ImageID]cache.ImageNote)}
+	return &fakeNoteStore{notes: make(map[conversation.ImageID]conversation.ImageNote)}
 }
 
-func (f *fakeNoteStore) GetImageNotes(ids []cache.ImageID) (map[cache.ImageID]cache.ImageNote, error) {
-	out := make(map[cache.ImageID]cache.ImageNote, len(ids))
+func (f *fakeNoteStore) GetImageNotes(ids []conversation.ImageID) (map[conversation.ImageID]conversation.ImageNote, error) {
+	out := make(map[conversation.ImageID]conversation.ImageNote, len(ids))
 	for _, id := range ids {
 		if note, ok := f.notes[id]; ok {
 			out[id] = note
@@ -38,13 +37,13 @@ func (f *fakeNoteStore) GetImageNotes(ids []cache.ImageID) (map[cache.ImageID]ca
 	return out, nil
 }
 
-func (f *fakeNoteStore) SaveImageNote(note cache.ImageNote) error {
+func (f *fakeNoteStore) SaveImageNote(note conversation.ImageNote) error {
 	f.saves++
 	f.notes[note.ImageID] = note
 	return nil
 }
 
-func (f *fakeNoteStore) MarkImageNoteFailed(note cache.ImageNote) error {
+func (f *fakeNoteStore) MarkImageNoteFailed(note conversation.ImageNote) error {
 	f.fails++
 	f.notes[note.ImageID] = note
 	return nil
@@ -98,7 +97,7 @@ func TestTagger描述并去重(t *testing.T) {
 	if len(result.ImageNotes) != 1 || result.ImageNotes[0].Status != "ok" || result.ImageNotes[0].Note == "" {
 		t.Fatalf("应写入描述：%+v", result.ImageNotes)
 	}
-	if result.Status != pipeline.AssetStatusOK {
+	if result.Status != conversation.StatusOK {
 		t.Fatalf("status = %q", result.Status)
 	}
 	if store.saves != 1 || len(fake.StructuredCalls()) != 1 {
@@ -126,7 +125,7 @@ func TestTagger失败重试上限(t *testing.T) {
 	tagger := testTagger(t, dir, fake, store)
 
 	first := tagger.TagURLs(context.Background(), []string{path})
-	if first.Status != pipeline.AssetStatusFailed || len(first.Deferred) != 1 {
+	if first.Status != conversation.StatusFailed || len(first.Deferred) != 1 {
 		t.Fatalf("失败应进入欠条：%+v", first)
 	}
 	if calls := len(fake.StructuredCalls()); calls != 1 || store.fails != 1 {
@@ -144,7 +143,7 @@ func TestTagger失败重试上限(t *testing.T) {
 	if calls := len(fake.StructuredCalls()); calls != 2 {
 		t.Fatalf("达到重试上限后不应再调用，实际 calls=%d", calls)
 	}
-	if result.Status != pipeline.AssetStatusFailed {
+	if result.Status != conversation.StatusFailed {
 		t.Fatalf("仍应是 failed，实际 %q", result.Status)
 	}
 }
@@ -166,7 +165,7 @@ func TestTagger时间预算耗尽进入欠条(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	result := tagger.TagURLs(ctx, []string{path})
-	if result.Status != pipeline.AssetStatusDeferred {
+	if result.Status != conversation.StatusDeferred {
 		t.Fatalf("预算耗尽应为 deferred，实际 %q", result.Status)
 	}
 	if len(result.Deferred) != 1 || result.Deferred[0].URL != path {

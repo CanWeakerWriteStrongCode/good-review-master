@@ -51,7 +51,7 @@ QQ 官方机器人 ←→ AstrBot（sidecar，只做 IM 网关）←→ Go Bot �
 ```
 ┌──────────┐  OneBot 12  ┌───────────┐  OneBot 12   ┌──────────────────┐
 │   QQ 群   │ ←─────────→ │ AstrBot   │ ←──────────→ │  Go Bot          │
-└──────────┘    (WS/HTTP) │ + 桥接插件 │  事件/动作    │ (router/LLM/缓存) │
+└──────────┘    (WS/HTTP) │ + 桥接插件 │  事件/动作    │ (speech/LLM/缓存) │
                           └───────────┘              └────────┬─────────┘
                                                              │ OpenAI API
                                                              ▼
@@ -265,8 +265,27 @@ good-review-master/
 │   ├── embed.go              # //go:embed 模板嵌入
 │   ├── init.go               # 首次运行自动创建配置文件
 │   └── prompt.go             # 提示词配置加载+热重载+增删改
-├── cache/
-│   └── cache.go              # 环形缓冲区（零拷贝写入，O(1) 去重）
+├── conversation/             # 会话域：消息值对象 + 每群环形缓冲 + 锚点 + 选窗
+│   ├── types.go              # Inbound / Synced / ImageID / ImageNote（跨 Stage 1→3）
+│   ├── asset.go              # 消息里带的资产值对象（跟随消息走过 Stage 2→3）
+│   ├── cache.go              # 环形缓冲（零拷贝写入，O(1) 去重）+ 窗口选择 + 锚点
+│   ├── token.go              # token 启发式估算（CJK 每字 1，ASCII 每 4 字符 1）
+│   └── bench_test.go         # BenchmarkAdd：allocs/op 必须是 0
+├── assets/                   # 资产域：图片描述（视觉模型）+ 全局图库 + 欠条补打
+│   ├── tagger.go             # 降采样 → ImageID → 查图库 → 写描述
+│   ├── image.go              # 全局图库读写
+│   └── jobs.go               # 后台补打 worker
+├── policy/                   # 策略域：群白名单 / 账号开通 / 只记录不回复（纯函数）
+│   └── policy.go
+├── state/                    # 存储：共享 SQLite 档案，一张表一类文件
+│   ├── state.go              # Scope 门面 + 公共类型
+│   ├── schema.go             # 建表 + 版本迁移
+│   └── messages.go / anchors.go / directory.go / persona.go / images.go / jobs.go / ops.go
+├── kv/                       # 进程内 KV（Ristretto：成员名、群名）
+├── pipeline/                 # 编排：三段缓冲 + 每会话 worker + 重试/死信
+│   ├── buffer.go             # 每会话分区缓冲（有界，满则回 503）
+│   ├── worker.go             # 批量 + linger + 并发上限 + IdleTTL 回收
+│   └── contracts.go          # Item{ID, Key, Stage, Body, Attempts}
 ├── llm/
 │   └── llm.go                # 大模型客户端（go-openai SDK，连接池，类型安全）
 ├── async/
@@ -275,19 +294,31 @@ good-review-master/
 │   └── logger.go             # 日志（zap + lumberjack，20MB 切割，30 天保留）
 ├── onebot/
 │   ├── client.go             # OneBot 动作客户端（resty，指向 AstrBot 桥接代理）
-│   ├── cqimage.go            # CQ 码解析（图片提取、引用/文件等占位、入库截断）
+│   ├── message.go            # 消息段模型 + CQ 码解析/渲染（协议归协议）
 │   └── types.go              # API 数据类型定义
 ├── im/
 │   └── server.go             # AstrBot 事件入口（鉴权、解码、入队）
-├── bot/
+├── bot/                      # 事件消费 + 三段流水线的三个 stage
 │   ├── ingest.go             # 事件消费循环 + 启动历史回填（context 支持优雅退出）
-│   └── handler.go            # 消息处理：白名单 → @检测 → 指令路由
-├── router/                   # 指令系统：前缀树匹配 + 分发（原 cmd/，包名改为 router）
-│   ├── command.go            # Router + 前缀树(trie)路由匹配 + 未匹配兜底 + 安全 goroutine
-│   ├── internal_cmd.go        # 内部指令（添加人格、删除人格、添加/删除指令规则、帮助）
-│   ├── chat_review.go         # chat_review 异步处理函数（缓存窗口 + 组装消息）
-│   ├── chat_window.go         # 缓存窗口决策：扩展 vs 重置（纯函数，可单测穷举）
-│   └── persona_render.go      # 人格渲染（5 维 → user 消息末尾片段）
+│   ├── stages.go             # Stage 1 准备批次 → Stage 2 打标签 → Stage 3 发言
+│   └── handler.go            # 消息处理入口：白名单 → 去重 → 入队
+├── workspace/                # 账号域：身份、开通、恢复、昵称、成员目录
+│   ├── workspace.go          # 一个工作空间的运行时（conversation.Store + speech.Router + state.Scope）
+│   ├── sync.go               # PrepareBatch：补名 + 入库（Stage 1）
+│   └── ledger.go / settings.go
+├── speech/                   # 发言域：谁在说话、要不要回、怎么生成、怎么排版、怎么发
+│   ├── router.go             # Router 装配与生命周期（Set* 注入、Go/Wait、群人格）
+│   ├── dispatch.go           # 薄入口：命中指令就分发，没命中走直答
+│   ├── command.go            # 指令表：前缀树 + atomic 整表替换
+│   ├── judge.go              # IsAddressed / stripCQPrefix / trimLeadingMentionToken
+│   ├── prompt.go             # system prompt 拼装
+│   ├── generate.go           # 选窗 → 拼 user 消息 → 调模型 → *Reply
+│   ├── reply_format.go       # 长回复拆成最多 N 句
+│   ├── deliver.go            # Reply + Sink + Deliver + 发送台账
+│   ├── proactive.go          # 主动接话：裁判 + 每群串行 worker + 三重限流
+│   ├── mcp_loop.go           # 带工具的多轮对话
+│   ├── chat_window.go        # 缓存窗口决策：扩展 vs 重置（纯函数，可单测穷举）
+│   └── persona_render.go     # 人格渲染（5 维 → system prompt 末尾片段）
 └── web/
     ├── server/                # Gin Web 管理面板后端
     │   ├── server.go          # Gin 引擎、API 路由、SPA 回退、优雅关闭
@@ -303,20 +334,30 @@ good-review-master/
 
 ```
 main → app, config, apppath, logutil, version
-app → config, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
-bot → config, cache, onebot, router
-router → config, cache, llm, onebot, async
-web/server → config, logutil, onebot, cache, version
+app → bot, config, config/store, im, llm, logutil, mcpclient, mcpserver, onebot, speech, telemetry, web/server, workspace
+bot → assets, config, conversation, logutil, onebot, pipeline, policy, speech, state, telemetry, workspace
+workspace → assets, config, conversation, llm, logutil, onebot, policy, speech, state, telemetry
+web/server → config, conversation, logutil, onebot, policy, telemetry, version, workspace
+speech → async, config, conversation, llm, logutil, mcpserver, onebot, telemetry
+assets → config, conversation, llm, logutil, mcpserver, state
+state → conversation, kv, logutil
+conversation → onebot
+policy → config
+im → logutil, onebot, telemetry
 async → logutil, pool
 pool → (无内部依赖：仅标准库 sync)
-onebot → (无内部依赖)
-cache → (无内部依赖)
-llm → (无内部依赖)
+onebot → logutil
+kv → (无内部依赖：仅 ristretto)
+llm → logutil, telemetry
 config → apppath, logutil
+config/store → logutil, telemetry
 logutil → apppath
+telemetry → (无内部依赖：仅 prometheus / otel)
 apppath → (无内部依赖)
 version → (无内部依赖)
 ```
+
+层次约束：`conversation`、`assets`、`speech`、`workspace`、`policy` 是中层，**不许 import `pipeline`、`bot`、`app`、`web/server`**。完整的分层理由、刻意不做的事和已知例外见 [`docs/ddd-layering-design.md`](docs/ddd-layering-design.md)。
 
 `app` 是组合根，只有 `main` 引它；组件需要别的组件时在 `app` 里注入，不要跨包直接 import。
 
@@ -324,16 +365,14 @@ version → (无内部依赖)
 
 ```
 IM ingress POST /im/event/{account} → 按 {platform}_{account} 开通/加载工作空间
-  → 队列 (bot/ingest.go)
-  → 去重：O(1) message_id 集合
-  → 历史来自共享 state.db（按 workspace_id 过滤，无平台历史接口）
-  → ProcessMessage (bot/handler.go)
-     → 白名单检查
-     → 截断到最大长度
-     → 存入环形缓冲区（零拷贝写入）
-     → @机器人检测（mention.user_id == self.user_id + 昵称兜底）
-     → 前缀树匹配 → 命中指令：调用该指令 handler（带该指令人格）
-     → 未命中：兜底直接发大模型回答（不带人格）
+  → bot.AcceptEvent：去重（O(1) message_id 集合）→ 写 pipeline 分区缓冲（每会话一条队列）
+  → Stage 1（bot/stages.go → workspace.PrepareBatch）
+     → 白名单（policy.AllowsStream）→ 按 rune 截断 → 批量补名 → 同步入库拿 RowID
+  → Stage 2（bot/stages.go → assets.Tagger）
+     → 图片降采样 → ImageID → 查全局图库 / 写描述 → 没打完的记欠条等后台补
+  → Stage 3（bot/stages.go → speech）
+     → 冻结窗口快照 → 点名：RouteMessage（命中指令则分发，否则选窗生成 → 排版 → 发送）
+                    → 未点名：主动接话裁判（TryProactive）
 ```
 
 ## ➕ 扩展新指令
@@ -363,10 +402,10 @@ cmd:
       prompt: "你是天气助手..."
 ```
 
-**2. 在 `router/` 下新建 handler 文件**（如 `weather.go`），handler 为 Router 的方法，签名固定为 `(event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona)`：
+**2. 在 `speech/` 下新建 handler 文件**（如 `weather.go`），handler 为 Router 的方法，签名固定为 `(ctx, event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra)`：
 
 ```go
-func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra, persona string) {
+func (r *Router) weatherHandler(ctx context.Context, event onebot.Event, groupID, systemPrompt, keywordPrompt, mentionerNick, extra string) {
     r.Go(func(ctx context.Context) error {
         // 异步安全启动：ctx 自动继承 shutdown 信号（Ctrl+C 可取消进行中的 LLM 调用）
         // systemPrompt  = 机器人身份（模型名+昵称）+ 该指令共享规则
@@ -380,7 +419,7 @@ func (r *Router) weatherHandler(event onebot.Event, groupID, systemPrompt, keywo
 }
 ```
 
-**3. 在 `router/command.go` 的 `NewRouter()` 中注册到 `handlerMap`**：
+**3. 在 `speech/router.go` 的 `NewRouter()` 中注册到 `handlerMap`**：
 
 ```go
 r.handlerMap = map[string]HandlerFunc{
@@ -400,7 +439,7 @@ r.handlerMap = map[string]HandlerFunc{
 
 三层测试体系：
 
-1. **单元测试**：`router/chat_window_test.go` 表格驱动穷举缓存窗口决策（扩展 vs 重置）各分支；决策函数为纯函数、显式传参、无全局依赖。
+1. **单元测试**：`speech/chat_window_test.go` 表格驱动穷举缓存窗口决策（扩展 vs 重置）各分支；决策函数为纯函数、显式传参、无全局依赖。
 2. **测试模式基建**：`GOOD_REVIEW_TEST=1` 启动时用 FakeLLM（固定回复并记录每次调用）替代真实大模型、AstrBot 桥接指向配置地址，并注册 `/api/debug/*` 自测接口（inject/reset/state/trigger）——仅测试模式可达，生产模式会被 SPA fallback 回成页面 HTML。
 3. **E2E**：Playwright **API 层自测**（`request` fixture，不启动浏览器），直打真实测试二进制的 HTTP 接口：
 
@@ -430,19 +469,19 @@ cd tests/e2e && pnpm test
 信号 → ctx 取消 → 事件消费循环 select ctx.Done() 正常退出
                 → IM 入口 Shutdown（停止接收新事件）
                 → webSrv.Shutdown(ctx)（10s 超时排空请求）
-                → router.Wait() 等所有 in-flight goroutine（LLM 调用可被取消）
+                → speech.Router.Wait() 等所有 in-flight goroutine（LLM 调用可被取消）
 ```
 
 启动与关闭的顺序集中在 `app` 包：`app.New` 只负责装配（`main.go` 只做日志初始化、首跑提示和退出码），`app.Run()` 阻塞到信号后按上面的顺序关闭。
 
 ### 缓存窗口决策：扩展 vs 重置（成本优化）
 
-每次发大模型前按 token 成本二选一（`router/chat_window.go`）：
+每次发大模型前按 token 成本二选一（`speech/chat_window.go`）：
 
-- **扩展窗口**（缓存命中）：锚点 `LLMAnchor{Start, LastSent}` 定位上次发送窗口，成本 = `命中前缀 × cache_hit_cost + 新增 × cache_miss_cost`；
+- **扩展窗口**（缓存命中）：锚点 `LLMAnchor{Start, LastSent, At}` 定位上次发送窗口，成本 = `命中前缀 × cache_hit_cost + 新增 × cache_miss_cost`；
 - **重置窗口**：最近 `llm_send_count` 条，成本 = `全部 × cache_miss_cost`。
 
-三者全满足才扩展（锚点可用 + 扩展更便宜 + 未超 `max_context_tokens` 护栏），否则重置；重置窗口超护栏时从旧到新逐条截断。token 用启发式估算（`cache/token.go`：CJK 每字 1 token，ASCII 每 4 字符 1 token），不建字符串、不分配。
+三者全满足才扩展（锚点可用 + 扩展更便宜 + 未超 `max_context_tokens` 护栏），否则重置；重置窗口超护栏时从旧到新逐条截断。token 用启发式估算（`conversation/token.go`：CJK 每字 1 token，ASCII 每 4 字符 1 token），不建字符串、不分配。
 
 ### 无状态请求 + 前缀缓存命中
 
@@ -463,14 +502,14 @@ cd tests/e2e && pnpm test
 | `system_prompt` | 文本 | 人格级系统指令（行为边界 / 输出要求） |
 | `emotion` | JSON 对象 | 情绪维度（维度 → 取值，人格核心） |
 
-**渲染位置**：`RenderPersona`（`router/persona_render.go`）把人格渲染成 system prompt **末尾**的片段（身份头之后），user 消息（聊天记录）里不携带人格块。
+**渲染位置**：`RenderPersona`（`speech/persona_render.go`）把人格渲染成 system prompt **末尾**的片段（身份头之后），user 消息（聊天记录）里不携带人格块。
 
 **无状态机**：不维护人格状态，对话窗口即隐式状态，LLM 是维度变化与回答的最终解释者。
 
 ### 数据结构机制
 
-- **环形缓冲缓存**（`cache/`）：定长数组 + 写指针，满了循环覆盖，**零拷贝写入**；`msgIDSet` O(1) 去重；`GetAll()` 两段拼接保持时间序。
-- **前缀树指令路由**（`router/command.go`）：`trieMatch` 逐字符返回**最长匹配前缀**（「锐评下」优先于「锐评」），O(k) 与路由总数无关；用户指令从 YAML 动态 rebuild，内部指令持久保留。
+- **环形缓冲缓存**（`conversation/`）：定长数组 + 写指针，满了循环覆盖，**零拷贝写入**；`msgIDSet` O(1) 去重；`GetAll()` 两段拼接保持时间序。
+- **前缀树指令路由**（`speech/command.go`）：`trieMatch` 逐字符返回**最长匹配前缀**（「锐评下」优先于「锐评」），O(k) 与路由总数无关；用户指令从 YAML 动态 rebuild，内部指令持久保留。
 
 ### 工程健壮性
 

@@ -1,0 +1,83 @@
+package policy
+
+import (
+	"testing"
+
+	"good-review-master/config"
+)
+
+func TestAllowsStream(t *testing.T) {
+	explicit := &config.Config{AllowGroups: []string{"10001", "10002"}}
+	if !AllowsStream(explicit, "10001") || !AllowsStream(explicit, "10002") {
+		t.Fatal("explicit groups should match")
+	}
+	if AllowsStream(explicit, "10003") {
+		t.Fatal("unknown group must not match")
+	}
+	if AllowsAllStreams(explicit) {
+		t.Fatal("explicit list must not allow all groups")
+	}
+
+	wildcard := &config.Config{AllowGroups: []string{"*"}}
+	if !AllowsStream(wildcard, "any-openid") || !AllowsAllStreams(wildcard) {
+		t.Fatal("wildcard should allow every group")
+	}
+
+	empty := &config.Config{}
+	if AllowsStream(empty, "10001") || AllowsAllStreams(empty) {
+		t.Fatal("empty list must allow nothing")
+	}
+
+	// 快照理论上不会是 nil，但测试与嵌入式调用会直接传字面量，判空要稳。
+	if AllowsStream(nil, "10001") || AllowsAllStreams(nil) {
+		t.Fatal("nil config must allow nothing")
+	}
+}
+
+func TestAllowsAccount(t *testing.T) {
+	explicit := &config.Config{WorkspaceAccounts: []string{"qq_official_bot_1906xxxx", "qq_official_bot_1904xxxx"}}
+	if !AllowsAccount(explicit, "qq_official_bot_1906xxxx") || !AllowsAccount(explicit, "qq_official_bot_1904xxxx") {
+		t.Fatal("explicit workspace accounts should match")
+	}
+	if AllowsAccount(explicit, "qq_9999") {
+		t.Fatal("unknown workspace account must not match")
+	}
+	if AllowsAllAccounts(explicit) {
+		t.Fatal("explicit list must not allow all accounts")
+	}
+
+	wildcard := &config.Config{WorkspaceAccounts: []string{"*"}}
+	if !AllowsAccount(wildcard, "any-platform_any-account") || !AllowsAllAccounts(wildcard) {
+		t.Fatal("wildcard should allow every workspace")
+	}
+
+	empty := &config.Config{}
+	if AllowsAccount(empty, "qq_official_bot_1906xxxx") || AllowsAllAccounts(empty) {
+		t.Fatal("empty list must allow nothing")
+	}
+
+	if AllowsAccount(nil, "qq_official_bot_1906xxxx") || AllowsAllAccounts(nil) {
+		t.Fatal("nil config must allow nothing")
+	}
+}
+
+func TestIsRecordOnly(t *testing.T) {
+	cfg := &config.Config{RecordOnlyAccounts: []string{"qq_official_bot_1904xxxx"}}
+	if !IsRecordOnly(cfg, "qq_official_bot_1904xxxx") {
+		t.Fatal("名单内的账号应判为只记录")
+	}
+	if IsRecordOnly(cfg, "qq_official_bot_1906xxxx") {
+		t.Fatal("名单外的账号不应判为只记录")
+	}
+	if IsRecordOnly(&config.Config{}, "qq_official_bot_1904xxxx") {
+		t.Fatal("空名单不应命中任何账号")
+	}
+	if IsRecordOnly(nil, "qq_official_bot_1904xxxx") {
+		t.Fatal("nil 配置不应命中任何账号")
+	}
+	// 通配符不参与只记录判定：配置校验阶段就拒绝，这里确认不会被误当成"全部"
+	wildcard := &config.Config{RecordOnlyAccounts: []string{"*"}}
+	if IsRecordOnly(wildcard, "qq_official_bot_1904xxxx") {
+		t.Fatal("\"*\" 不应让所有账号都变成只记录")
+	}
+}

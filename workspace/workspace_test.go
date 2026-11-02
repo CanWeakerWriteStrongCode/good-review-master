@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
-	"good-review-master/workspace/state"
+	"good-review-master/state"
 )
 
 // TestMain 把 cwd 切到临时目录：logutil 默认把日志写到 cwd/log，
@@ -247,8 +247,8 @@ func Test缓存隔离而提示词共享(t *testing.T) {
 	wsA, _ := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
 	wsB, _ := m.ResolveOrCreate("qq", AccountKindOfficialBot, "b")
 
-	wsA.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: "1", Content: "a", Time: 1})
-	wsB.Cache.GetGroupCache("g1", 8).Add(cache.Message{MessageID: "1", Content: "b", Time: 1})
+	wsA.Cache.GetGroupCache("g1", 8).Add(conversation.Message{MessageID: "1", Content: "a", Time: 1})
+	wsB.Cache.GetGroupCache("g1", 8).Add(conversation.Message{MessageID: "1", Content: "b", Time: 1})
 	if wsA.Cache.GetGroupCache("g1", 8).GetAll()[0].Content != "a" {
 		t.Fatal("账号 A 的缓存被账号 B 污染")
 	}
@@ -336,8 +336,8 @@ func Test多账号共用一个档案库(t *testing.T) {
 		t.Fatalf("不应再创建工作空间目录：%v", err)
 	}
 
-	wsA.State.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "from-a", Time: 1})
-	wsB.State.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "from-b", Time: 2})
+	wsA.State.SaveMessage(conversation.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "from-a", Time: 1})
+	wsB.State.SaveMessage(conversation.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "from-b", Time: 2})
 	m.Close()
 
 	// 名单为空：只可能从档案恢复，不能再靠"目录存在"兜底。
@@ -736,7 +736,7 @@ func Test重启恢复历史消息昵称(t *testing.T) {
 		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
 	}
 	ws.State.SaveMember("g1", "u1", "小张", "")
-	ws.State.SaveMessage(cache.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "你好", Time: 1})
+	ws.State.SaveMessage(conversation.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "你好", Time: 1})
 	m.Close()
 
 	m2 := newManager()

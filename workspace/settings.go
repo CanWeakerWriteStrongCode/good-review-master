@@ -8,7 +8,7 @@ import (
 
 	"good-review-master/config"
 	"good-review-master/logutil"
-	"good-review-master/workspace/state"
+	"good-review-master/state"
 )
 
 // settingsRefreshInterval 是数据库设置重新载入的间隔。

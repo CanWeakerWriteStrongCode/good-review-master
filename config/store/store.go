@@ -1,8 +1,8 @@
 // Package store 提供配置的**不可变快照**，以及驱动它更新的 Informer 骨架。
 //
-// 概念上对标 client-go 的 cache.Store / SharedInformer：
+// 概念上对标 client-go 的 conversation.Store / SharedInformer：
 //
-//	Store[T]     ↔  cache.Store        持有一份不可变快照，读者无锁
+//	Store[T]     ↔  conversation.Store        持有一份不可变快照，读者无锁
 //	Source       ↔  Watch 接口         只提供"变了"的信号
 //	Informer[T]  ↔  SharedInformer     List → Watch → 交换快照 → 通知 handler
 //

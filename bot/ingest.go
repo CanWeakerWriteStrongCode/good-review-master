@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"good-review-master/conversation"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
 	"good-review-master/pipeline"
@@ -91,14 +92,14 @@ func (b *Bot) AcceptEvent(ctx context.Context, account string, event onebot.Even
 		return false, nil
 	}
 
-	key := pipeline.ChatKey(ws.ID, event.ChatID())
+	key := conversation.ChatKey(ws.ID, event.ChatID())
 	dedupKey := key + "\x00" + event.MessageID
 	if !b.dedup.claim(dedupKey) {
 		logutil.Debug("入站去重：同一条消息已在处理中", "workspace", ws.ID, "msgID", event.MessageID)
 		return false, nil
 	}
 	item, err := pipeline.NewItem(pipeline.StageIngest, key, event.MessageID,
-		pipeline.InboundEvent{WorkspaceID: ws.ID, Event: event})
+		conversation.Inbound{WorkspaceID: ws.ID, Event: event})
 	if err != nil {
 		logutil.Error("编码入站事件失败", "workspace", ws.ID, "msgID", event.MessageID, "err", err)
 		return false, nil

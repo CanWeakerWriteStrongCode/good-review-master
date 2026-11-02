@@ -3,8 +3,8 @@ package server
 import (
 	"sort"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/workspace"
 )
 
@@ -53,7 +53,7 @@ func (s *Server) accountName(account string) string {
 
 // collectGroupDetails 旧接口路径：全局白名单 + 进程级默认缓存。
 func (s *Server) collectGroupDetails(cfg *config.Config) ([]GroupDetail, []AccountDetail) {
-	return s.collectDetails(panelGroupIDs(cfg), "", cache.DefaultStore(), "", "")
+	return s.collectDetails(panelGroupIDs(cfg), "", conversation.DefaultStore(), "", "")
 }
 
 // collectWorkspaceDetails 构建某个工作空间的群列表与账号汇总。
@@ -79,7 +79,7 @@ func containsWildcard(groups []string) bool {
 //
 // 一个工作空间只对应一个接收账号，所以汇总里最多一条；群里的 self_id 是
 // 事件携带的群内 openid（QQ 官方按群分配），只作展示，不再当账号键。
-func (s *Server) collectDetails(groupIDs []string, account string, store *cache.Store,
+func (s *Server) collectDetails(groupIDs []string, account string, store *conversation.Store,
 	wsID, wsName string) ([]GroupDetail, []AccountDetail) {
 	store = storeOr(store)
 	cachedIDs := store.ListGroupIDs()
@@ -199,9 +199,9 @@ func (s *Server) workspaceInfo(view workspace.View) WorkspaceInfo {
 	return info
 }
 
-func storeOr(store *cache.Store) *cache.Store {
+func storeOr(store *conversation.Store) *conversation.Store {
 	if store == nil {
-		return cache.DefaultStore()
+		return conversation.DefaultStore()
 	}
 	return store
 }

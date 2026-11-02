@@ -1,13 +1,11 @@
 package bot
 
 import (
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"good-review-master/config"
-	"good-review-master/onebot"
 	"good-review-master/pipeline"
 	"good-review-master/workspace"
 )
@@ -143,27 +141,12 @@ func (b *Bot) agentConfig() pipeline.StageConfig {
 }
 
 // allowNicknameFallback 昵称兜底只在昵称唯一归属一个工作空间时可信。
+// "@昵称" 算不算点名由 speech.IsAddressed 判断，这里只回答"能不能用昵称"。
 func (b *Bot) allowNicknameFallback(ws *workspace.Workspace, nickname string) bool {
 	if nickname == "" {
 		return false
 	}
 	return len(b.workspaces.List()) == 1 || b.workspaces.NicknameUnique(nickname)
-}
-
-// eventTime 优先使用平台事件时间；缺失时退回本地时钟。
-func eventTime(event onebot.Event) int64 {
-	if event.Time > 0 {
-		return int64(event.Time)
-	}
-	return time.Now().Unix()
-}
-
-// isAtBot 检查是否 @ 机器人（mention 段已由调用方先判）。
-func isAtBot(content string, cfg *config.Config, allowNickname bool) bool {
-	if allowNickname && cfg.BotNickname != "" && strings.HasPrefix(content, "@"+cfg.BotNickname) {
-		return true
-	}
-	return strings.HasPrefix(content, "@你")
 }
 
 // truncate 按字符数截断（不是字节），避免把多字节字符切成乱码。

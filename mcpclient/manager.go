@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/telemetry"
@@ -700,8 +700,8 @@ func (m *Manager) rebuildSnapshot() {
 		}
 		snap.bindings[exposed] = e.bind
 		snap.tools = append(snap.tools, llm.Tool{Name: exposed, Description: e.desc, ParamsJSON: e.params})
-		snap.tokens += cache.EstimateTokens(exposed) + cache.EstimateTokens(e.desc) +
-			cache.EstimateTokens(string(e.params)) + toolJSONOverheadTokens
+		snap.tokens += conversation.EstimateTokens(exposed) + conversation.EstimateTokens(e.desc) +
+			conversation.EstimateTokens(string(e.params)) + toolJSONOverheadTokens
 	}
 	if renamed > 0 {
 		logutil.Warn("MCP 工具名有冲突，已自动加前缀/序号消歧", "涉及工具数", renamed)

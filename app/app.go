@@ -19,7 +19,7 @@ import (
 	"good-review-master/mcpclient"
 	"good-review-master/mcpserver"
 	"good-review-master/onebot"
-	"good-review-master/router"
+	"good-review-master/speech"
 	"good-review-master/telemetry"
 	webserver "good-review-master/web/server"
 	"good-review-master/workspace"
@@ -36,7 +36,7 @@ type App struct {
 	MCP        *mcpclient.Manager
 	BuiltinMCP *mcpserver.Server // 未启用看图（image_max<=0）或启动失败时为 nil
 	Workspaces *workspace.Manager
-	Router     *router.Router // 默认工作空间的 Router（debug 触发/兼容）
+	Router     *speech.Router // 默认工作空间的 Router（debug 触发/兼容）
 	Bot        *bot.Bot
 	IM         *im.Server               // OneBot 12 事件入口
 	Web        *webserver.Server        // web_port<=0 时为 nil

@@ -6,22 +6,24 @@ import (
 	"time"
 
 	"good-review-master/assets"
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/logutil"
 	"good-review-master/pipeline"
+	"good-review-master/policy"
+	"good-review-master/speech"
+	"good-review-master/state"
 	"good-review-master/telemetry"
 	"good-review-master/workspace"
-	"good-review-master/workspace/state"
 )
 
 // handleSync 是 Stage 1：同一会话的一批消息统一补名、组装并同步入库。
 func (b *Bot) handleSync(ctx context.Context, key string, items []pipeline.Item) []pipeline.FailedItem {
-	byWorkspace := make(map[string][]pipeline.InboundEvent)
+	byWorkspace := make(map[string][]conversation.Inbound)
 	failed := make([]pipeline.FailedItem, 0)
 	byMessage := make(map[string]pipeline.Item, len(items))
 	for _, item := range items {
-		in, err := pipeline.DecodeItem[pipeline.InboundEvent](item)
+		in, err := pipeline.DecodeItem[conversation.Inbound](item)
 		if err != nil {
 			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
@@ -37,7 +39,7 @@ func (b *Bot) handleSync(ctx context.Context, key string, items []pipeline.Item)
 			continue
 		}
 		for _, synced := range ws.PrepareBatch(ctx, inbounds) {
-			nextKey := pipeline.ChatKey(synced.WorkspaceID, synced.ChatID)
+			nextKey := conversation.ChatKey(synced.WorkspaceID, synced.ChatID)
 			if err := b.forward(ctx, b.b2, pipeline.StageAssets, nextKey, synced.Message.MessageID, synced); err != nil {
 				if item, ok := byMessage[synced.Message.MessageID]; ok {
 					b.deadLetter(item, err)
@@ -55,19 +57,18 @@ func (b *Bot) handleAssets(ctx context.Context, key string, items []pipeline.Ite
 	failed := make([]pipeline.FailedItem, 0)
 	tagger := b.workspaces.Tagger()
 	for _, item := range items {
-		synced, err := pipeline.DecodeItem[pipeline.SyncedMessage](item)
+		synced, err := pipeline.DecodeItem[conversation.Synced](item)
 		if err != nil {
 			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
 		}
-		enriched := pipeline.EnrichedMessage{SyncedMessage: synced}
 		if ws, ok := b.workspaces.ByID(synced.WorkspaceID); ok {
 			if tagger != nil && len(synced.Message.Images) > 0 {
 				result := tagger.TagURLs(ctx, synced.Message.Images)
-				enriched.ImageIDs = result.ImageIDs
-				enriched.ImageNotes = result.ImageNotes
-				enriched.Assets = result.Assets
-				enriched.AssetStatus = result.Status
+				synced.Message.ImageIDs = result.ImageIDs
+				synced.Message.ImageNotes = result.ImageNotes
+				synced.Assets = result.Assets
+				synced.AssetStatus = result.Status
 				if len(result.ImageIDs) > 0 && ws.State != nil {
 					if err := ws.State.UpdateMessageImages(synced.ChatID, synced.Message.MessageID, result.ImageIDs); err != nil {
 						logutil.Warn("回写消息图片标识失败", "err", err)
@@ -76,8 +77,8 @@ func (b *Bot) handleAssets(ctx context.Context, key string, items []pipeline.Ite
 				b.persistDeferred(synced, result)
 			}
 		}
-		nextKey := pipeline.ChatKey(enriched.WorkspaceID, enriched.ChatID)
-		if err := b.forward(ctx, b.b3, pipeline.StageAgent, nextKey, enriched.Message.MessageID, enriched); err != nil {
+		nextKey := conversation.ChatKey(synced.WorkspaceID, synced.ChatID)
+		if err := b.forward(ctx, b.b3, pipeline.StageAgent, nextKey, synced.Message.MessageID, synced); err != nil {
 			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
 		}
@@ -88,7 +89,7 @@ func (b *Bot) handleAssets(ctx context.Context, key string, items []pipeline.Ite
 
 // persistDeferred 把没打完标签的资产写成欠条，只记原始地址。
 // 原图不另存副本：后台补标签时直接按这个地址再看一眼。
-func (b *Bot) persistDeferred(synced pipeline.SyncedMessage, result assets.TagResult) {
+func (b *Bot) persistDeferred(synced conversation.Synced, result assets.TagResult) {
 	store := b.workspaces.StateStore()
 	if store == nil || len(result.Deferred) == 0 {
 		return
@@ -101,7 +102,7 @@ func (b *Bot) persistDeferred(synced pipeline.SyncedMessage, result assets.TagRe
 			Kind: deferred.Kind, URL: deferred.URL, Status: "pending",
 			LastError: deferred.Error, CreatedAt: now,
 		}
-		if deferred.Index < len(result.Assets) && result.Assets[deferred.Index].Status == pipeline.AssetStatusFailed {
+		if deferred.Index < len(result.Assets) && result.Assets[deferred.Index].Status == conversation.StatusFailed {
 			job.Status = "failed"
 		}
 		if deferred.Index < len(result.ImageNotes) {
@@ -118,85 +119,81 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 	failed := make([]pipeline.FailedItem, 0)
 	type proactiveTask struct {
 		ws       *workspace.Workspace
-		enriched pipeline.EnrichedMessage
-		snapshot []cache.Message
+		synced   conversation.Synced
+		snapshot []conversation.Message
 	}
 	var latestProactive *proactiveTask
 
 	for _, item := range items {
-		enriched, err := pipeline.DecodeItem[pipeline.EnrichedMessage](item)
+		synced, err := pipeline.DecodeItem[conversation.Synced](item)
 		if err != nil {
 			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
 		}
-		ws, ok := b.workspaces.ByID(enriched.WorkspaceID)
+		ws, ok := b.workspaces.ByID(synced.WorkspaceID)
 		if !ok {
 			continue
 		}
 		cfg := ws.Snapshot()()
-		gc := ws.Cache.GetGroupCache(enriched.ChatID, cfg.MaxCacheMsg)
-		msg := enriched.Message
-		msg.ImageIDs = enriched.ImageIDs
-		msg.ImageNotes = enriched.ImageNotes
-		gc.Add(msg)
-		telemetry.CacheMessages.WithLabelValues(ws.ID, enriched.ChatID).Set(float64(gc.Len()))
-		if !enriched.Private {
-			ws.LearnIdentity(enriched.ChatID, enriched.Event.Self.UserID)
-			ws.SyncSelfName(enriched.Event.BotID(), enriched.ChatID)
+		gc := ws.Cache.GetGroupCache(synced.ChatID, cfg.MaxCacheMsg)
+		gc.Add(synced.Message)
+		telemetry.CacheMessages.WithLabelValues(ws.ID, synced.ChatID).Set(float64(gc.Len()))
+		if !synced.Private {
+			ws.LearnIdentity(synced.ChatID, synced.Event.Self.UserID)
+			ws.SyncSelfName(synced.Event.BotID(), synced.ChatID)
 		}
 
 		// 只记录不回复：入库、打标签、进缓存上面都已做完，这里只处理"被点名"。
 		// 不走 FindMsgIndex 之后的任何一步，所以裁判和生成都不会跑。
-		if cfg.IsRecordOnly(ws.ID) {
-			if b.addressed(ws, cfg, enriched) {
-				b.answerRecordOnly(ws, enriched)
+		if policy.IsRecordOnly(cfg, ws.ID) {
+			if b.addressed(ws, cfg, synced) {
+				b.answerRecordOnly(ws, synced)
 			}
 			continue
 		}
 
 		msgs := gc.GetAll()
-		index := cache.FindMsgIndex(msgs, enriched.Message.MessageID)
+		index := conversation.FindMsgIndex(msgs, synced.Message.MessageID)
 		if index < 0 {
-			b.recordAging(ws.ID, enriched, msgs)
+			b.recordAging(ws.ID, synced, msgs)
 			continue
 		}
 		snapshot := msgs[:index+1]
 
-		if b.addressed(ws, cfg, enriched) {
-			ws.Router.RouteMessageNow(ctx, enriched.Message.Content, enriched.Event, enriched.ChatID, snapshot)
+		if b.addressed(ws, cfg, synced) {
+			ws.Router.RouteMessageNow(ctx, synced.Message.Content, synced.Event, synced.ChatID, snapshot)
 			continue
 		}
 		// 主动接话 latest-wins：同一批只看最后一条，且后面还有积压时也不判，
 		// 交给下一批的最后一条。避免刷屏时每条都跑一次裁判。
-		latestProactive = &proactiveTask{ws: ws, enriched: enriched, snapshot: snapshot}
+		latestProactive = &proactiveTask{ws: ws, synced: synced, snapshot: snapshot}
 	}
 	if latestProactive != nil && b.b3.Len(key) == 0 {
-		latestProactive.ws.Router.TryProactiveNow(ctx, latestProactive.enriched.Event,
-			latestProactive.enriched.ChatID, latestProactive.enriched.Message.Content, latestProactive.snapshot)
+		latestProactive.ws.Router.TryProactiveNow(ctx, latestProactive.synced.Event,
+			latestProactive.synced.ChatID, latestProactive.synced.Message.Content, latestProactive.snapshot)
 	}
 	return failed
 }
 
-// recordOnlyReply 备用号被点名时的固定回答。
-const recordOnlyReply = "我是备用号，不负责回答"
-
-// addressed 判断这条消息是不是冲着机器人来的：私聊、@ 段、适配器标记，或昵称开头。
-func (b *Bot) addressed(ws *workspace.Workspace, cfg *config.Config, enriched pipeline.EnrichedMessage) bool {
-	return enriched.Private || enriched.Event.MentionsBot() || enriched.Event.AdapterAtMe() ||
-		isAtBot(enriched.Message.Content, cfg, b.allowNicknameFallback(ws, cfg.BotNickname))
+// addressed 判断这条消息是不是冲着机器人来的。
+// 判定本身在 speech.IsAddressed：同一个问题（这条是不是冲我来的）只该有一份实现，
+// 这里只负责给出"昵称兜底能不能用"这个跟部署形态有关的输入。
+func (b *Bot) addressed(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) bool {
+	return speech.IsAddressed(synced.Event, synced.Message.Content, cfg,
+		b.allowNicknameFallback(ws, cfg.BotNickname))
 }
 
 // answerRecordOnly 备用号被点名时回一句固定话术，不调大模型、不占被动回复额度之外的东西。
-func (b *Bot) answerRecordOnly(ws *workspace.Workspace, enriched pipeline.EnrichedMessage) {
-	if err := ws.Router.SayFixed(enriched.Event, enriched.ChatID, recordOnlyReply); err != nil {
-		logutil.Warn("备用号提示发送失败", "workspace", ws.ID, "chat", enriched.ChatID, "err", err)
+func (b *Bot) answerRecordOnly(ws *workspace.Workspace, synced conversation.Synced) {
+	if err := ws.Router.SayFixed(synced.Event, synced.ChatID, speech.RecordOnlyReply); err != nil {
+		logutil.Warn("备用号提示发送失败", "workspace", ws.ID, "chat", synced.ChatID, "err", err)
 		return
 	}
-	logutil.Debug("备用号已提示不负责回答", "workspace", ws.ID, "chat", enriched.ChatID)
+	logutil.Debug("备用号已提示不负责回答", "workspace", ws.ID, "chat", synced.ChatID)
 }
 
 // recordAging 记录“触发消息已不在窗口里”：放弃这条回复任务，但保存完整现场。
-func (b *Bot) recordAging(workspaceID string, enriched pipeline.EnrichedMessage, msgs []cache.Message) {
+func (b *Bot) recordAging(workspaceID string, synced conversation.Synced, msgs []conversation.Message) {
 	first, last := "", ""
 	if len(msgs) > 0 {
 		first = msgs[0].MessageID
@@ -206,18 +203,18 @@ func (b *Bot) recordAging(workspaceID string, enriched pipeline.EnrichedMessage,
 		"reason":         "触发消息已不在窗口缓存里，放弃本次回复",
 		"hint":           "窗口小了，要调大 llm_send_count / max_cache_msg",
 		"workspace_id":   workspaceID,
-		"chat_id":        enriched.ChatID,
-		"message_id":     enriched.Message.MessageID,
+		"chat_id":        synced.ChatID,
+		"message_id":     synced.Message.MessageID,
 		"window_first":   first,
 		"window_last":    last,
 		"window_count":   len(msgs),
 		"llm_send_count": b.cfg().LLMSendCount,
 		"max_cache_msg":  b.cfg().MaxCacheMsg,
-		"event":          enriched.Event,
+		"event":          synced.Event,
 	}
 	payload, _ := json.Marshal(detail)
 	logutil.Error("窗口太小：触发消息已被淘汰，放弃回复任务",
-		"workspace", workspaceID, "chat", enriched.ChatID, "message", enriched.Message.MessageID)
+		"workspace", workspaceID, "chat", synced.ChatID, "message", synced.Message.MessageID)
 	if store := b.workspaces.StateStore(); store != nil {
 		store.SaveAlert(state.Alert{WorkspaceID: workspaceID, Kind: "window_too_small", Detail: string(payload)})
 	}

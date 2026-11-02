@@ -16,7 +16,7 @@ import (
 	_ "image/gif"
 	_ "image/png"
 
-	"good-review-master/cache"
+	"good-review-master/conversation"
 )
 
 const imageJPEGQuality = 85
@@ -44,8 +44,8 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func imageID(data []byte) cache.ImageID {
-	return cache.ImageID{SHA: sha256Hex(data), Size: int64(len(data))}
+func imageID(data []byte) conversation.ImageID {
+	return conversation.ImageID{SHA: sha256Hex(data), Size: int64(len(data))}
 }
 
 // probeImage 只读图片头拿宽高与是否动图，不展开像素。

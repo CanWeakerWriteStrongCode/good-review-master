@@ -11,11 +11,11 @@ go build ./...        # verify all packages compile
 go vet ./...          # 必须绿
 go test ./...         # 必须绿
 go tool golangci-lint run    # 参考，不是门禁（红了挑着修，别为它改无意义的代码）
-cd tests/e2e && pnpm test    # 行为回归，每阶段收尾必跑（基线 12 过 / 2 既有失败 bot-flow、persona）
+cd tests/e2e && pnpm test    # 行为回归，每阶段收尾必跑（基线 14 过）
 go build -o good-review-master.exe ./cmd/good-review  # 出二进制
 
 # 只在动了热点代码 / 提示词时跑：
-go test -bench . -benchmem ./cache/ ./router/   # 基准；BenchmarkAdd 的 allocs/op 必须是 0
+go test -bench . -benchmem ./conversation/ ./speech/   # 基准；BenchmarkAdd 的 allocs/op 必须是 0
 go run ./tests/eval                             # 提示词离线评测（要真实 API Key，见 tests/eval/README.md）
 curl -s 127.0.0.1:9100/metrics | head           # 指标端点自检
 ```
@@ -112,16 +112,22 @@ Browser / MiniProgram ←→ Gin web server (:web_port) ←→ IM ingress + Cach
 
 ```
 main → app, config, logutil, apppath, version
-app → config, config/store, llm, onebot, im, router, bot, workspace, web/server, mcpclient, mcpserver, telemetry, logutil, internal/testutil
-bot → config, cache, onebot, routing via workspace
-workspace → cache, config, llm, onebot, router, telemetry, workspace/state
+app → bot, config, config/store, im, llm, logutil, mcpclient, mcpserver, onebot, speech, telemetry, web/server, workspace
+bot → assets, config, conversation, logutil, onebot, pipeline, policy, speech, state, telemetry, workspace
+workspace → assets, config, conversation, llm, logutil, onebot, policy, speech, state, telemetry
+web/server → config, conversation, internal/testutil, logutil, onebot, policy, telemetry, version, workspace
+speech → async, config, conversation, llm, logutil, mcpserver, onebot, telemetry
+assets → config, conversation, llm, logutil, mcpserver, state
+mcpclient → config, conversation, llm, logutil, telemetry, version
+state → conversation, kv, logutil
+conversation → onebot
+pipeline → logutil
+policy → config
 im → logutil, onebot, telemetry
-router → config, cache, llm, onebot, async, telemetry
-web/server → config, logutil, onebot, cache, version, telemetry
 async → logutil, pool
 pool → telemetry（仅此外只有标准库）
 onebot → (no internal deps)
-cache → (no internal deps)
+kv → (no internal deps)
 llm → telemetry
 config → apppath, logutil
 config/store → logutil, telemetry
@@ -130,21 +136,23 @@ telemetry → (仅 prometheus / otel，无任何内部依赖)
 apppath → (no internal deps)
 ```
 
-`app` is the composition root (see below); `im` is the HTTP ingress for OneBot 12 webhook events (`POST /im/event/{account}`); `bot` is the event consumer (queue + dedup); `workspace` owns one account's runtime (cache, router, a `state.Scope` view into the shared `state.db`) and provisions it on first event as `{platform}_{account}`; there are no per-workspace directories or config files — prompt YAMLs are shared by all workspaces; `router` handles command routing with a prefix trie; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the OneBot 12 **action** client (resty-based, one base URL per account) plus segment/event rendering; `cache` holds per-group zero-copy ring buffers; `llm` is the OpenAI-compatible client (go-openai SDK) wrapped in an outbound rate-limit/circuit-breaker decorator; `telemetry` owns every metric and trace; `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+`app` is the composition root (see below); `im` is the HTTP ingress for OneBot 12 webhook events (`POST /im/event/{account}`); `bot` is the event consumer (queue + dedup + the three pipeline stages); `workspace` owns one account's runtime (a `conversation.Store`, a `speech.Router`, a `state.Scope` view into the shared `state.db`) and provisions it on first event as `{platform}_{account}`; there are no per-workspace directories or config files — prompt YAMLs are shared by all workspaces; `conversation` is the session domain — message value objects (`Inbound`, `Synced`, `Asset`), per-group zero-copy ring buffers, anchors, window selection; `speech` is the turn domain — who is being addressed, whether to reply, how to generate, how to format, how to deliver; `assets` tags images (vision model, global image library, backfill jobs); `policy` holds the three access decisions (stream whitelist, account provisioning, record-only) and nothing else; `state` is the SQLite archive, one file per table group; `web/server` provides the web management panel (Gin + SPA); `async` provides safe goroutine launching with automatic context propagation; `onebot` is the OneBot 12 **action** client (resty-based, one base URL per account) plus segment/event rendering; `llm` is the OpenAI-compatible client (go-openai SDK) wrapped in an outbound rate-limit/circuit-breaker decorator; `telemetry` owns every metric and trace; `logutil` wraps zap + lumberjack; `apppath` resolves config file paths relative to the executable.
+
+The middle layer is `conversation`, `assets`, `speech`, `workspace` and `policy`. **None of them may import `pipeline`, `bot`, `app` or `web/server`** — the dependency direction is orchestration → domain → foundation, never back. `docs/ddd-layering-design.md` is the long form (why each domain sits where it does, what was deliberately not done, and which exceptions remain).
 
 **`telemetry` is a deliberate hole in the "no cross-package imports" rule.** It is a leaf
-(only prometheus + otel), and low-level packages (`pool`, `cache`, `llm`, …) import it directly
+(only prometheus + otel), and low-level packages (`pool`, `llm`, `assets`, …) import it directly
 to record metrics rather than receiving a metric handle through injection. Metrics are
 process-wide singletons by nature, and threading an interface through a dozen constructors to
 reach what is effectively `telemetry.PoolQueueLen.Inc()` buys no real decoupling. The trade-off
 is recorded here so it is a decision rather than an accident — and so the next person knows that
-`cache → (no internal deps)` still holds **because** the cache gauge is updated from
-`bot/ingest.go` (per group, per batch), not from inside `cache.Add`, which must stay zero-alloc.
+`conversation.Add` must stay allocation-free **because** the `cache_messages` gauge is updated from
+`bot/ingest.go` (per group, per batch), never from inside `Add`.
 
 Two structural conventions behind that layout:
 
 - **`main.go` lives in `cmd/good-review/`, not at the repo root.** The root is not a main package; every build/run command targets `./cmd/good-review`. `cmd/` is the conventional Go location for binaries, and it keeps the root readable as a package list.
-- **CQ-code parsing lives in `onebot/`, not `cache/`.** `[CQ:image,...]` is part of the OneBot protocol, so parsing it belongs with the protocol client; `cache/` is storage and must not know about wire formats. Callers are `bot/handler.go` and `bot/ingest.go` (both already import `onebot`).
+- **CQ-code parsing lives in `onebot/`, not `conversation/`.** `[CQ:image,...]` is part of the OneBot protocol, so parsing it belongs with the protocol client; the ring buffers are storage and must not know about wire formats. Callers are `bot/handler.go` and `bot/ingest.go` (both already import `onebot`).
 
 ### Key design: explicit dependency injection, composition root, no init() side effects
 
@@ -152,7 +160,7 @@ All components are constructed in the `app` package (composition root) and wired
 
 `app` must not be imported by anything but `main` — when a component needs another component, inject it in `app` rather than importing across.
 
-Known remaining global state (deliberately kept for now): `cache` package-level `cacheMap`/`anchorMap`, `logutil`'s logger, and the `telemetry` package's metric handles are shared by `bot`/`router`/`web/server` without being held as fields.
+Known remaining global state (deliberately kept for now): `conversation` package-level `defaultStore` (with its `cacheMap`/`anchorMap`), `logutil`'s logger, and the `telemetry` package's metric handles are shared by `bot`/`speech`/`web/server` without being held as fields.
 
 ### The assembly is generated: `app/wire.go` + `app/wire_gen.go`
 
@@ -201,7 +209,7 @@ see the section above); `app/build.go` only does the parts Wire cannot express. 
    later) → built-in `view_image` MCP server when `llm.image_max > 0` (binds 127.0.0.1; reads
    http(s) images or local files under `llm.image_local_dirs`; failure non-fatal) → `deriveConfig` + `store.NewStore(initial)` (`App.Config` is the store's `Get`
    method value; nothing mutates this config afterwards) → `LoadPromptConfig` →
-   `mcpclient.New` → `router.NewRouter` → `bot.NewBot` → `webserver.New` →
+   `mcpclient.New` → `speech.NewRouter` → `bot.NewBot` → `webserver.New` →
    `telemetry.NewRegistry` + `NewMetricsServer` → config informer + prompt observer.
    Two method calls Wire can't express happen *inside* providers:
    `configInformer.AddEventHandler(warnRestartOnlyChanges)` and `NewStore`→`Get` as a method value.
@@ -213,7 +221,7 @@ see the section above); `app/build.go` only does the parts Wire cannot express. 
    → startup banner → `Web.EnableDebug(...)` in test mode.
 5. `Start()` launches both watchers. The prompt observer calls `Prompt.Reload()` then `Router.Rebuild()`.
 
-**`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches the bot consumer, the IM ingress, the config informer, and the web server (all non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → metrics → `im.Shutdown` → `router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code. The informer exits on the same cancelled ctx — if it didn't, it would hold up graceful shutdown.
+**`app.Run()` — lifecycle** (`app/app.go`): `Start()` launches the bot consumer, the IM ingress, the config informer, and the web server (all non-blocking) → blocks on `ctx.Done()` → `Shutdown(ctx)` closes in order: cancel ctx → `web.Shutdown` (10s timeout) → metrics → `im.Shutdown` → `speech.Router.Wait()` → `mcpMgr.Close()` → built-in MCP `Close()`. `Shutdown` is idempotent (`sync.Once`); shutdown failures are logged only and do not change the exit code. The informer exits on the same cancelled ctx — if it didn't, it would hold up graceful shutdown.
 
 **Readiness during shutdown (invariant):** `webserver.Server.Shutdown` sets the `draining` flag **first**, then optionally waits `shutdown_delay_sec`, and only then stops the listener. The order is essential and was empirically verified: `http.Server.Shutdown` closes the listener *immediately*, so setting the flag and calling it back-to-back leaves `/readyz` no observable window — a probe cannot even open a connection (it gets an RST). The wait is what lets a load balancer notice the 503 and drain. With the default `shutdown_delay_sec: 0` there is no observable, which is correct for a directly-reached panel.
 
@@ -250,7 +258,7 @@ The config layer follows the *shape* of K8s' API machinery (external/internal sp
 | `config/convert.go` | external → internal (`assemble`), plus secret precedence |
 | `config/config.go` | the internal `Config`/`LLMConf`/`MCPConf`/`MCPServerConf` types — **shape unchanged by the refactor** |
 
-Why the internal shape is frozen: `mcpclient`, `router` and `web/server` tests construct `config.Config{...}` / `config.MCPConf{...}` literals directly. Consumers still write `cfg.BotNickname`.
+Why the internal shape is frozen: `mcpclient`, `speech` and `web/server` tests construct `config.Config{...}` / `config.MCPConf{...}` literals directly. Consumers still write `cfg.BotNickname`.
 
 **Ordering is load-bearing.** `SetDefaults` must run *before* `Validate`, because a field that is legitimately omitted must be defaulted and then validated — not rejected. Note that several numeric checks are only meaningful post-default, and they are not decoration: `llm_timeout_sec` feeds `context.WithTimeout` (= 0 means every LLM call fails instantly), `max_cache_msg` feeds `make([]Message, n)` and is then indexed.
 
@@ -314,16 +322,31 @@ The initial snapshot is built **after** the nickname is fetched and the built-in
 
 What hot-reloads and what does not: `allow_groups`, thresholds, cost params, model name take effect on the next read. `web_port`, credentials, `jwt_secret` and `mcp.servers` are **startup-time** decisions (listener bound, middleware installed, clients constructed) and need a restart. `webserver.New` takes one startup snapshot for exactly those, while `/api/status` and `/api/groups` call the snapshot per request.
 
-## Command system (`router/`)
+## Command system (`speech/`)
+
+`speech` is the turn domain. One `Router` serves one workspace; the package splits by role rather than by layer:
+
+| File | Role |
+| --- | --- |
+| `router.go` | Assembly: `Router`, `NewRouter`, the `Set*` injectors, `Go`/`GoCtx`/`Wait`, group personas |
+| `dispatch.go` | Thin entry: `RouteMessage` / `RouteMessageNow` — a hit goes to the handler, a miss to the plain reply |
+| `command.go` | Route table: prefix trie + `atomic.Pointer[routeTable]` swap + `Rebuild` |
+| `judge.go` | `IsAddressed`, `stripCQPrefix`, `trimLeadingMentionToken` — pure functions |
+| `prompt.go` | System prompt assembly (identity line, keyword prompt, persona block) |
+| `generate.go` | `Generate` — pick window → build user message → LLM (multi-turn when tools exist) |
+| `reply_format.go` | Turn a long draft into at most N sentences |
+| `deliver.go` | `Reply`, `Sink`, `Deliver` — sentences → actions → ledger → channel |
+| `proactive.go` | Proactive turns: judge, per-group serial worker, three-way rate limit |
+| `persona_render.go` | Persona binding per group, rendered into the prompt |
 
 ### Two kinds of commands
 
 | Kind | Defined in | Examples |
 | --- | --- | --- |
-| Internal | `router/internal_cmd.go` via `Router.register()` | `添加人格`, `删除人格`, `帮助` |
+| Internal | `speech/internal_cmd.go` via `Router.register()` | `添加人格`, `删除人格`, `帮助` |
 | User | `prompt_system.yaml` / `prompt_custom.yaml` YAML lists | `锐评下`, `猫娘` |
 
-### Router struct (`router/command.go`)
+### Router struct (`speech/router.go`)
 
 ```go
 type routeTable struct {          // 一份完整路由表快照，发布后不可变
@@ -338,19 +361,37 @@ type Router struct {
     obClient         *onebot.Client
     promptCfg        *config.PromptConfig
     appCfg           config.Snapshot
+    mcp              MCPProvider                // nil = 无工具调用
     starter          *async.Group               // goroutine 生命周期管理
+    store            *conversation.Store        // 本工作空间的缓存与锚点
+    workspace        string                     // 只用于指标与日志标签
+    groupPersona     map[string]*groupPersonaBinding
+    proactive        proactiveRegistry
+    personaStore     PersonaStore               // 群人格源关键字持久化
+    displayName      func(groupID, userID string) string
+    saveMessage      func(conversation.Message) int64
+    saveAnchor       func(groupID string, anchor conversation.LLMAnchor)
+    ledger           SendLedger                 // 发送台账
 }
-func NewRouter(appCfg, promptCfg, llmClient, obClient, shutdownCtx) *Router
-func (r *Router) RouteMessage(ctx, content, event, groupID)
+func NewRouter(appCfg, promptCfg, llmClient, obClient, mcpProvider, shutdownCtx) *Router
+func (r *Router) RouteMessage(ctx, content, event, groupID)         // dispatch.go
+func (r *Router) Generate(ctx, replyParams) (*Reply, error)         // generate.go
+func (r *Router) Deliver(ctx, reply *Reply, sink Sink) error        // deliver.go
 func (r *Router) Rebuild()                            // 提示词变了之后重建路由表
 func (r *Router) Go(fn func(context.Context) error)   // 安全启动 goroutine
 func (r *Router) GoCtx(parent, fn)                    // 同上，但继承调用方 ctx（trace 靠它跨 goroutine）
 func (r *Router) Wait() error                         // 等待所有 goroutine 退出
 ```
 
+构造之后还能注入的七个：`SetStore`、`SetWorkspace`、`SetMessageSink`、`SetAnchorSink`、`SetSendLedger`、`SetDisplayName`、`SetPersonaStore`。这些字段（连同上面写出的）都是测试直接构造 `Router{}` 的一部分——改字段名会连带改测试，改之前先想一下。
+
 `RouteMessage` 收 ctx、`HandlerFunc` 的第一个参数也是 ctx：分发链路的上下文要一路传到
 处理器里的大模型与 MCP 调用，否则一次"消息 → 路由 → 大模型 → 工具"在链路图上是散的。
 `chatReview` 因此用 `GoCtx`（而不是 `Go`）提交异步任务——见 `async.Group.GoCtx` 的说明。
+
+**Generation and delivery are separate calls.** `Generate` returns a `*Reply` and never touches the send path; `Deliver(ctx, reply, sink)` sends and advances the anchor only after every message went out. `Reply.Anchor` is a pointer — `nil` means "do not advance" (a fallback line has no window behind it, and advancing would make the next turn think that prefix was already sent). `Sink` is a constant, not an interface: there is exactly one implementation today, and `SinkPanel` / `SinkAgent` return "not implemented yet" rather than dropping silently.
+
+**Whether a message addresses the bot is decided in one place.** `speech.IsAddressed` is called both by Stage 3 (`bot/stages.go`) and by the dispatcher; `bot.addressed` only supplies the deployment-shaped input — whether the nickname fallback may be used (it may not when two accounts share a nickname, because `@昵称` is then ambiguous).
 
 `trie` and `routes` live in **one** atomically-swapped struct on purpose: with two separate atomics, a dispatch could pair a new trie with an old help list, so what `帮助` lists and what actually matches would disagree — the kind of inconsistency that is miserable to debug. `Rebuild` needs no lock: it builds a fresh table and stores it, so concurrent rebuilds converge and readers never see half a table.
 
@@ -415,7 +456,7 @@ the most recent event — which would write bot A's name onto bot B.
 ## Adding a new command type
 
 1. Write a handler method: `func (r *Router) handlerName(event onebot.Event, groupID string, prompt string)`
-2. Add to `handlerMap` in `router/command.go` `NewRouter()`: `"category_name": r.handlerName`
+2. Add to `handlerMap` in `speech/router.go` `NewRouter()`: `"category_name": r.handlerName`
 3. Add entries in `prompt_system.yaml` under `cmd.category_name:` as a list of `{keyword, prompt}`
 4. Optionally add shared rules under `rules.category_name:`
 
@@ -463,7 +504,7 @@ sequence of the quoted message when it is in the window, otherwise omitted. The 
 id stays in cache/SQLite/anchors for passive replies and persistence.
 Platform name comes from `self.platform`; group name comes from `get_group_info`.
 
-## Proactive replies (`router/proactive.go`)
+## Proactive replies (`speech/proactive.go`)
 
 When `bot.proactive_enabled` is true, messages that do not @ the bot go through a two-phase
 pipeline instead of being ignored:
@@ -626,7 +667,7 @@ Conventions worth matching: no UI library (hand-rolled `<view>`/`<text>` + scope
 
 **Vite plugin `go-embed-fix`:** Go's `embed` skips files starting with `_` or `.`. uni-app H5 plugin generates chunk files with `_` prefix; this custom plugin renames them to `chunk-` prefix so they pass Go's embed filter.
 
-## Ring buffer cache (`cache/`)
+## Ring buffer cache (`conversation/`)
 
 Per-group `GroupMsgCache` — **true ring buffer with zero-copy writes**:
 
@@ -644,7 +685,7 @@ type GroupMsgCache struct {
 
 Single-writer architecture (only the bot's consumer goroutine calls `Add`) — no lock contention in practice.
 
-**`Add` must stay allocation-free, and `cache/bench_test.go` enforces it.** `BenchmarkAdd`'s
+**`Add` must stay allocation-free, and `conversation/bench_test.go` enforces it.** `BenchmarkAdd`'s
 `allocs/op` is 0 — that number *is* the "zero-copy" claim made executable. Anything that escapes
 to the heap on that path (a metrics call, a log field, a closure) turns it into 1 and the
 benchmark says so. The `cache_messages` gauge is therefore updated from `bot/ingest.go`
@@ -758,4 +799,4 @@ Thin wrappers: `Info(msg, kv...)`, `Error(msg, kv...)`, `Warn(msg, kv...)`, `Deb
 ## Code conventions
 
 - **Variable naming**: 变量名不要简化，要完整让人方便看懂。
-- **Wiring lives in `app`**: 新增组件时写一个 provider（`app/providers.go`）、在 `app/wire.go` 的 `wire.Build` 里加一行、然后 `go tool wire ./app`；启动/关闭动作放 `app.Start`/`app.Shutdown`。带副作用的编排（读环境、绑端口、开信号监听）留在 `app/build.go`。不要在 `main`、`router`、`bot`、`web/server` 里 new 组件或读包级全局来绕过注入。
+- **Wiring lives in `app`**: 新增组件时写一个 provider（`app/providers.go`）、在 `app/wire.go` 的 `wire.Build` 里加一行、然后 `go tool wire ./app`；启动/关闭动作放 `app.Start`/`app.Shutdown`。带副作用的编排（读环境、绑端口、开信号监听）留在 `app/build.go`。不要在 `main`、`speech`、`bot`、`web/server` 里 new 组件或读包级全局来绕过注入。

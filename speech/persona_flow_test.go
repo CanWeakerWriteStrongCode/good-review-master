@@ -1,0 +1,121 @@
+package speech
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"good-review-master/config"
+	"good-review-master/conversation"
+	"good-review-master/internal/testutil"
+	"good-review-master/logutil"
+	"good-review-master/onebot"
+)
+
+// TestPersonaReachesLLM 验证 persona 全链路：YAML 加载 → rebuild → RouteMessage
+// → 发给 LLM 的 systemPrompt 必须携带【人格】块（身份/情绪维度/授权指令）。
+// 覆盖用户关心的"发送时带没带人格"问题。
+func TestPersonaReachesLLM(t *testing.T) {
+	// 切到临时目录：SetupLogger 把日志写到 cwd/log/bot.log，避免污染仓库 router/log/
+	t.Chdir(t.TempDir())
+	logutil.SetupLogger() // 初始化 zap，否则 handler 里的日志调用会 panic
+	defer logutil.Close() // 关闭日志文件句柄，释放临时目录供清理
+
+	// 1. 写一个带 persona 的临时 prompt_system.yaml（结构与真实配置一致）
+	dir := t.TempDir()
+	systemPath := filepath.Join(dir, "prompt_system.yaml")
+	yml := `cmd:
+  chat_review:
+    - keyword: "锐评下"
+      prompt: |
+        做犀利总结。
+      persona:
+        identity: |
+          毒舌点评人
+        personality: '["一针见血"]'
+        relationship: '{"角色":"点评员"}'
+        system_prompt: |
+          守住底线
+        emotion: '{"情绪反应性":"高"}'
+rules:
+  chat_review: |
+    规则：禁止人身攻击
+`
+	if err := os.WriteFile(systemPath, []byte(yml), 0644); err != nil {
+		t.Fatalf("写临时配置失败: %v", err)
+	}
+
+	// 2. 构造 Router + FakeLLM（不依赖真实大模型/AstrBot 桥接）
+	promptCfg, err := config.LoadPromptConfig(systemPath, config.CustomPromptPath(systemPath))
+	if err != nil {
+		t.Fatalf("加载提示词配置失败: %v", err)
+	}
+	cfg := &config.Config{
+		BotNickname:  "bot",
+		MaxCacheMsg:  100,
+		LLMSendCount: 20,
+		LLMTimeout:   5 * time.Second,
+		LLMConfig: config.LLMConf{
+			CacheHitCost:     0.033,
+			CacheMissCost:    1.0,
+			MaxContextTokens: 50000,
+		},
+	}
+	fakeLLM := testutil.NewFakeLLM()
+	obClient := onebot.NewClient("", nil, "") // 无出站地址，调用失败仅日志
+	router := NewRouter(staticSnapshot(cfg), promptCfg, fakeLLM, obClient, nil, context.Background())
+
+	// 3. 种入缓存消息，触发 锐评下
+	conversation.GetGroupCache("10001", cfg.MaxCacheMsg).Add(conversation.Message{
+		MessageID: "1", GroupID: "10001", UserID: "1", Nickname: "张三", Content: "今天好累",
+	})
+	router.RouteMessage(context.Background(), "@bot(123456) 锐评下", onebot.Event{
+		Type:       "message",
+		DetailType: "group",
+		GroupID:    "10001",
+		UserID:     "1",
+		Self:       onebot.Self{Platform: "qq", UserID: "123456"},
+		Message:    []onebot.Segment{onebot.TextSegment("锐评下")},
+		MessageID:  "2",
+	}, "10001")
+
+	// 4. 等待异步 handler 完成 LLM 调用
+	var calls []testutil.LLMCall
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		calls = fakeLLM.Calls()
+		if len(calls) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(calls) == 0 {
+		t.Fatal("FakeLLM 未被调用（异步 handler 未执行完成）")
+	}
+
+	// 5. 断言：人格渲染进 systemPrompt（关键字路由 route.Persona → systemPrompt 末尾），
+	// user 消息（chatLog）只含聊天记录 + @者信息 + 关键词 prompt，不携带人格块。
+	systemPrompt := calls[0].SystemPrompt
+	chatLog := calls[0].ChatLog
+	t.Logf("=== 发送给 LLM 的 systemPrompt ===\n%s", systemPrompt)
+	t.Logf("=== 发送给 LLM 的 chatLog ===\n%s", chatLog)
+	if strings.Contains(chatLog, "【人格】") {
+		t.Fatalf("persona 不应在 user 消息（chatLog）中:\n%s", chatLog)
+	}
+	if !strings.Contains(systemPrompt, "【人格】") {
+		t.Fatalf("systemPrompt 未包含人格块:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "身份：毒舌点评人") {
+		t.Fatalf("systemPrompt 未包含身份:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "情绪反应性") {
+		t.Fatalf("systemPrompt 未包含情绪维度:\n%s", systemPrompt)
+	}
+	// 人格块在 systemPrompt 中位于身份头之后
+	if strings.Index(systemPrompt, "【人格】") <= strings.Index(systemPrompt, "你的昵称是") {
+		t.Fatalf("人格应位于身份头之后的 systemPrompt:\n%s", systemPrompt)
+	}
+}

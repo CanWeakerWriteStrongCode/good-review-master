@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/internal/testutil"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
@@ -188,7 +188,7 @@ func Test图片消息在Stage2生成描述并入库(t *testing.T) {
 		t.Fatal("工作空间未开通")
 	}
 	deadline := time.Now().Add(3 * time.Second)
-	var msgs []cache.Message
+	var msgs []conversation.Message
 	for time.Now().Before(deadline) {
 		msgs = ws.Cache.GetGroupCache("g1", 100).GetAll()
 		if len(msgs) == 1 && len(msgs[0].ImageNotes) == 1 && msgs[0].ImageNotes[0].Note != "" {
@@ -270,7 +270,7 @@ func Test只记录账号不回复但照常入缓存(t *testing.T) {
 	}
 	// 缓存能出现，说明 Stage 3 已经处理过这条消息了；再等一小会儿确认它没继续往下调模型。
 	deadline := time.Now().Add(3 * time.Second)
-	var msgs []cache.Message
+	var msgs []conversation.Message
 	for time.Now().Before(deadline) {
 		msgs = ws.Cache.GetGroupCache("g1", 100).GetAll()
 		if len(msgs) > 0 {

@@ -5,7 +5,7 @@
 // 所以这里的做法是：
 //
 //  1. 每条用例按**与线上逐字相同**的提示词调用一次真实大模型
-//     （system prompt 走 router.ComposeSystemPrompt，user message 走 router.BuildUserMsg，
+//     （system prompt 走 speech.ComposeSystemPrompt，user message 走 speech.BuildUserMsg，
 //     就是为了不出现"评测自己拼一份、线上回归了评测还是绿的"）；
 //  2. 跑几条**规则检查**（长度上限、必须/禁止出现的串）——这些是硬失败；
 //  3. 与 baseline.json 逐行比对，把差异打出来给人看——模型输出天然会变，
@@ -32,7 +32,7 @@ import (
 	"good-review-master/config"
 	"good-review-master/llm"
 	"good-review-master/logutil"
-	"good-review-master/router"
+	"good-review-master/speech"
 
 	"gopkg.in/yaml.v3"
 )
@@ -129,7 +129,7 @@ func main() {
 			}
 			fmt.Printf("═══ %s ═══\n", one.ID)
 			fmt.Printf("--- system prompt ---\n%s\n", systemPrompt)
-			fmt.Printf("--- user message ---\n%s\n\n", router.BuildUserMsg(one.Input, keywordPrompt))
+			fmt.Printf("--- user message ---\n%s\n\n", speech.BuildUserMsg(one.Input, keywordPrompt))
 		}
 		return
 	}
@@ -236,7 +236,7 @@ func runCase(client llm.Client, promptCfg *config.PromptConfig, cfg *config.Conf
 		result.err = err
 		return result
 	}
-	userMessage := router.BuildUserMsg(one.Input, keywordPrompt)
+	userMessage := speech.BuildUserMsg(one.Input, keywordPrompt)
 	result.promptSHA256 = promptFingerprint(systemPrompt, userMessage)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -283,9 +283,9 @@ func resolvePrompt(promptCfg *config.PromptConfig, cfg *config.Config, one check
 		}
 		personaBlock := ""
 		if entry.Persona != nil {
-			personaBlock = router.RenderPersona(*entry.Persona, data.SharedRules[one.Prompt.Category])
+			personaBlock = speech.RenderPersona(*entry.Persona, data.SharedRules[one.Prompt.Category])
 		}
-		return router.ComposeSystemPrompt(cfg, "", personaBlock, promptCfg.ReplyRequirement(), promptCfg.MentionFocusPrompt()), entry.Prompt, nil
+		return speech.ComposeSystemPrompt(cfg, "", personaBlock, promptCfg.ReplyRequirement(), promptCfg.MentionFocusPrompt()), entry.Prompt, nil
 	}
 	keywords := make([]string, 0, len(entries))
 	for _, entry := range entries {

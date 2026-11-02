@@ -5,9 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"good-review-master/cache"
-	"good-review-master/onebot"
 )
 
 func mustItem(t *testing.T, stage, key, id string, payload any) Item {
@@ -23,7 +20,7 @@ func TestMemoryBuffer同分区FIFO(t *testing.T) {
 	b := NewMemoryBuffer(8, 8)
 	ctx := context.Background()
 	for _, id := range []string{"1", "2", "3"} {
-		if err := b.Put(ctx, mustItem(t, StageIngest, SerialKey, id, InboundEvent{})); err != nil {
+		if err := b.Put(ctx, mustItem(t, StageIngest, SerialKey, id, struct{}{})); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 	}
@@ -49,9 +46,9 @@ func TestMemoryBuffer批量上限与分区隔离(t *testing.T) {
 	b := NewMemoryBuffer(8, 8)
 	ctx := context.Background()
 	for _, id := range []string{"a1", "a2", "a3"} {
-		_ = b.Put(ctx, mustItem(t, StageSync, "a", id, InboundEvent{}))
+		_ = b.Put(ctx, mustItem(t, StageSync, "a", id, struct{}{}))
 	}
-	_ = b.Put(ctx, mustItem(t, StageSync, "b", "b1", InboundEvent{}))
+	_ = b.Put(ctx, mustItem(t, StageSync, "b", "b1", struct{}{}))
 
 	first, err := b.Take(ctx, "a", 2)
 	if err != nil || len(first) != 2 {
@@ -69,14 +66,14 @@ func TestMemoryBuffer批量上限与分区隔离(t *testing.T) {
 
 func TestMemoryBuffer满时等待并尊重超时(t *testing.T) {
 	b := NewMemoryBuffer(1, 1)
-	item := mustItem(t, StageIngest, SerialKey, "1", InboundEvent{})
+	item := mustItem(t, StageIngest, SerialKey, "1", struct{}{})
 	if err := b.Put(context.Background(), item); err != nil {
 		t.Fatalf("首次 Put: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if err := b.Put(ctx, mustItem(t, StageIngest, SerialKey, "2", InboundEvent{})); err == nil {
+	if err := b.Put(ctx, mustItem(t, StageIngest, SerialKey, "2", struct{}{})); err == nil {
 		t.Fatal("满队列应阻塞到超时")
 	}
 
@@ -92,11 +89,11 @@ func TestMemoryBuffer满时等待并尊重超时(t *testing.T) {
 func TestMemoryBuffer关闭后唤醒阻塞方(t *testing.T) {
 	b := NewMemoryBuffer(1, 1)
 	ctx := context.Background()
-	_ = b.Put(ctx, mustItem(t, StageIngest, SerialKey, "1", InboundEvent{}))
+	_ = b.Put(ctx, mustItem(t, StageIngest, SerialKey, "1", struct{}{}))
 
 	putDone := make(chan error, 1)
 	go func() {
-		putDone <- b.Put(ctx, mustItem(t, StageIngest, SerialKey, "2", InboundEvent{}))
+		putDone <- b.Put(ctx, mustItem(t, StageIngest, SerialKey, "2", struct{}{}))
 	}()
 	time.Sleep(20 * time.Millisecond)
 	if err := b.Close(); err != nil {
@@ -121,50 +118,19 @@ func TestMemoryBuffer关闭后唤醒阻塞方(t *testing.T) {
 }
 
 func Test阶段载荷可序列化(t *testing.T) {
-	in := InboundEvent{
-		WorkspaceID: "qq_official_bot_1906",
-		Event: onebot.Event{
-			MessageID:   "m1",
-			GroupID:     "g1",
-			UserID:      "u1",
-			AccountKind: "official_bot",
-			Self:        onebot.Self{Platform: "qq", UserID: "u1"},
-			Message:     []onebot.Segment{onebot.TextSegment("你好")},
-			QQMsgIdx:    "REFIDX",
-			QQAtMe:      true,
-		},
+	// 阶段载荷的具体类型归会话域（conversation 包），这里只验证 Item 能把
+	// 任意可序列化载荷原样带过去。
+	type payload struct {
+		WorkspaceID string `json:"workspace_id"`
+		MessageID   string `json:"message_id"`
 	}
+	in := payload{WorkspaceID: "qq_official_bot_1906", MessageID: "m1"}
 	item := mustItem(t, StageIngest, SerialKey, "m1", in)
-	got, err := DecodeItem[InboundEvent](item)
+	got, err := DecodeItem[payload](item)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if got.WorkspaceID != in.WorkspaceID || got.Event.MessageID != "m1" ||
-		got.Event.AccountKind != "official_bot" || !got.Event.QQAtMe {
-		t.Fatalf("InboundEvent 往返丢失字段：%+v", got)
-	}
-
-	enr := EnrichedMessage{
-		SyncedMessage: SyncedMessage{
-			WorkspaceID: "w1",
-			ChatID:      "g1",
-			Message: cache.Message{
-				MessageID: "m1",
-				GroupID:   "g1",
-				UserID:    "u1",
-				Content:   "你好",
-				ImageIDs:  []cache.ImageID{{SHA: "abc", Size: 3}},
-			},
-		},
-		ImageNotes: []cache.ImageNote{{ImageID: cache.ImageID{SHA: "abc", Size: 3}, Note: "一张图"}},
-	}
-	item = mustItem(t, StageAssets, SerialKey, "m1", enr)
-	back, err := DecodeItem[EnrichedMessage](item)
-	if err != nil {
-		t.Fatalf("Decode Enriched: %v", err)
-	}
-	if back.Message.Content != "你好" || len(back.ImageNotes) != 1 ||
-		back.ImageNotes[0].Note != "一张图" || len(back.Message.ImageIDs) != 1 {
-		t.Fatalf("EnrichedMessage 往返丢失字段：%+v", back)
+	if got != in {
+		t.Fatalf("载荷往返丢失字段：%+v", got)
 	}
 }

@@ -21,14 +21,15 @@ import (
 	"time"
 
 	"good-review-master/assets"
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
-	"good-review-master/router"
+	"good-review-master/policy"
+	"good-review-master/speech"
+	"good-review-master/state"
 	"good-review-master/telemetry"
-	"good-review-master/workspace/state"
 )
 
 // platformPattern 是 OneBot 12 对平台名的约束（不允许下划线，所以不能用 qq_official）。
@@ -95,11 +96,11 @@ type Workspace struct {
 	AccountKind string
 	Account     string
 
-	Router *router.Router
+	Router *speech.Router
 	// Prompt 是所有工作空间共享的同一份提示词配置（全局 prompt_system.yaml +
 	// prompt_custom.yaml）。私有数据一律进 state.db，不再有工作空间级配置文件。
 	Prompt *config.PromptConfig
-	Cache  *cache.Store
+	Cache  *conversation.Store
 	State  *state.Scope // nil = 持久化不可用，纯内存运行
 
 	appCfg config.Snapshot
@@ -128,7 +129,7 @@ type View struct {
 	AccountKind string
 	Account     string
 	Groups      []string
-	Store       *cache.Store
+	Store       *conversation.Store
 	HasState    bool
 }
 
@@ -137,7 +138,7 @@ type Manager struct {
 	appCfg      config.Snapshot
 	llmClient   llm.Client
 	obClient    *onebot.Client
-	mcp         router.MCPProvider
+	mcp         speech.MCPProvider
 	shutdownCtx context.Context
 	stateStore  *state.Store
 	prompt      *config.PromptConfig
@@ -151,7 +152,7 @@ type Manager struct {
 
 // New 从 state.db 恢复已有工作空间，之后的账号由第一条事件自动开通。
 func New(appCfg config.Snapshot, systemPromptPath, customPromptPath string,
-	llmClient llm.Client, obClient *onebot.Client, mcp router.MCPProvider,
+	llmClient llm.Client, obClient *onebot.Client, mcp speech.MCPProvider,
 	shutdownCtx context.Context) (*Manager, error) {
 
 	// 提示词只有一份：所有工作空间共享根目录的 prompt_system.yaml / prompt_custom.yaml。
@@ -277,7 +278,7 @@ func (m *Manager) ResolveOrCreate(platform, accountKind, account string) (*Works
 	if ws := m.byID[id]; ws != nil {
 		return ws, nil
 	}
-	if !m.appCfg().HasWorkspaceAccount(id) {
+	if !policy.AllowsAccount(m.appCfg(), id) {
 		telemetry.WorkspaceResolveTotal.WithLabelValues("denied").Inc()
 		return nil, nil
 	}
@@ -341,7 +342,7 @@ func (m *Manager) load(id, platform, accountKind, account string) (*Workspace, e
 		AccountKind: accountKind,
 		Account:     account,
 		Prompt:      m.prompt,
-		Cache:       cache.NewStore(),
+		Cache:       conversation.NewStore(),
 		State:       st,
 		ob:          m.obClient.For(id),
 		identities:  make(map[string]string),
@@ -351,7 +352,7 @@ func (m *Manager) load(id, platform, accountKind, account string) (*Workspace, e
 	ws.members.onSelfName = ws.onChangeMemberName
 	ws.appCfg = func() *config.Config { return ws.snapshot(m.appCfg()) }
 
-	ws.Router = router.NewRouter(ws.appCfg, m.prompt, m.llmClient, ws.ob, m.mcp, m.shutdownCtx)
+	ws.Router = speech.NewRouter(ws.appCfg, m.prompt, m.llmClient, ws.ob, m.mcp, m.shutdownCtx)
 	ws.Router.SetStore(ws.Cache)
 	ws.Router.SetWorkspace(id)
 	if st != nil {
@@ -749,26 +750,6 @@ func (w *Workspace) LearnMemberNameFrom(groupID, userID, name, sourceMessageID s
 // QQ 官方没有成员列表接口，所以这是观察到的数量，不是群真实人数。
 func (w *Workspace) MemberCount(groupID string) int {
 	return w.members.count(groupID)
-}
-
-// AllowsGroup 判断群是否在白名单内。
-func (w *Workspace) AllowsGroup(groupID string) bool {
-	for _, g := range w.Snapshot()().AllowGroups {
-		if g == "*" || g == groupID {
-			return true
-		}
-	}
-	return false
-}
-
-// AllowsAllGroups 判断是否放行全部群。
-func (w *Workspace) AllowsAllGroups() bool {
-	for _, g := range w.Snapshot()().AllowGroups {
-		if g == "*" {
-			return true
-		}
-	}
-	return false
 }
 
 // snapshot 复制一份工作空间列表：自动开通会并发 append，读者不能直接遍历底层切片。

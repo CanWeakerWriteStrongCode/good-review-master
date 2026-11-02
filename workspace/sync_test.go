@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/internal/testutil"
 	"good-review-master/onebot"
-	"good-review-master/pipeline"
-	"good-review-master/workspace/state"
+	"good-review-master/state"
 )
 
 func syncTestWorkspace(t *testing.T) (*Manager, *Workspace) {
@@ -65,7 +65,7 @@ func TestPrepareBatch批量补名并同步入库(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := []pipeline.InboundEvent{
+	events := []conversation.Inbound{
 		{WorkspaceID: ws.ID, Event: syncEvent("m1", "u1", "大家好")},
 		{WorkspaceID: ws.ID, Event: syncEvent("m2", "u2", "我是李四")},
 		{WorkspaceID: ws.ID, Event: syncEvent("m3", "u3", "找个人", "u2")},
@@ -91,7 +91,7 @@ func TestPrepareBatch批量补名并同步入库(t *testing.T) {
 func TestPrepareBatch过滤重复与白名单外群(t *testing.T) {
 	_, ws := syncTestWorkspace(t)
 	event := syncEvent("m1", "u1", "你好")
-	synced := ws.PrepareBatch(context.Background(), []pipeline.InboundEvent{
+	synced := ws.PrepareBatch(context.Background(), []conversation.Inbound{
 		{WorkspaceID: ws.ID, Event: event},
 		{WorkspaceID: ws.ID, Event: event},
 	})
@@ -101,7 +101,7 @@ func TestPrepareBatch过滤重复与白名单外群(t *testing.T) {
 
 	other := syncEvent("m2", "u1", "别的群")
 	other.GroupID = "g2"
-	if got := ws.PrepareBatch(context.Background(), []pipeline.InboundEvent{{WorkspaceID: ws.ID, Event: other}}); len(got) != 0 {
+	if got := ws.PrepareBatch(context.Background(), []conversation.Inbound{{WorkspaceID: ws.ID, Event: other}}); len(got) != 0 {
 		t.Fatalf("白名单外的群应被过滤，实际 %+v", got)
 	}
 }

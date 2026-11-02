@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"good-review-master/cache"
+	"good-review-master/conversation"
 	"good-review-master/internal/testutil"
 	"good-review-master/logutil"
-	"good-review-master/workspace/state"
+	"good-review-master/state"
 )
 
 // TestMain 初始化日志并切到临时目录：补标签路径会打日志，未初始化会 nil panic。
@@ -59,7 +59,9 @@ func (f *fakeJobStore) UpdateAssetTagJob(job state.AssetTagJob) error {
 	return os.ErrNotExist
 }
 
-func (f *fakeJobStore) SaveImageNote(note cache.ImageNote) error { return f.notes.SaveImageNote(note) }
+func (f *fakeJobStore) SaveImageNote(note conversation.ImageNote) error {
+	return f.notes.SaveImageNote(note)
+}
 
 func (f *fakeJobStore) CleanupAssetTagJobs(time.Time, time.Duration) (int64, error) { return 0, nil }
 

@@ -7,28 +7,28 @@ import (
 	"strings"
 	"time"
 
-	"good-review-master/cache"
+	"good-review-master/conversation"
 	"good-review-master/logutil"
-	"good-review-master/workspace/state"
+	"good-review-master/state"
 )
 
 // JobStore 是欠条与图库的持久化边界，由 state.Store 实现。
 type JobStore interface {
 	PendingAssetTagJobs(limit, maxAttempts int) ([]state.AssetTagJob, error)
 	UpdateAssetTagJob(job state.AssetTagJob) error
-	SaveImageNote(note cache.ImageNote) error
+	SaveImageNote(note conversation.ImageNote) error
 	CleanupAssetTagJobs(now time.Time, retention time.Duration) (int64, error)
 }
 
 // TagOne 给单个 URL 打标签（后台补标签用）。成功时返回图库记录。
-func (t *ImageTagger) TagOne(ctx context.Context, url string, attempts int) (cache.ImageNote, error) {
+func (t *ImageTagger) TagOne(ctx context.Context, url string, attempts int) (conversation.ImageNote, error) {
 	cfg := t.cfg()
 	data, mime, err := t.fetcher().FetchImage(ctx, url)
 	if err != nil {
-		return cache.ImageNote{}, fmt.Errorf("%w: %v", ErrSourceGone, err)
+		return conversation.ImageNote{}, fmt.Errorf("%w: %v", ErrSourceGone, err)
 	}
 	id := imageID(data)
-	if existing, err := t.notes.GetImageNotes([]cache.ImageID{id}); err == nil {
+	if existing, err := t.notes.GetImageNotes([]conversation.ImageID{id}); err == nil {
 		if note, ok := existing[id]; ok && note.Status == "ok" {
 			return note, nil
 		}

@@ -14,7 +14,7 @@ import (
 	"good-review-master/mcpclient"
 	"good-review-master/mcpserver"
 	"good-review-master/onebot"
-	"good-review-master/router"
+	"good-review-master/speech"
 	"good-review-master/telemetry"
 	webserver "good-review-master/web/server"
 	"good-review-master/workspace"
@@ -92,7 +92,7 @@ func provideWorkspaces(cfg config.Snapshot, paths promptPaths, llmClient llm.Cli
 }
 
 // provideDefaultRouter 暴露默认工作空间的 Router 给 debug 触发与关闭等待。
-func provideDefaultRouter(manager *workspace.Manager) *router.Router {
+func provideDefaultRouter(manager *workspace.Manager) *speech.Router {
 	if def := manager.Default(); def != nil {
 		return def.Router
 	}
@@ -246,7 +246,7 @@ func provideApp(
 	mcpManager *mcpclient.Manager,
 	builtinMCP *mcpserver.Server,
 	workspaces *workspace.Manager,
-	messageRouter *router.Router,
+	messageRouter *speech.Router,
 	messageBot *bot.Bot,
 	imServer *im.Server,
 	web *webserver.Server,

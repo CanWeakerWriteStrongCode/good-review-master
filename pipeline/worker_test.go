@@ -48,7 +48,7 @@ func TestStage同会话串行与跨会话并行(t *testing.T) {
 
 	for _, key := range []string{"a", "b"} {
 		for i := 0; i < 4; i++ {
-			item := mustItem(t, StageSync, key, key+string(rune('0'+i)), InboundEvent{})
+			item := mustItem(t, StageSync, key, key+string(rune('0'+i)), struct{}{})
 			if err := buf.Put(ctx, item); err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +109,7 @@ func TestStage批量取数与重试死信(t *testing.T) {
 	stage.Run(ctx)
 
 	for _, id := range []string{"good1", "good2", "bad"} {
-		item := mustItem(t, StageSync, "k", id, InboundEvent{})
+		item := mustItem(t, StageSync, "k", id, struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +153,7 @@ func TestStage空闲回收后重新拉起(t *testing.T) {
 	stage.Run(ctx)
 
 	put := func(id string) {
-		item := mustItem(t, StageSync, "k", id, InboundEvent{})
+		item := mustItem(t, StageSync, "k", id, struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}

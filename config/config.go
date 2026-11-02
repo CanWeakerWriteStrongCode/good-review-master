@@ -166,53 +166,6 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
-// HasGroup 检查群号是否在白名单中。白名单含 "*" 时放行所有群。
-func (cfg *Config) HasGroup(groupID string) bool {
-	for _, group := range cfg.AllowGroups {
-		if group == "*" || group == groupID {
-			return true
-		}
-	}
-	return false
-}
-
-// HasWorkspaceAccount 判断某个工作空间 ID 是否允许自动开通。名单含 "*" 时放行全部。
-//
-// 只用于「新建」判定；已经有目录的工作空间由 workspace.Manager 直接加载，
-// 不受这里影响——否则把 ID 从名单里删掉会让一个正在运行的账号突然失联。
-func (cfg *Config) HasWorkspaceAccount(id string) bool {
-	for _, account := range cfg.WorkspaceAccounts {
-		if account == "*" || account == id {
-			return true
-		}
-	}
-	return false
-}
-
-// AllowsAllWorkspaceAccounts 返回名单是否包含通配符 "*"。
-func (cfg *Config) AllowsAllWorkspaceAccounts() bool {
-	for _, account := range cfg.WorkspaceAccounts {
-		if account == "*" {
-			return true
-		}
-	}
-	return false
-}
-
-// IsRecordOnly 判断某个工作空间是否"只记录不回复"。
-//
-// 这类账号照常入库、打图片标签、写进群聊缓存，只是不触发任何回复；
-// 被 @ 或私聊时回一句固定话术。主备双号时给备份号配。
-// 不支持 "*"：全部静默等于没有机器人，配置校验阶段就会拒绝。
-func (cfg *Config) IsRecordOnly(id string) bool {
-	for _, account := range cfg.RecordOnlyAccounts {
-		if account == id {
-			return true
-		}
-	}
-	return false
-}
-
 // RecordOnlyAccountsStr 返回逗号分隔的只记录账号（用于启动日志）
 func (cfg *Config) RecordOnlyAccountsStr() string {
 	return strings.Join(cfg.RecordOnlyAccounts, ",")
@@ -221,17 +174,6 @@ func (cfg *Config) RecordOnlyAccountsStr() string {
 // WorkspaceAccountsStr 返回逗号分隔的工作空间白名单（用于日志输出）
 func (cfg *Config) WorkspaceAccountsStr() string {
 	return strings.Join(cfg.WorkspaceAccounts, ",")
-}
-
-// AllowsAllGroups 返回白名单是否包含通配符 "*"。
-// 通配符无法枚举具体群，Web 群列表需要单独处理。
-func (cfg *Config) AllowsAllGroups() bool {
-	for _, group := range cfg.AllowGroups {
-		if group == "*" {
-			return true
-		}
-	}
-	return false
 }
 
 // AllowGroupsStr 返回逗号分隔的群号字符串（用于日志输出）

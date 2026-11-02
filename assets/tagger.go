@@ -11,19 +11,18 @@ import (
 	"sync"
 	"time"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/llm"
 	"good-review-master/logutil"
 	"good-review-master/mcpserver"
-	"good-review-master/pipeline"
 )
 
 // ImageNoteStore 是全局图库的业务侧接口，由 state.Store 实现。
 type ImageNoteStore interface {
-	GetImageNotes(ids []cache.ImageID) (map[cache.ImageID]cache.ImageNote, error)
-	SaveImageNote(note cache.ImageNote) error
-	MarkImageNoteFailed(note cache.ImageNote) error
+	GetImageNotes(ids []conversation.ImageID) (map[conversation.ImageID]conversation.ImageNote, error)
+	SaveImageNote(note conversation.ImageNote) error
+	MarkImageNoteFailed(note conversation.ImageNote) error
 }
 
 // ImageTagger 用视觉模型给图片写描述。
@@ -60,9 +59,9 @@ type DeferredAsset struct {
 
 // TagResult 一条消息的打标签结果。
 type TagResult struct {
-	ImageIDs   []cache.ImageID
-	ImageNotes []cache.ImageNote
-	Assets     []pipeline.Asset
+	ImageIDs   []conversation.ImageID
+	ImageNotes []conversation.ImageNote
+	Assets     []conversation.Asset
 	Status     string
 	Deferred   []DeferredAsset
 }
@@ -70,7 +69,7 @@ type TagResult struct {
 // TagURLs 给一条消息里的图片 URL 打标签。
 func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	cfg := t.cfg()
-	result := TagResult{Status: pipeline.AssetStatusOK}
+	result := TagResult{Status: conversation.StatusOK}
 	if len(urls) == 0 {
 		return result
 	}
@@ -80,18 +79,18 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	}
 
 	n := len(urls)
-	result.ImageIDs = make([]cache.ImageID, n)
-	result.ImageNotes = make([]cache.ImageNote, n)
-	result.Assets = make([]pipeline.Asset, n)
+	result.ImageIDs = make([]conversation.ImageID, n)
+	result.ImageNotes = make([]conversation.ImageNote, n)
+	result.Assets = make([]conversation.Asset, n)
 	datas := make([][]byte, n)
 	mimes := make([]string, n)
 
 	fetcher := t.fetcher()
 	for i, url := range urls {
-		asset := pipeline.Asset{Index: i, Kind: "image", URL: url, Status: pipeline.AssetStatusOK}
+		asset := conversation.Asset{Index: i, Kind: "image", URL: url, Status: conversation.StatusOK}
 		data, mime, err := fetcher.FetchImage(ctx, url)
 		if err != nil {
-			asset.Status = pipeline.AssetStatusFailed
+			asset.Status = conversation.StatusFailed
 			asset.Error = err.Error()
 			result.Assets[i] = asset
 			result.Deferred = append(result.Deferred, DeferredAsset{
@@ -111,7 +110,7 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 		existing = nil
 	}
 
-	needDescribe := make(map[cache.ImageID][]int)
+	needDescribe := make(map[conversation.ImageID][]int)
 	for i, id := range result.ImageIDs {
 		if id.SHA == "" {
 			continue
@@ -131,7 +130,7 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 			continue
 		}
 		result.Assets[i].Note = note
-		result.Assets[i].Status = pipeline.AssetStatusFailed
+		result.Assets[i].Status = conversation.StatusFailed
 		result.Assets[i].Error = "图片描述失败且已达重试上限"
 		result.Deferred = append(result.Deferred, DeferredAsset{
 			Index: i, Kind: "image", URL: urls[i], Error: result.Assets[i].Error,
@@ -159,14 +158,14 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	var mu sync.Mutex
 	for id, indexes := range needDescribe {
 		wg.Add(1)
-		go func(id cache.ImageID, indexes []int) {
+		go func(id conversation.ImageID, indexes []int) {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
 			case <-budgetCtx.Done():
 				mu.Lock()
 				for _, i := range indexes {
-					result.Assets[i].Status = pipeline.AssetStatusDeferred
+					result.Assets[i].Status = conversation.StatusDeferred
 					result.Assets[i].Error = "标签时间预算耗尽"
 					result.Deferred = append(result.Deferred, DeferredAsset{
 						Index: i, Kind: "image", URL: urls[i], Error: "标签时间预算耗尽",
@@ -185,9 +184,9 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 				result.Assets[i].Note = note
 				if err != nil {
 					// 预算取消与普通失败都进欠条；后台会重新判 URL/本地副本。
-					status := pipeline.AssetStatusFailed
+					status := conversation.StatusFailed
 					if budgetCtx.Err() != nil {
-						status = pipeline.AssetStatusDeferred
+						status = conversation.StatusDeferred
 					}
 					result.Assets[i].Status = status
 					result.Assets[i].Error = err.Error()
@@ -204,31 +203,31 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	return result
 }
 
-func overallStatus(assets []pipeline.Asset) string {
-	status := pipeline.AssetStatusOK
+func overallStatus(assets []conversation.Asset) string {
+	status := conversation.StatusOK
 	for _, asset := range assets {
 		switch asset.Status {
-		case pipeline.AssetStatusDeferred:
-			return pipeline.AssetStatusDeferred
-		case pipeline.AssetStatusFailed, pipeline.AssetStatusDegraded:
-			status = pipeline.AssetStatusFailed
-		case "", pipeline.AssetStatusOK:
+		case conversation.StatusDeferred:
+			return conversation.StatusDeferred
+		case conversation.StatusFailed, conversation.StatusDegraded:
+			status = conversation.StatusFailed
+		case "", conversation.StatusOK:
 		default:
-			status = pipeline.AssetStatusDegraded
+			status = conversation.StatusDegraded
 		}
 	}
 	return status
 }
 
 // describeImage 对一张图做低清描述并写入全局图库。
-func (t *ImageTagger) describeImage(ctx context.Context, cfg *config.Config, data []byte, mime string, id cache.ImageID, attempts int) (cache.ImageNote, error) {
+func (t *ImageTagger) describeImage(ctx context.Context, cfg *config.Config, data []byte, mime string, id conversation.ImageID, attempts int) (conversation.ImageNote, error) {
 	if err := ctx.Err(); err != nil {
-		return cache.ImageNote{ImageID: id}, fmt.Errorf("标签时间预算耗尽：%w", err)
+		return conversation.ImageNote{ImageID: id}, fmt.Errorf("标签时间预算耗尽：%w", err)
 	}
 	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-		return cache.ImageNote{ImageID: id}, fmt.Errorf("标签时间预算耗尽")
+		return conversation.ImageNote{ImageID: id}, fmt.Errorf("标签时间预算耗尽")
 	}
-	note := cache.ImageNote{
+	note := conversation.ImageNote{
 		ImageID:       id,
 		MIME:          mime,
 		Status:        "failed",
@@ -242,7 +241,7 @@ func (t *ImageTagger) describeImage(ctx context.Context, cfg *config.Config, dat
 	small, err := downscaleImage(data, cfg.LLMConfig.ImageNoteMaxSide, cfg.LLMConfig.ImageNoteMaxPixels)
 	if err != nil {
 		_ = t.notes.MarkImageNoteFailed(note)
-		return cache.ImageNote{ImageID: id}, fmt.Errorf("图片解码/降采样失败：%w", err)
+		return conversation.ImageNote{ImageID: id}, fmt.Errorf("图片解码/降采样失败：%w", err)
 	}
 	timeout := time.Duration(cfg.LLMConfig.ImageNoteTimeoutSec) * time.Second
 	if timeout <= 0 {
@@ -256,12 +255,12 @@ func (t *ImageTagger) describeImage(ctx context.Context, cfg *config.Config, dat
 	}, imageDescribeSchema)
 	if err != nil {
 		_ = t.notes.MarkImageNoteFailed(note)
-		return cache.ImageNote{ImageID: id}, fmt.Errorf("图片描述调用失败：%w", err)
+		return conversation.ImageNote{ImageID: id}, fmt.Errorf("图片描述调用失败：%w", err)
 	}
 	out, err := parseImageDescribe(resp.Content)
 	if err != nil {
 		_ = t.notes.MarkImageNoteFailed(note)
-		return cache.ImageNote{ImageID: id}, err
+		return conversation.ImageNote{ImageID: id}, err
 	}
 	note.Note = out.Content
 	note.InfoLevel = out.InfoLevel

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"good-review-master/cache"
+	"good-review-master/conversation"
 	"good-review-master/internal/testutil"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
@@ -16,9 +16,9 @@ import (
 )
 
 // debugStore 选择调试接口要操作的缓存：指定工作空间 > 默认工作空间 > 进程级默认。
-func (s *Server) debugStore(workspaceID string) (*cache.Store, string) {
+func (s *Server) debugStore(workspaceID string) (*conversation.Store, string) {
 	if s.workspaces == nil {
-		return cache.DefaultStore(), ""
+		return conversation.DefaultStore(), ""
 	}
 	if workspaceID != "" {
 		if view, ok := s.workspaces.ViewByID(workspaceID); ok {
@@ -28,7 +28,7 @@ func (s *Server) debugStore(workspaceID string) (*cache.Store, string) {
 	if def := s.workspaces.Default(); def != nil {
 		return def.Cache, def.ID
 	}
-	return cache.DefaultStore(), ""
+	return conversation.DefaultStore(), ""
 }
 
 // debugState 测试模式的调试状态（msg_id 自增序列等）
@@ -88,7 +88,7 @@ func (s *Server) handleDebugInject(state *debugState) gin.HandlerFunc {
 		gc := store.GetGroupCache(body.GroupID, s.cfg().MaxCacheMsg)
 		now := time.Now().Unix()
 		for _, m := range body.Messages {
-			msg := cache.Message{
+			msg := conversation.Message{
 				GroupID:  body.GroupID,
 				SelfID:   selfID,
 				UserID:   m.UserID,
@@ -124,7 +124,7 @@ func (s *Server) handleDebugReset(state *debugState, fakeLLM *testutil.FakeLLM) 
 		if s.workspaces != nil {
 			s.workspaces.ResetAll()
 		} else {
-			cache.ResetAll()
+			conversation.ResetAll()
 		}
 		fakeLLM.Reset()
 		state.mu.Lock()
@@ -145,9 +145,9 @@ func (s *Server) handleDebugState(fakeLLM *testutil.FakeLLM) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		logutil.Warn("调试接口被调用", "action", "state")
 		groups := make([]gin.H, 0)
-		anchors := make(map[string]cache.LLMAnchor)
+		anchors := make(map[string]conversation.LLMAnchor)
 		multiWorkspace := s.workspaces != nil && len(s.workspaces.Views()) > 1
-		appendStore := func(wsID string, store *cache.Store) {
+		appendStore := func(wsID string, store *conversation.Store) {
 			for _, gid := range store.ListGroupIDs() {
 				gc := store.GetCache(gid)
 				if gc == nil {
@@ -176,7 +176,7 @@ func (s *Server) handleDebugState(fakeLLM *testutil.FakeLLM) gin.HandlerFunc {
 				appendStore(view.ID, view.Store)
 			}
 		} else {
-			appendStore("", cache.DefaultStore())
+			appendStore("", conversation.DefaultStore())
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"code": 200,

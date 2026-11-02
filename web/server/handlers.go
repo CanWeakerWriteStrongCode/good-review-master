@@ -6,9 +6,10 @@ import (
 	"sort"
 	"time"
 
-	"good-review-master/cache"
 	"good-review-master/config"
+	"good-review-master/conversation"
 	"good-review-master/logutil"
+	"good-review-master/policy"
 	"good-review-master/workspace"
 
 	"github.com/gin-gonic/gin"
@@ -46,10 +47,10 @@ type BotStatus struct {
 // panelGroupIDs 返回管理面板应展示的群列表。
 // 配置了通配符 "*" 时没有固定群号可列，只能展示已经产生缓存消息的群。
 func panelGroupIDs(cfg *config.Config) []string {
-	if !cfg.AllowsAllGroups() {
+	if !policy.AllowsAllStreams(cfg) {
 		return cfg.AllowGroups
 	}
-	ids := cache.ListGroupIDs()
+	ids := conversation.ListGroupIDs()
 	sort.Strings(ids)
 	return ids
 }
@@ -97,7 +98,7 @@ func (s *Server) botStatus(cfg *config.Config, groupCount, accountCount int) Bot
 		APIKey:         cfg.MaskedAPIKey(),
 		GroupCount:     groupCount,
 		AccountCount:   accountCount,
-		AllowAllGroups: cfg.AllowsAllGroups(),
+		AllowAllGroups: policy.AllowsAllStreams(cfg),
 	}
 }
 
@@ -156,7 +157,7 @@ func (s *Server) workspaceView(id string) (workspace.View, bool) {
 // 之前这里直读 map，是已知的数据竞争点。
 func (s *Server) handleAPIMessages() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		store := cache.DefaultStore()
+		store := conversation.DefaultStore()
 		var wsID, wsName string
 		if views := s.workspaceViews(); len(views) > 0 {
 			if len(views) != 1 {
@@ -183,7 +184,7 @@ func (s *Server) handleAPIWorkspaceMessages() gin.HandlerFunc {
 	}
 }
 
-func (s *Server) writeMessages(c *gin.Context, groupID string, store *cache.Store, wsID, wsName string) {
+func (s *Server) writeMessages(c *gin.Context, groupID string, store *conversation.Store, wsID, wsName string) {
 	s.groupNamesMu.RLock()
 	groupName := s.groupNames[groupID]
 	s.groupNamesMu.RUnlock()
@@ -199,7 +200,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, store *cache.Stor
 				"workspace_name": wsName,
 				"self_id":        "",
 				"account_name":   "",
-				"messages":       []cache.Message{},
+				"messages":       []conversation.Message{},
 				"empty":          true,
 			},
 		})

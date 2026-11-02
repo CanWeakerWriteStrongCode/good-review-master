@@ -280,7 +280,7 @@ func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Mes
 		return nil, fmt.Errorf("大模型调用失败: %w", err)
 	}
 	telemetry.LLMRequestsTotal.WithLabelValues(adapter.model, telemetry.ResultOK).Inc()
-	// token 用量取服务端返回的 usage，不是本地估算——本地估算（cache.EstimateTokens）
+	// token 用量取服务端返回的 usage，不是本地估算——本地估算（conversation.EstimateTokens）
 	// 只服务于选窗决策，两者口径不同，不要混用。
 	// 有些中转不返回 usage（全 0），那种情况下这两条曲线会是平的，属于上游缺失而非统计错误。
 	telemetry.LLMTokensTotal.WithLabelValues("prompt").Add(float64(resp.Usage.PromptTokens))
@@ -327,7 +327,7 @@ func (adapter *OpenAIAdapter) chatCompletion(ctx context.Context, messages []Mes
 
 // cacheHitRate 把服务端报的缓存命中折成百分比字符串，供日志直接用。
 //
-// 分子分母都取自响应的 usage，不是本地估算——cache.EstimateTokens 那套只服务于选窗决策，
+// 分子分母都取自响应的 usage，不是本地估算——conversation.EstimateTokens 那套只服务于选窗决策，
 // 两者口径不同。prompt_tokens_details 是指针，中转不返回时为 nil，按 0 处理；
 // prompt_tokens 也是 0 时返回 "-"：那是上游没给用量，别记成 0% 命中。
 func cacheHitRate(usage openai.Usage) string {

@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	"good-review-master/cache"
+	"good-review-master/conversation"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
-	"good-review-master/pipeline"
+	"good-review-master/policy"
 	"good-review-master/telemetry"
 )
 
@@ -15,12 +15,12 @@ import (
 //
 // 同一批的发送者与 @ 对象合并成一次批量查库；每条消息仍然独立过滤、独立组装。
 // 消息正文在这里同步入库：返回之前必须已经写进 state.db（写失败只降级记日志）。
-func (w *Workspace) PrepareBatch(ctx context.Context, events []pipeline.InboundEvent) []pipeline.SyncedMessage {
+func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbound) []conversation.Synced {
 	if len(events) == 0 {
 		return nil
 	}
 	cfg := w.Snapshot()()
-	out := make([]pipeline.SyncedMessage, 0, len(events))
+	out := make([]conversation.Synced, 0, len(events))
 
 	// 同一批按会话拆开做批量补名；Stage 1 的 key 本来就是一个会话，
 	// 这里仍按 chatID 分组，防止调用方把多个会话混进来。
@@ -38,7 +38,7 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []pipeline.InboundE
 		event := in.Event
 		private := event.IsPrivate()
 		chatID := event.ChatID()
-		if !private && !w.AllowsGroup(chatID) {
+		if !private && !policy.AllowsStream(cfg, chatID) {
 			continue
 		}
 		gc := w.Cache.GetGroupCache(chatID, cfg.MaxCacheMsg)
@@ -108,7 +108,7 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []pipeline.InboundE
 		if replyTo == "" {
 			replyTo = w.State.ResolveMessageID(entry.chatID, event.QuotedRefIdx())
 		}
-		msg := cache.Message{
+		msg := conversation.Message{
 			MessageID: event.MessageID,
 			GroupID:   entry.chatID,
 			SelfID:    event.Self.UserID,
@@ -123,7 +123,7 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []pipeline.InboundE
 		// Stage 1 同步入库；图片标识等 Stage 2 拿到后再补写。
 		// 行号（state.db 自增主键）跟着消息一路带下去，发给大模型的 message_id 就用它。
 		msg.RowID = w.State.SaveMessage(msg)
-		out = append(out, pipeline.SyncedMessage{
+		out = append(out, conversation.Synced{
 			WorkspaceID: w.ID,
 			ChatID:      entry.chatID,
 			Private:     entry.private,
