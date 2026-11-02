@@ -150,6 +150,7 @@ func (s *Scope) LoadRecent(limit int) ([]conversation.Message, error) {
 // Messages 是面板消息详情页的读取入口：最近 limit 条（按时间倒序，最新的在最前），
 // 外加库里这个群的总条数。昵称从 members 表补——messages 只存 user_id，
 // 名字在 members 里，取那里的最新值（成员改过名也能对上人）。
+// 图片描述也从全局图库补：messages 里只有 [图片] 这个占位，描述在 image_notes 表。
 func (s *Scope) Messages(groupID string, limit int) ([]conversation.Message, int, error) {
 	if s == nil || s.store == nil || groupID == "" || limit <= 0 || s.store.closed.Load() {
 		return []conversation.Message{}, 0, nil
@@ -179,6 +180,7 @@ func (s *Scope) Messages(groupID string, limit int) ([]conversation.Message, int
 		out = append(out, messageFromRow(row))
 	}
 	s.fillMemberNames(groupID, out)
+	s.hydrateImageNotes(out)
 	return out, int(total), nil
 }
 

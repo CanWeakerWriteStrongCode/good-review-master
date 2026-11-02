@@ -93,9 +93,9 @@ export const useGroupsStore = defineStore('groups', () => {
 
   const accountSections = computed<AccountSection[]>(() => {
     // 一个页面只对应一个工作空间，群全部挂在这个账号下。
-    // 不能按 group.self_id 分组：那是群作用域的机器人 openid，账号 ID 是
-    // qq_official_bot_<AppID>，两者不是一个东西；拿它当 key 会把一个账号的群
-    // 拆成一堆重复卡片，库里没记到的群还会落到「未归属账号」。
+    // 不能按 group.self_id 分组：那是机器人 openid（v15 起账号级，各群同一个值），
+    // 账号 ID 是 qq_official_bot_<AppID>，两者不是一个东西；拿 openid 当 key
+    // 既分不出账号，库里没学到身份的群还会落到「未归属账号」。
     let section: AccountSection | null = null
     if (accounts.value.length > 0) {
       const acc = accounts.value[0]

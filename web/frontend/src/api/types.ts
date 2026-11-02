@@ -6,7 +6,7 @@ export interface GroupInfo {
   /** 所属工作空间（稳定 ID / 展示名） */
   workspace_id?: string
   workspace_name?: string
-  /** 接收该群的机器人账号；空=无法归属 */
+  /** 本账号的机器人 openid（openid 由账号决定，所有会话同一个值）；空=还没学到 */
   self_id: string
   /** 账号昵称；解析不到时为空 */
   account_name: string
@@ -65,6 +65,15 @@ export interface BotStatus {
   allow_all_groups: boolean
 }
 
+/** 全局图库（image_notes 表）里一张图的描述，与 Message.images 一一对齐 */
+export interface ImageNote {
+  sha?: string
+  size?: number
+  /** 图库里写的描述；空串表示这张图还没描述或描述失败 */
+  note?: string
+  status?: string
+}
+
 export interface Message {
   msg_id: number
   group_id: string
@@ -75,6 +84,8 @@ export interface Message {
   card: string
   content: string
   time: number
+  /** 与 images 一一对齐的图片描述，正文里的 [图片] 占位靠它补出说明 */
+  image_notes?: ImageNote[]
 }
 
 /**

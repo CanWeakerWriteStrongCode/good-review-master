@@ -435,9 +435,8 @@ func TestWorkspace入站时核对昵称改名(t *testing.T) {
 	}
 	// 机器人自己在两个群里的成员行：g1 没设群名片（显示名等于账号名），
 	// g2 设了独立名片——改名时前者要跟着改，后者不能被覆盖。
-	scope.SaveIdentity("g1", "openid-100")
+	scope.SaveSelfUserID("openid-100")
 	scope.SaveMember("g1", "openid-100", "旧名", "旧名")
-	scope.SaveIdentity("g2", "openid-100")
 	scope.SaveMember("g2", "openid-100", "旧名", "专属名片")
 	store.Close()
 
@@ -541,7 +540,7 @@ func TestWorkspace成员名先写members再镜像meta(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scope.SaveIdentity("g1", "openid-100")
+	scope.SaveSelfUserID("openid-100")
 	store.Close()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -851,5 +850,120 @@ func waitMessageContent(t *testing.T, ws *Workspace, messageID, want string) {
 			t.Fatalf("正文没有变成 %q", want)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitSenderID 等异步回填把某条消息的发送者改成 want。
+func waitSenderID(t *testing.T, ws *Workspace, groupID, messageID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		msgs, _, err := ws.State.Messages(groupID, 10)
+		if err != nil {
+			t.Fatalf("读取消息：%v", err)
+		}
+		for _, msg := range msgs {
+			if msg.MessageID == messageID && msg.UserID == want {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 的发送者没有补成 %q", messageID, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestLearnIdentity回填机器人消息 机器人回复出站时拿不到身份，user_id 只能存空串；
+// 学到真实 openid 的那一刻要把账号下所有群的历史都补上，占位值则不能补、也不能覆盖真值。
+func TestLearnIdentity回填机器人消息(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_official_bot_a"},
+		MaxCacheMsg:       10,
+	}
+	m, err := New(func() *config.Config { return cfg }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer m.Close()
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
+	}
+
+	ws.State.SaveMessage(conversation.Message{MessageID: "m1", GroupID: "g1", UserID: "u1", Content: "群友说的", Time: 100})
+	ws.State.SaveMessage(conversation.Message{MessageID: "bot-1", GroupID: "g1", Content: "机器人说的", Time: 200})
+	ws.State.SaveMessage(conversation.Message{MessageID: "bot-2", GroupID: "g2", Content: "别的群也是它说的", Time: 300})
+
+	// 占位值不是身份：既不能回填，也不能把真值冲掉。
+	ws.LearnIdentity(onebot.SentinelSelfID)
+	time.Sleep(100 * time.Millisecond)
+	if msgs, _, _ := ws.State.Messages("g1", 10); len(msgs) == 2 && msgs[0].UserID != "" {
+		t.Fatalf("哨兵不该被写进消息：%+v", msgs[0])
+	}
+
+	// 学到真实 openid：一次把账号下两个群的都补上，别人的不动。
+	ws.LearnIdentity("openid-self")
+	waitSenderID(t, ws, "g1", "bot-1", "openid-self")
+	waitSenderID(t, ws, "g2", "bot-2", "openid-self")
+	if msgs, _, err := ws.State.Messages("g1", 10); err != nil || msgs[1].UserID != "u1" {
+		t.Fatalf("群友的发送者不该被改：%+v, %v", msgs, err)
+	}
+
+	// 之后再来一个占位值，已学到的真值不能被覆盖。
+	ws.LearnIdentity(onebot.SentinelSelfID)
+	if got, _ := ws.State.LoadSelfUserID(); got != "openid-self" {
+		t.Fatalf("占位值不该覆盖已学到的 openid，实际 %q", got)
+	}
+}
+
+// 重置要把学到的身份一起忘掉：ResetData 只清了库，内存里留着的话，
+// LearnIdentity 会把同一个 openid 判成“没变化”，不再写库，重置后的档案就
+// 永远补不回身份，面板与历史消息都会当成没学到过。
+func TestResetAll忘记已学到的身份(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_official_bot_a"},
+		MaxCacheMsg:       10,
+	}
+	m, err := New(func() *config.Config { return cfg }, system,
+		filepath.Join(dir, "prompt_custom.yaml"), nil, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer m.Close()
+	ws, err := m.ResolveOrCreate("qq", AccountKindOfficialBot, "a")
+	if err != nil || ws == nil {
+		t.Fatalf("ResolveOrCreate = %v, %v", ws, err)
+	}
+
+	ws.LearnIdentity("openid-self")
+	if got, _ := ws.State.LoadSelfUserID(); got != "openid-self" {
+		t.Fatalf("学到的身份应落库，实际 %q", got)
+	}
+
+	m.ResetAll()
+	if got, _ := ws.State.LoadSelfUserID(); got != "" {
+		t.Fatalf("重置后库里不该还有身份，实际 %q", got)
+	}
+
+	// 再学到同一个值：内存已经忘了，所以会重新写库，顺带把重置后攒下的空行补上。
+	ws.State.SaveMessage(conversation.Message{MessageID: "bot-9", GroupID: "g1", Content: "重置后它说的", Time: 500})
+	ws.LearnIdentity("openid-self")
+	waitSenderID(t, ws, "g1", "bot-9", "openid-self")
+	if got, _ := ws.State.LoadSelfUserID(); got != "openid-self" {
+		t.Fatalf("重置后重新学到的身份应再次落库，实际 %q", got)
 	}
 }

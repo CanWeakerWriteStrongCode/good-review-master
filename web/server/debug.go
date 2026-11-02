@@ -119,10 +119,11 @@ func (s *Server) handleDebugInject(dbg *debugState) gin.HandlerFunc {
 			gc.Add(msg)
 			if hasWorkspace && view.State != nil {
 				view.State.SaveMessage(msg)
-				// 身份存在 groups.self_user_id 里，真实链路由 LearnIdentity 写。
-				// 测试注入没有那条链路，这里补一次，否则面板拿不到账号分组用的 self_id。
+				// 身份存在 workspace_profile.self_user_id 里（v15 起账号级，不再逐群存），
+				// 真实链路由 LearnIdentity 写。测试注入没有那条链路，这里补一次，
+				// 否则面板拿不到账号分组用的 self_id。
 				if msg.SelfID != "" {
-					view.State.SaveIdentity(body.GroupID, msg.SelfID)
+					view.State.SaveSelfUserID(msg.SelfID)
 				}
 				// 成员表同理：真实链路在处理消息时写，注入跳过了 pipeline，
 				// 这里补一次，否则面板「已收录成员」永远是 0。

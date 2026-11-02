@@ -44,7 +44,7 @@
           </view>
           <text class="msg-time">{{ store.formatTime(msg.time) }}</text>
         </view>
-        <text class="msg-content">{{ msg.content }}</text>
+        <text class="msg-content">{{ contentWithImageNotes(msg) }}</text>
       </view>
     </view>
 
@@ -65,11 +65,37 @@ import { onMounted } from 'vue'
 import { useMessagesStore, isPrivateChat, chatKindLabel } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
 import { useLocale } from '@/composables/useLocale'
+import type { Message } from '@/api/types'
 import AppHeader from '@/components/AppHeader.vue'
 
 const authStore = useAuthStore()
 const store = useMessagesStore()
 const { t } = useLocale()
+
+// 正文里的 [图片] 是入站时后端拼的占位（图没法直接显示），
+// 图库里有描述就把它换成 [图片：描述]，一条消息里多张图按顺序各配各的。
+// 描述可能为空（还没跑评估或评估失败），那种情况保持原样。
+function imagePlaceholder(note: string | undefined): string {
+  const text = (note || '').trim()
+  return text ? t('messages.imageWithNote', { note: text }) : t('messages.imagePlaceholder')
+}
+
+function contentWithImageNotes(msg: Message): string {
+  const notes = (msg.image_notes || []).map((item) => item.note)
+  const placeholder = t('messages.imagePlaceholder')
+  if (!notes.some((note) => (note || '').trim()) || !msg.content.includes(placeholder)) {
+    return msg.content
+  }
+  const parts = msg.content.split(placeholder)
+  let index = 0
+  let text = parts[0]
+  for (let i = 1; i < parts.length; i++) {
+    text += imagePlaceholder(notes[index++]) + parts[i]
+  }
+  // 占位符比图片少（比如图在正文里没有对应段）时，剩下的说明补在末尾，别丢。
+  const rest = notes.slice(index).filter((note) => (note || '').trim())
+  return rest.length ? `${text} ${rest.map(imagePlaceholder).join(' ')}` : text
+}
 
 // uni.navigateTo 在 h5 下会把 query 值再 encodeURIComponent 一次，
 // 拼好的链接里 %3A 会变成 %253A，URLSearchParams 解一次后还会剩一层。

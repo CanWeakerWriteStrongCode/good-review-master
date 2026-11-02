@@ -12,6 +12,7 @@ import (
 
 	"good-review-master/conversation"
 	"good-review-master/logutil"
+	"good-review-master/onebot"
 
 	"gorm.io/gorm"
 )
@@ -34,7 +35,10 @@ const (
 	// v13 group_personas 直接去掉，人格改存 groups.persona_keyword（旧值不搬）。
 	// v14 messages 加 mentions（这条消息 @ 过谁）与 mentions_resolved（正文里还有没有
 	//     "@用户(" 占位），面板与回填靠它们筛出还没换名字的正文。
-	schemaVersion = 14
+	// v15 self_user_id 从 groups 提到 workspace_profile：openid 由账号决定，
+	//     同一个机器人在所有群是同一个值（实测同账号 3 个群一个值），
+	//     学到一个群就该全账号可用，不必逐群等一次 @。
+	schemaVersion = 15
 )
 
 // ensureFile 先以 0600 建出文件再交给驱动：消息原文与昵称属于隐私数据。
@@ -119,7 +123,6 @@ func migrate(db *gorm.DB, path string) error {
 			group_id        TEXT NOT NULL,
 			name            TEXT NOT NULL DEFAULT '',
 			type            TEXT NOT NULL DEFAULT 'group',
-			self_user_id    TEXT NOT NULL DEFAULT '',
 			persona_keyword TEXT NOT NULL DEFAULT '',
 			message_count   INTEGER NOT NULL DEFAULT 0,
 			member_count    INTEGER NOT NULL DEFAULT 0,
@@ -134,6 +137,7 @@ func migrate(db *gorm.DB, path string) error {
 			account_kind    TEXT NOT NULL DEFAULT '',
 			account         TEXT NOT NULL DEFAULT '',
 			name            TEXT NOT NULL DEFAULT '',
+			self_user_id    TEXT NOT NULL DEFAULT '',
 			impl            TEXT NOT NULL DEFAULT '',
 			identity_scheme TEXT NOT NULL DEFAULT '',
 			identity_scope  TEXT NOT NULL DEFAULT '',
@@ -286,7 +290,8 @@ func migrate(db *gorm.DB, path string) error {
 		}
 	}
 	// v12：identities 并进 groups。必须先补列再搬数据，最后才删旧表。
-	if version < 12 {
+	// 新库（version == 0）跳过：这一列 v15 就废弃了，补出来是空的，马上又要删。
+	if version > 0 && version < 12 {
 		if err := ensureColumn(db, "groups", "self_user_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 			return err
 		}
@@ -317,6 +322,20 @@ func migrate(db *gorm.DB, path string) error {
 			}
 		}
 		if err := backfillMentionColumns(db); err != nil {
+			return err
+		}
+	}
+	// v15：机器人 openid 提到账号级，老库里散在各群的值搬一个上来，搬完就把旧列删掉——
+	// 两处留同一个事实，迟早会不一致（某个群留着旧值，别处已经是新的）。
+	// 画像表在老库里没有 self_user_id 列，得先补（CREATE TABLE IF NOT EXISTS 不动已存在的表）。
+	if version < 15 {
+		if err := ensureColumn(db, "workspace_profile", "self_user_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if err := promoteSelfUserID(db); err != nil {
+			return err
+		}
+		if err := dropColumn(db, "groups", "self_user_id"); err != nil {
 			return err
 		}
 	}
@@ -373,16 +392,86 @@ func migrate(db *gorm.DB, path string) error {
 	return nil
 }
 
-func ensureColumn(db *gorm.DB, table, column, ddl string) error {
-	var count int
-	if err := db.Raw(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count).Error; err != nil {
-		return fmt.Errorf("读取 %s 表结构失败：%w", table, err)
+// promoteSelfUserID 把 groups 里学到的机器人 openid 提到账号级（v15 升级）。
+//
+// 同一个账号下各群的值相同，取每账号的第一条真值就行；哨兵值是拿不到身份时的
+// 占位串，不算学到，不能搬——搬上去等于把「不知道」写成了答案。
+// 老库才有 groups.self_user_id，新库直接返回。
+func promoteSelfUserID(db *gorm.DB) error {
+	has, err := hasColumn(db, "groups", "self_user_id")
+	if err != nil || !has {
+		return err
 	}
-	if count > 0 {
+	var rows []struct {
+		WorkspaceID string `gorm:"column:workspace_id"`
+		SelfUserID  string `gorm:"column:self_user_id"`
+	}
+	if err := db.Raw(`SELECT workspace_id, self_user_id FROM groups
+		WHERE self_user_id <> '' ORDER BY workspace_id, group_id`).Scan(&rows).Error; err != nil {
+		return fmt.Errorf("读取旧的机器人身份失败：%w", err)
+	}
+	// 目标行可能还不存在（升级前这个账号一次画像都没写过），补一条空画像兜着。
+	promoted := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if onebot.IsSelfPlaceholder(row.SelfUserID) {
+			continue
+		}
+		if _, ok := promoted[row.WorkspaceID]; ok {
+			continue
+		}
+		promoted[row.WorkspaceID] = row.SelfUserID
+	}
+	for workspaceID, selfUserID := range promoted {
+		if err := db.Exec(`INSERT INTO workspace_profile
+				(workspace_id, self_user_id, extra, created_at, updated_at)
+			VALUES (?, ?, '{}', CAST(strftime('%s','now') AS INTEGER), CAST(strftime('%s','now') AS INTEGER))
+			ON CONFLICT(workspace_id) DO UPDATE SET self_user_id = excluded.self_user_id
+			WHERE workspace_profile.self_user_id = ''`, workspaceID, selfUserID).Error; err != nil {
+			return fmt.Errorf("迁移机器人身份失败：%w", err)
+		}
+	}
+	return nil
+}
+
+// ensureColumn 给已有表补一列（表已经存在时才用；新库直接按建表语句建）。
+func ensureColumn(db *gorm.DB, table, column, ddl string) error {
+	has, err := hasColumn(db, table, column)
+	if err != nil {
+		return err
+	}
+	if has {
 		return nil
 	}
 	if err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl).Error; err != nil {
 		return fmt.Errorf("给 %s 补列 %s 失败：%w", table, column, err)
+	}
+	return nil
+}
+
+// hasColumn 表里有没有这一列（表不存在也算没有）。
+func hasColumn(db *gorm.DB, table, column string) (bool, error) {
+	var count int
+	if err := db.Raw(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&count).Error; err != nil {
+		return false, fmt.Errorf("读取 %s 表结构失败：%w", table, err)
+	}
+	return count > 0, nil
+}
+
+// dropColumn 删掉一列，列或表不存在时直接返回（幂等）。
+// 用 SQLite 3.35 起的 ALTER TABLE DROP COLUMN；项目锁定的驱动版本远高于它。
+func dropColumn(db *gorm.DB, table, column string) error {
+	if !tableExists(db, table) {
+		return nil
+	}
+	has, err := hasColumn(db, table, column)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return nil
+	}
+	if err := db.Exec(`ALTER TABLE ` + table + ` DROP COLUMN ` + column).Error; err != nil {
+		return fmt.Errorf("删除 %s 的列 %s 失败：%w", table, column, err)
 	}
 	return nil
 }

@@ -140,7 +140,9 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 		gc.Add(synced.Message)
 		telemetry.CacheMessages.WithLabelValues(ws.ID, synced.ChatID).Set(float64(gc.Len()))
 		if !synced.Private {
-			ws.LearnIdentity(synced.ChatID, synced.Event.Self.UserID)
+			// openid 是账号级的，私聊与群聊给的是同一个值；这里跟着群聊学，
+			// 学到一次就对所有会话都算数。
+			ws.LearnIdentity(synced.Event.Self.UserID)
 			ws.SyncSelfName(synced.Event.BotID(), synced.ChatID)
 		}
 

@@ -160,6 +160,10 @@ export default {
       labeled: '{name} ({id})',
     },
     senderBot: 'Bot',
+    // Doesn't translate: the backend always writes the Chinese placeholder into
+    // message content, so matching it is what keeps the notes in place.
+    imagePlaceholder: '[图片]',
+    imageWithNote: '[image: {note}]',
     empty: 'No messages in this chat',
   },
 

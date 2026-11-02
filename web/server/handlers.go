@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"sort"
+	"strings"
 
 	"good-review-master/config"
 	"good-review-master/conversation"
@@ -313,10 +314,13 @@ const panelMessageLimit = 500
 func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.View) {
 	groupName := ""
 	groupType := ""
+	selfID := ""
 	if view.State != nil {
 		groupName = view.State.GroupName(groupID)
 		// 详情页顶栏要标出「群聊 / 私聊」，这个标记只认 groups.type。
 		groupType = view.State.GroupType(groupID)
+		// 本账号的机器人 openid（所有群同一个值）：靠它认出哪些消息是它自己说的。
+		selfID = view.State.SelfUserID()
 	}
 	wsID, wsName := view.ID, view.Name
 
@@ -325,6 +329,7 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 		if err != nil {
 			logutil.Warn("读取群消息失败，退回内存缓存", "workspace", wsID, "group", groupID, "err", err)
 		} else {
+			stampSelfNickname(msgs, wsName, selfID)
 			c.JSON(http.StatusOK, APIResponse{
 				Code: 200,
 				Data: gin.H{
@@ -368,6 +373,8 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 		return
 	}
 
+	msgs := gc.GetAll()
+	stampSelfNickname(msgs, wsName, selfID)
 	stats := gc.Stats()
 	c.JSON(http.StatusOK, APIResponse{
 		Code: 200,
@@ -379,11 +386,36 @@ func (s *Server) writeMessages(c *gin.Context, groupID string, view workspace.Vi
 			"workspace_name": wsName,
 			"self_id":        view.Account,
 			"account_name":   wsName,
-			"messages":       gc.GetAll(),
+			"messages":       msgs,
 			"total":          stats.Count,
 			"empty":          stats.Count == 0,
 		},
 	})
+}
+
+// stampSelfNickname 给机器人自己说的话补上发送者昵称。
+//
+// 两类行都要认：回填之前 user_id 是空的（出站时拿不到身份，只能存空串），
+// 回填之后 user_id 等于这个账号的 openid——openid 是账号级的，各群同一个值。
+// 他们的名字都不该只靠 members——那里存的是群名片，也可能压根没有这一行。
+//
+// 空发送者不能一律算机器人：入站时就没带 user_id 的怪消息也是空的，所以还要
+// message_id 带 bot- 前缀（出站回复的命名，见 speech.recordSelfReply；
+// state.BackfillSelfUserID 用的是同一条判据）。
+//
+// 名字取工作空间当前昵称，而不是回复入库时的快照：机器人改名后，
+// 它以前说过的话也该跟着显示新名字——昵称是会在平台侧变的运行时信息。
+func stampSelfNickname(msgs []conversation.Message, botName, selfID string) {
+	if botName == "" {
+		return
+	}
+	for i := range msgs {
+		learned := selfID != "" && msgs[i].UserID == selfID
+		pending := msgs[i].UserID == "" && strings.HasPrefix(msgs[i].MessageID, "bot-")
+		if learned || pending {
+			msgs[i].Nickname = botName
+		}
+	}
 }
 
 func (s *Server) handleAPIStatus() gin.HandlerFunc {

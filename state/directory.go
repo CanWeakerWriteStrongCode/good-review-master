@@ -1,7 +1,8 @@
 package state
 
 // members / groups / member_info_history / group_info_history：
-// 这个群叫什么、群里谁叫什么、机器人自己的号是哪个（groups.self_user_id）。
+// 这个群叫什么、群里谁叫什么、这个账号的机器人是哪个 openid
+// （workspace_profile.self_user_id，v15 起从 groups 提上来——它对所有群都一样）。
 //
 // 读路径先走 Ristretto（key 见 memberKVKey / groupKVKey），miss 再回源。
 // 写路径先写历史再更新当前值，不依赖跨表事务；历史表的 source_message_id
@@ -41,9 +42,6 @@ type groupRow struct {
 	// Type 会话类型：group = 群聊，private = 私聊。
 	// 私聊在库里的 group_id 是 private:<openid>，和群号一样按会话存。
 	Type string `gorm:"column:type"`
-	// SelfUserID 本群学到的机器人 user_id（QQ 官方是群作用域 openid）。
-	// 用来在 members 里认出哪一行是机器人自己；哨兵值不可用于 @ 比较。
-	SelfUserID string `gorm:"column:self_user_id"`
 	// PersonaKeyword 本群当前人格的源关键字（#切换人格 设置，空串表示没有）。
 	// 只由 persona.go 读写，这里列出来是为了让结构体和表列对得上。
 	PersonaKeyword string `gorm:"column:persona_keyword"`
@@ -86,42 +84,72 @@ type GroupInfoHistory struct {
 
 func (GroupInfoHistory) TableName() string { return "group_info_history" }
 
-// SaveIdentity 记录本群学到的机器人 user_id（可能是哨兵）。
+// SaveSelfUserID 记住这个账号的机器人 openid。
 //
-// 存在 groups.self_user_id 里：身份和会话档案都是每会话一行，没必要分两张表。
-// updated_at 写 0，表示“档案还没写过”，不会把档案的更新时间冲掉。
-func (s *Scope) SaveIdentity(groupID, selfUserID string) {
+// 存在 workspace_profile 里，不逐群存：openid 是账号维度的事实——同一个机器人在
+// 所有群的 openid 相同（实测同账号 3 个群一个值），学到一个群就等于全账号都有，
+// 不必等每个群各 @ 一次。调用方负责别把哨兵值写进来（见 workspace.LearnIdentity）。
+func (s *Scope) SaveSelfUserID(selfUserID string) {
 	if s == nil || s.store == nil || selfUserID == "" || s.store.closed.Load() {
 		return
 	}
-	if err := s.store.db.Exec(`INSERT INTO groups
-			(workspace_id, group_id, type, self_user_id, extra, updated_at)
-		VALUES (?, ?, CASE WHEN ? LIKE 'private:%' THEN 'private' ELSE 'group' END, ?, '{}', 0)
-		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
-			self_user_id = excluded.self_user_id`,
-		s.workspaceID, groupID, groupID, selfUserID).Error; err != nil {
-		s.store.noteFailure("保存身份", err)
+	// UPSERT：画像行一般早就在了，但调试注入或纯内存跑起来时可能还没有。
+	// 值没变就不更新（WHERE 只放行真变化的那种），免得每条消息都写一遍。
+	if err := s.store.db.Exec(`INSERT INTO workspace_profile
+			(workspace_id, self_user_id, extra, created_at, updated_at)
+		VALUES (?, ?, '{}', ?, ?)
+		ON CONFLICT(workspace_id) DO UPDATE SET self_user_id = excluded.self_user_id
+		WHERE workspace_profile.self_user_id <> excluded.self_user_id`,
+		s.workspaceID, selfUserID, time.Now().Unix(), time.Now().Unix()).Error; err != nil {
+		s.store.noteFailure("保存机器人身份", err)
 	}
 }
 
-// LoadIdentities 返回各会话学到的机器人 user_id（读 groups 表）。
-func (s *Scope) LoadIdentities() (map[string]string, error) {
-	if s == nil || s.store == nil {
-		return nil, nil
+// LoadSelfUserID 读学到的机器人 openid；没学到时返回空串，不是错误。
+func (s *Scope) LoadSelfUserID() (string, error) {
+	if s == nil || s.store == nil || s.store.closed.Load() {
+		return "", nil
 	}
-	var rows []struct {
-		GroupID    string `gorm:"column:group_id"`
-		SelfUserID string `gorm:"column:self_user_id"`
+	var selfUserID string
+	err := s.store.db.Raw(`SELECT self_user_id FROM workspace_profile WHERE workspace_id = ?`,
+		s.workspaceID).Scan(&selfUserID).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		s.store.noteFailure("读取机器人身份", err)
+		return "", err
 	}
-	if err := s.store.db.Raw(`SELECT group_id, self_user_id FROM groups
-		WHERE workspace_id = ? AND self_user_id <> ''`, s.workspaceID).Scan(&rows).Error; err != nil {
-		return nil, err
+	return selfUserID, nil
+}
+
+// SelfUserID 同 LoadSelfUserID，但失败只记日志、返回空串：面板调用不该因此报错。
+//
+// 面板拿它认出「哪些消息是机器人自己说的」：那一行的发送者名字不能只靠 members，
+// 那里存的是群名片、也可能根本没有这一行。
+func (s *Scope) SelfUserID() string {
+	selfUserID, _ := s.LoadSelfUserID()
+	return selfUserID
+}
+
+// BackfillSelfUserID 把这个账号下机器人自己发的消息补上发送者 ID，返回改了多少行。
+//
+// 出站回复在没有 self.user_id 时只能存空串（见 onebot.Event.BotID），
+// 身份学到的那一刻再回来补。openid 是全账号通用的，所以一次能把所有群的都补掉。
+//
+// WHERE 两个条件都不能少：
+//   - user_id 为空：已经有发送者的消息绝不覆盖，那是别人的话；
+//   - message_id 以 bot- 开头：出站回复的 ID 都带这个前缀（见 speech.recordSelfReply），
+//     入站消息的 ID 来自平台，这样不会把「入站时没给 user_id 的怪消息」也认成机器人。
+func (s *Scope) BackfillSelfUserID(selfUserID string) (int64, error) {
+	if s == nil || s.store == nil || selfUserID == "" || s.store.closed.Load() {
+		return 0, nil
 	}
-	out := make(map[string]string, len(rows))
-	for _, row := range rows {
-		out[row.GroupID] = row.SelfUserID
+	result := s.store.db.Model(&messageRow{}).
+		Where("workspace_id = ? AND user_id = '' AND message_id LIKE 'bot-%'", s.workspaceID).
+		Update("user_id", selfUserID)
+	if result.Error != nil {
+		s.store.noteFailure("回填机器人发送者ID", result.Error)
+		return 0, result.Error
 	}
-	return out, nil
+	return result.RowsAffected, nil
 }
 
 // MemberInfo 一次成员信息写入。Source/SourceMessageID 用于历史去重与回溯。
@@ -352,7 +380,7 @@ func (s *Scope) SaveGroupInfo(groupID, name, source, sourceMessageID, extra stri
 	if effectiveName == "" {
 		effectiveName = current.Name
 	}
-	// 行可能已经被身份写入建出来了（self_user_id 先到、群名后到），
+	// 行可能已经被消息/成员触发器建出来了（先有消息、后有群名），
 	// 所以“是不是新行”看这次查询找没找到，不看 updated_at。
 	extraChanged := !exists || (extra != "{}" && extra != current.Extra)
 	changed := !exists || effectiveName != current.Name || extraChanged

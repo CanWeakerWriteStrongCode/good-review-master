@@ -156,7 +156,7 @@ func Test锚点成员人格与元信息(t *testing.T) {
 	scope := st.Scope("qq_a")
 
 	scope.SaveAnchor("g1", conversation.LLMAnchor{Start: "10", LastSent: "20"})
-	scope.SaveIdentity("g1", "openid-a")
+	scope.SaveSelfUserID("openid-a")
 	scope.SaveMember("g1", "u1", "张三", "老张")
 	scope.SaveGroupPersona("g1", "锐评下")
 	if err := scope.SaveProfile(WorkspaceProfile{Name: "小助理"}); err != nil {
@@ -181,9 +181,8 @@ func Test锚点成员人格与元信息(t *testing.T) {
 	if age := time.Since(anchors["g1"].At); age < 0 || age > time.Minute {
 		t.Fatalf("At 应为写入时刻，得到 %v（距今 %v）", anchors["g1"].At, age)
 	}
-	identities, err := scope.LoadIdentities()
-	if err != nil || identities["g1"] != "openid-a" {
-		t.Fatalf("identities = %+v, %v", identities, err)
+	if selfUserID, err := scope.LoadSelfUserID(); err != nil || selfUserID != "openid-a" {
+		t.Fatalf("self_user_id = %q, %v", selfUserID, err)
 	}
 	members, err := scope.LoadMembers()
 	if err != nil || members["g1"]["u1"] != "老张" {
@@ -507,8 +506,9 @@ func TestV10升级回填群统计(t *testing.T) {
 }
 
 // TestV11升级把身份并进群档案 v11 之前 identities 是单独一张表，主键和 groups
-// 一样都是 (workspace_id, group_id)。v12 并成 groups.self_user_id：升级时既要把值搬过来，
-// 也要给「只有身份、没有消息」的会话补出行，否则升级后身份就丢了。
+// 一样都是 (workspace_id, group_id)。v12 并成 groups.self_user_id，v15 又把身份
+// 提到 workspace_profile.self_user_id（openid 是账号级的，各群同一个值）。
+// 升级时这两步得连起来：身份要一路搬到账号级，只有身份没有消息的会话也别丢档案行。
 func TestV11升级把身份并进群档案(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
@@ -564,18 +564,25 @@ func TestV11升级把身份并进群档案(t *testing.T) {
 	if len(byID) != 2 {
 		t.Fatalf("升级后应有 g1 和 g9 两行：%+v", byID)
 	}
-	// 原有的计数和群名不能被身份搬移冲掉。
+	// 原有的计数和群名不能被身份搬移冲掉。身份现在是账号级的：两个群读到的都是
+	// promoteSelfUserID 挑出来的那一条（按 group_id 序取第一个真值，即 g1 的 openid-a）。
 	if g := byID["g1"]; g.SelfID != "openid-a" || g.Name != "群一" ||
 		g.MessageCount != 2 || g.MemberCount != 1 || g.LastTime != 300 {
 		t.Fatalf("g1 迁移不对：%+v", g)
 	}
-	if g := byID["g9"]; g.SelfID != "openid-x" || g.Type != "group" || g.MessageCount != 0 {
+	if g := byID["g9"]; g.SelfID != "openid-a" || g.Type != "group" || g.MessageCount != 0 {
 		t.Fatalf("g9 补行不对：%+v", g)
 	}
 
-	identities, err := st.Scope("qq_a").LoadIdentities()
-	if err != nil || identities["g1"] != "openid-a" || identities["g9"] != "openid-x" {
-		t.Fatalf("identities = %+v, %v", identities, err)
+	if selfUserID, err := st.Scope("qq_a").LoadSelfUserID(); err != nil || selfUserID != "openid-a" {
+		t.Fatalf("self_user_id = %q, %v", selfUserID, err)
+	}
+
+	// 旧列搬完就该删掉：留着就是同一个事实的两份副本，迟早会不一致。
+	var oldColumn int
+	st.db.Raw(`SELECT COUNT(*) FROM pragma_table_info('groups') WHERE name = 'self_user_id'`).Scan(&oldColumn)
+	if oldColumn != 0 {
+		t.Fatal("groups.self_user_id 应已删掉")
 	}
 
 	// 档案更新时间不该被身份覆盖（g1 原来就是 500）。
@@ -587,8 +594,8 @@ func TestV11升级把身份并进群档案(t *testing.T) {
 }
 
 // TestV12升级去掉群人格表 v13 把 group_personas 整张表去掉，人格改存 groups.persona_keyword。
-// 旧表里的关键字不搬：升级后那几行直接没了，但群档案本身（群名/身份/计数）必须原样留着，
-// 补出来的列得能正常读写。
+// 旧表里的关键字不搬：升级后那几行直接没了，但群档案本身（群名/计数）必须原样留着，
+// 补出来的列得能正常读写；同一轮升级里 v15 还会把 groups.self_user_id 提到账号级。
 func TestV12升级去掉群人格表(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
@@ -644,15 +651,18 @@ func TestV12升级去掉群人格表(t *testing.T) {
 		t.Fatalf("升级后不应有人格残留：%+v, %v", personas, err)
 	}
 
-	// 原有档案不能被补列冲掉。
-	var name, selfID string
+	// 原有档案不能被补列冲掉；身份同时被提到账号级（v15），groups 上的旧列删掉。
+	var name string
 	var messages, last int64
-	if err := st.db.Raw(`SELECT name, self_user_id, message_count, last_ts FROM groups
-		WHERE workspace_id = 'qq_a' AND group_id = 'g1'`).Row().Scan(&name, &selfID, &messages, &last); err != nil {
+	if err := st.db.Raw(`SELECT name, message_count, last_ts FROM groups
+		WHERE workspace_id = 'qq_a' AND group_id = 'g1'`).Row().Scan(&name, &messages, &last); err != nil {
 		t.Fatalf("读 g1 档案失败：%v", err)
 	}
-	if name != "群一" || selfID != "openid-a" || messages != 2 || last != 300 {
-		t.Fatalf("g1 升级后档案不对：name=%q self=%q messages=%d last=%d", name, selfID, messages, last)
+	if name != "群一" || messages != 2 || last != 300 {
+		t.Fatalf("g1 升级后档案不对：name=%q messages=%d last=%d", name, messages, last)
+	}
+	if selfUserID, err := scope.LoadSelfUserID(); err != nil || selfUserID != "openid-a" {
+		t.Fatalf("self_user_id = %q, %v", selfUserID, err)
 	}
 
 	// 补出来的列能正常读写：#切换人格 → 读回来 → #取消人格，档案行留着。
@@ -671,13 +681,14 @@ func TestV12升级去掉群人格表(t *testing.T) {
 	}
 }
 
-// Test身份与群档案共用一行 并表之后同一行有两个写入者：哪个先到都不能清掉对方，
-// 而且群名第一次写入仍然要记进历史（判断“新行”不能靠 updated_at）。
-func Test身份与群档案共用一行(t *testing.T) {
+// Test身份与群档案各写各的 身份 v15 起存在 workspace_profile、群档案还在 groups，
+// 两张表谁先写都不能影响另一方：写身份不能刷新群档案的 updated_at，写群名也不能
+// 把身份冲掉——而且身份是账号级的，每个群读到的都是同一个值。
+func Test身份与群档案各写各的(t *testing.T) {
 	_, scope := openTemp(t)
 
 	// 顺序一：身份先到，群名后到。
-	scope.SaveIdentity("g1", "openid-a")
+	scope.SaveSelfUserID("openid-a")
 	changed, err := scope.SaveGroupInfo("g1", "群一", "group_info", "", "{}")
 	if err != nil || !changed {
 		t.Fatalf("首次写群名应记为变更：changed=%v err=%v", changed, err)
@@ -693,7 +704,7 @@ func Test身份与群档案共用一行(t *testing.T) {
 	// 先把 updated_at 压成一个人造值，免得和“同一秒内写入”混淆。
 	scope.store.db.Exec(`UPDATE groups SET updated_at = 12345 WHERE workspace_id = ? AND group_id = 'g1'`,
 		scope.workspaceID)
-	scope.SaveIdentity("g1", "openid-b")
+	scope.SaveSelfUserID("openid-b")
 	if name := scope.GroupName("g1"); name != "群一" {
 		t.Fatalf("写身份把群名冲掉了：%q", name)
 	}
@@ -708,7 +719,7 @@ func Test身份与群档案共用一行(t *testing.T) {
 	if _, err := scope.SaveGroupInfo("g2", "群二", "group_info", "", "{}"); err != nil {
 		t.Fatal(err)
 	}
-	scope.SaveIdentity("g2", "openid-c")
+	scope.SaveSelfUserID("openid-c")
 	if name := scope.GroupName("g2"); name != "群二" {
 		t.Fatalf("群名 = %q", name)
 	}
@@ -721,7 +732,9 @@ func Test身份与群档案共用一行(t *testing.T) {
 	for _, item := range list {
 		byID[item.GroupID] = item
 	}
-	if byID["g1"].SelfID != "openid-b" || byID["g1"].Name != "群一" {
+	// 同一个账号下所有会话共用一条身份：g1 学到的 openid-b 会被后来的 openid-c 覆盖，
+	// 两个群一起变。
+	if byID["g1"].SelfID != "openid-c" || byID["g1"].Name != "群一" {
 		t.Fatalf("g1 = %+v", byID["g1"])
 	}
 	if byID["g2"].SelfID != "openid-c" || byID["g2"].Name != "群二" {

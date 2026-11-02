@@ -15,7 +15,7 @@ func TestGroupOverviews按群汇总(t *testing.T) {
 	scope.SaveMessage(conversation.Message{GroupID: "g1", MessageID: "2", UserID: "u2", Content: "b", Time: 300})
 	scope.SaveMessage(conversation.Message{GroupID: "g2", MessageID: "3", UserID: "u1", Content: "c", Time: 200})
 	scope.SaveGroup("g1", "群一")
-	scope.SaveIdentity("g1", "openid-a")
+	scope.SaveSelfUserID("openid-a")
 	if _, err := scope.SaveMemberInfo(MemberInfo{GroupID: "g1", UserID: "u1"}); err != nil {
 		t.Fatal(err)
 	}

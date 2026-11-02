@@ -123,7 +123,9 @@ type Workspace struct {
 	nameSyncAt time.Time
 
 	identityMu sync.RWMutex
-	identities map[string]string // group_id -> 本群学到的 self.user_id（避免每条消息都写库）
+	// selfUserID 这个账号的机器人 openid。openid 由账号决定，同一个机器人在
+	// 所有群是同一个值，所以只存一份（见 state.SaveSelfUserID），学到一次全群可用。
+	selfUserID string
 
 	groupMu sync.RWMutex
 	groups  map[string]string // group_id -> 群名；空串表示已建档但平台没给名字
@@ -359,7 +361,6 @@ func (m *Manager) load(id, platform, accountKind, account string) (*Workspace, e
 		State:       st,
 		ob:          m.obClient.For(id),
 		ctx:         m.shutdownCtx,
-		identities:  make(map[string]string),
 		groups:      make(map[string]string),
 	}
 	ws.members = newDirectory(ws.ob, st)
@@ -428,14 +429,15 @@ func (w *Workspace) restore(cfg *config.Config) {
 			w.Cache.SetLLMAnchor(group, anchor)
 		}
 	}
-	if identities, err := w.State.LoadIdentities(); err != nil {
-		logutil.Warn("读取群内机器人身份失败", "workspace", w.ID, "err", err)
-	} else {
+	if selfUserID, err := w.State.LoadSelfUserID(); err != nil {
+		logutil.Warn("读取机器人身份失败", "workspace", w.ID, "err", err)
+	} else if selfUserID != "" {
 		w.identityMu.Lock()
-		for groupID, selfID := range identities {
-			w.identities[groupID] = selfID
-		}
+		w.selfUserID = selfUserID
 		w.identityMu.Unlock()
+		// 身份是以前学到的，对应的空 user_id 可能还没补上（回填比学习晚上线，
+		// 或上次进程在回填前退出），启动时补一遍。
+		w.backfillSelfMessages(selfUserID)
 	}
 	if groups, err := w.State.LoadGroups(); err != nil {
 		logutil.Warn("读取群档案失败", "workspace", w.ID, "err", err)
@@ -546,21 +548,16 @@ func (w *Workspace) SyncSelfName(selfID, groupID string) {
 
 // renameSelfInMembers 把机器人自己在各群成员目录里的旧名改掉。
 //
-// 只处理学到过 self openid 的群：没有身份的群无法区分哪一行是机器人，
-// 按名字猜会误改群友。内存与 members 表一起改，否则 @ 渲染还会用旧名。
+// openid 是账号级的，同一个 id 在每群都指同一个机器人，所以目录里出现过的群
+// 都要看一眼，有那一行的才动。内存与 members 表一起改，否则 @ 渲染还会用旧名。
 func (w *Workspace) renameSelfInMembers(oldName, newName string) {
 	w.identityMu.RLock()
-	targets := make(map[string]string, len(w.identities))
-	for groupID, selfID := range w.identities {
-		targets[groupID] = selfID
-	}
+	selfID := w.selfUserID
 	w.identityMu.RUnlock()
-	for groupID, selfID := range targets {
-		if onebot.IsSelfPlaceholder(selfID) {
-			continue
-		}
-		w.members.rename(groupID, selfID, oldName, newName)
+	if selfID == "" {
+		return
 	}
+	w.members.renameSelfEverywhere(selfID, oldName, newName)
 }
 
 // Snapshot 返回带上本工作空间昵称的配置快照。
@@ -600,20 +597,47 @@ func (w *Workspace) setName(name string) {
 // Nickname 返回当前生效的昵称（与 Name 相同，保留给既有调用方）。
 func (w *Workspace) Nickname() string { return w.Name() }
 
-// LearnIdentity 记住本群可比较的机器人 user_id（QQ 官方是群作用域 openid）。
-// 值没变化时不写库：这个函数每条消息都会调用。
-func (w *Workspace) LearnIdentity(groupID, selfUserID string) {
-	if groupID == "" || selfUserID == "" {
+// LearnIdentity 记住这个账号的机器人 openid。
+//
+// openid 由账号决定，同一个机器人在所有群是同一个值（实测同账号 3 个群一个值），
+// 所以学会一次就全账号可用，不用等每个群各 @ 一次（见 state.SaveSelfUserID）。
+//
+// 值没变化时立刻返回：这个函数每条入站消息都会调用。
+// 学到真值的这一刻顺手回填历史：机器人自己的回复出站时拿不到身份，
+// messages 里 user_id 只能存空串，一直在等这个 ID。
+func (w *Workspace) LearnIdentity(selfUserID string) {
+	if selfUserID == "" || onebot.IsSelfPlaceholder(selfUserID) {
+		// 占位值不是身份：存下来只会把已经学到的真值冲掉。
 		return
 	}
 	w.identityMu.Lock()
-	if w.identities[groupID] == selfUserID {
-		w.identityMu.Unlock()
+	changed := w.selfUserID != selfUserID
+	w.selfUserID = selfUserID
+	w.identityMu.Unlock()
+	if !changed {
 		return
 	}
-	w.identities[groupID] = selfUserID
-	w.identityMu.Unlock()
-	w.State.SaveIdentity(groupID, selfUserID)
+	if w.State != nil {
+		w.State.SaveSelfUserID(selfUserID)
+		w.backfillSelfMessages(selfUserID)
+	}
+}
+
+// backfillSelfMessages 把这个账号下机器人自己发的消息补上发送者 ID。
+//
+// 放协程里跑：这条 UPDATE 不该挡住消息处理；openid 是全账号通用的，
+// 一次就把每个群里攒下的空行都补掉了。
+func (w *Workspace) backfillSelfMessages(selfUserID string) {
+	go func() {
+		rows, err := w.State.BackfillSelfUserID(selfUserID)
+		if err != nil {
+			logutil.Warn("回填机器人自己的消息 ID 失败", "workspace", w.ID, "err", err)
+			return
+		}
+		if rows > 0 {
+			logutil.Info("已回填机器人自己的消息 ID", "workspace", w.ID, "rows", rows)
+		}
+	}()
 }
 
 // DisplayNameFor 返回某群里某个用户的显示名（用于把 mention 渲染成 @昵称(ID)）。
@@ -906,6 +930,12 @@ func (m *Manager) Close() {
 func (m *Manager) ResetAll() {
 	for _, ws := range m.snapshot() {
 		ws.Cache.ResetAll()
+		// 身份也一起忘掉：ResetData 只清了库，内存里还留着的话，下次学到同一个
+		// openid 会被 LearnIdentity 判成“没变化”，于是不再写库——重置后的档案
+		// 就永远补不回身份了。
+		ws.identityMu.Lock()
+		ws.selfUserID = ""
+		ws.identityMu.Unlock()
 		if ws.State == nil {
 			continue
 		}
@@ -1069,6 +1099,25 @@ func (d *directory) rename(groupID, userID, oldName, newName string) {
 	}
 }
 
+// renameSelfEverywhere 机器人改名：目录里出现过的每个群都改它自己那一行。
+//
+// openid 是账号级的，同一个 id 在每群都指同一个机器人，所以不用逐群判断
+// "这个群认不认识它"；没有那一行的群也会补一行，@ 渲染才不会回退成「用户」。
+func (d *directory) renameSelfEverywhere(userID, oldName, newName string) {
+	if userID == "" || newName == "" {
+		return
+	}
+	d.mu.RLock()
+	groups := make([]string, 0, len(d.names))
+	for groupID := range d.names {
+		groups = append(groups, groupID)
+	}
+	d.mu.RUnlock()
+	for _, groupID := range groups {
+		d.rename(groupID, userID, oldName, newName)
+	}
+}
+
 // learn 用消息里直接拿到的显示名更新目录（来源：AstrBot 透传的 sender）。
 // 与 fetchAsync 共用同一套写入规则：只有名字确实变化才写内存与库，避免每条消息一次 DB 写。
 // 返回是否真的写入了一个新名字（调用方据此决定要不要补全历史消息的昵称）。
@@ -1166,14 +1215,14 @@ func (w *Workspace) onChangeMemberName(groupID, userID, name string) {
 		return
 	}
 	w.scheduleMentionBackfill(groupID)
-	w.mirrorSelfName(groupID, userID, name)
+	w.mirrorSelfName(userID, name)
 }
 
 // mirrorSelfName 机器人自己在群里的名字变了，同步到工作空间展示名；
 // 群友的名字只留在 members，不能动 meta。
-func (w *Workspace) mirrorSelfName(groupID, userID, name string) {
+func (w *Workspace) mirrorSelfName(userID, name string) {
 	w.identityMu.RLock()
-	selfID := w.identities[groupID]
+	selfID := w.selfUserID
 	w.identityMu.RUnlock()
 	if selfID == "" || selfID != userID || w.Name() == name {
 		return

@@ -18,4 +18,16 @@ page {
   color: #333;
   line-height: 1.6;
 }
+
+/*
+ * uni 的 H5 基础样式把 html/body 设成 user-select: none，那是为原生 App 手感准备的。
+ * 这套面板是在浏览器里读记录、复制群号和消息正文的，必须能选中。
+ * 直接命中 page / text 的规则优先于 html/body 继承下来的 none，不用 !important。
+ */
+page,
+text {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  user-select: text;
+}
 </style>

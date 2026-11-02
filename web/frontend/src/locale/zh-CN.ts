@@ -163,6 +163,10 @@ export default {
       labeled: '{name}（{id}）',
     },
     senderBot: '机器人',
+    // 后端把图片段渲染进正文时用的占位，前端按它认出每张图的位置
+    imagePlaceholder: '[图片]',
+    // 消息正文里 [图片] 占位后面补的图库描述
+    imageWithNote: '[图片：{note}]',
     empty: '该群暂无消息记录',
   },
 
