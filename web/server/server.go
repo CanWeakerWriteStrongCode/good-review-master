@@ -82,6 +82,8 @@ func New(cfg config.Snapshot, obClient *onebot.Client, workspaces *workspace.Man
 		apiGroup.GET("/workspaces", s.handleAPIWorkspaces())
 		// 全部账号的会话平铺（面板「全部会话」视图）
 		apiGroup.GET("/sessions", s.handleAPISessions())
+		// 异常现场：窗口太小、阶段重试超限等（alerts 表）
+		apiGroup.GET("/alerts", s.handleAPIAlerts())
 		apiGroup.GET("/workspaces/:wid/groups", s.handleAPIWorkspaceGroups())
 		apiGroup.GET("/workspaces/:wid/groups/:gid", s.handleAPIWorkspaceMessages())
 		// 旧接口：仅单工作空间时保留（多工作空间下返回 400，避免两个账号的数据混排）

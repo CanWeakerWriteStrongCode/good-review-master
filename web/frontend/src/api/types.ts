@@ -19,6 +19,20 @@ export interface GroupInfo {
   has_messages: boolean
 }
 
+/** 一条报警（state.db 的 alerts 表）：放弃回复、阶段重试超限这类异常现场 */
+export interface AlertItem {
+  id: number
+  workspace_id: string
+  /** 账号展示名；账号已不在运行时为空 */
+  workspace_name: string
+  /** 分类：window_too_small、dead_letter_<stage> */
+  kind: string
+  /** 发生时的完整现场 JSON */
+  detail: string
+  created_at: number
+  created_at_text: string
+}
+
 /** 一个机器人账号的工作空间汇总 */
 export interface WorkspaceInfo {
   id: string

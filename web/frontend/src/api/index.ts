@@ -1,4 +1,4 @@
-import type { AccountInfo, GroupInfo, BotStatus, Message, WorkspaceInfo, APIResponse } from './types'
+import type { AccountInfo, AlertItem, GroupInfo, BotStatus, Message, WorkspaceInfo, APIResponse } from './types'
 
 export const BASE_URL = '/api'
 
@@ -49,6 +49,8 @@ export interface GroupsData {
 export interface WorkspacesData {
   workspaces: WorkspaceInfo[]
   bot_info: BotStatus
+  /** 带 ?with_groups=1 时才有：账号 id → 该账号的会话列表 */
+  groups_by_workspace?: Record<string, GroupInfo[]>
 }
 
 export interface WorkspaceGroupsData {
@@ -62,6 +64,12 @@ export interface WorkspaceGroupsData {
 export interface SessionsData {
   sessions: GroupInfo[]
   bot_info: BotStatus
+}
+
+/** 最近的报警；total 是全库总条数，可能大于 alerts.length */
+export interface AlertsData {
+  alerts: AlertItem[]
+  total: number
 }
 
 export interface MessagesData {
@@ -94,8 +102,10 @@ export function fetchMessages(groupId: string): Promise<MessagesData> {
   return request<MessagesData>(`/groups/${groupId}`)
 }
 
-export function fetchWorkspaces(): Promise<WorkspacesData> {
-  return request<WorkspacesData>('/workspaces')
+// withGroups 为 true 时把每个账号的会话列表一并拉回来（groups_by_workspace）。
+// 面板要同时显示账号汇总和账号下的群，带上它只需 1 个请求、每个账号查 1 次库。
+export function fetchWorkspaces(withGroups = false): Promise<WorkspacesData> {
+  return request<WorkspacesData>(withGroups ? '/workspaces?with_groups=1' : '/workspaces')
 }
 
 export function fetchWorkspaceGroups(workspaceId: string): Promise<WorkspaceGroupsData> {
@@ -104,6 +114,10 @@ export function fetchWorkspaceGroups(workspaceId: string): Promise<WorkspaceGrou
 
 export function fetchSessions(): Promise<SessionsData> {
   return request<SessionsData>('/sessions')
+}
+
+export function fetchAlerts(limit = 50): Promise<AlertsData> {
+  return request<AlertsData>(`/alerts?limit=${limit}`)
 }
 
 export function fetchWorkspaceMessages(workspaceId: string, groupId: string): Promise<MessagesData> {

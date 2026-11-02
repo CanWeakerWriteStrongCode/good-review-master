@@ -2,7 +2,7 @@
 import { onLaunch } from '@dcloudio/uni-app'
 
 onLaunch(() => {
-  console.log('不是好评大师 监控面板启动')
+  console.log('海豚智章 监控面板启动')
 })
 </script>
 

@@ -1,5 +1,7 @@
 <template>
   <view class="page">
+    <AppHeader title="消息详情" back />
+
     <!-- 群信息头 -->
     <view class="msg-header">
       <view class="header-main">
@@ -47,6 +49,7 @@
 import { onMounted } from 'vue'
 import { useMessagesStore, sessionLabel } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
+import AppHeader from '@/components/AppHeader.vue'
 
 const authStore = useAuthStore()
 const store = useMessagesStore()

@@ -52,8 +52,45 @@ func (s *Scope) GroupOverviews() ([]GroupOverview, error) {
 	return out, nil
 }
 
+// AllGroupOverviews 一条 SQL 读回多个工作空间的会话汇总，按 workspace_id 分组。
+//
+// 面板首屏要同时显示每个账号的会话列表，逐个账号调 GroupOverviews 就是 N 条
+// 只差一个 WHERE 值的 SQL。这里用 IN 一次查完再在内存里分组，账号再多也只有一次往返。
+// 请求里没有的账号不会出现在返回的 map 里，调用方按 nil 处理即可。
+func (s *Store) AllGroupOverviews(workspaceIDs []string) (map[string][]GroupOverview, error) {
+	if s == nil || s.closed.Load() || len(workspaceIDs) == 0 {
+		return nil, nil
+	}
+
+	var rows []groupOverviewRow
+	if err := s.db.Raw(`
+		SELECT workspace_id, group_id, name, type, self_user_id, message_count, member_count, last_ts
+		FROM groups
+		WHERE workspace_id IN ?
+		ORDER BY workspace_id, group_id`, workspaceIDs).Scan(&rows).Error; err != nil {
+		s.noteFailure("汇总多个工作空间的会话", err)
+		return nil, err
+	}
+
+	out := make(map[string][]GroupOverview, len(workspaceIDs))
+	for _, row := range rows {
+		out[row.WorkspaceID] = append(out[row.WorkspaceID], GroupOverview{
+			GroupID:      row.GroupID,
+			Name:         row.Name,
+			Type:         row.Type,
+			MessageCount: row.MessageCount,
+			MemberCount:  row.MemberCount,
+			LastTime:     row.LastTS,
+			SelfID:       row.SelfUserID,
+		})
+	}
+	return out, nil
+}
+
 // groupOverviewRow 是汇总查询的扫描目标。
+// WorkspaceID 只在批量查询里 SELECT，单账号查询时留空。
 type groupOverviewRow struct {
+	WorkspaceID  string `gorm:"column:workspace_id"`
 	GroupID      string `gorm:"column:group_id"`
 	Name         string `gorm:"column:name"`
 	Type         string `gorm:"column:type"`

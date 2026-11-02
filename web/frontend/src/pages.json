@@ -8,6 +8,22 @@
       }
     },
     {
+      "path": "pages/monitor/index",
+      "style": {
+        "navigationBarTitleText": "监控",
+        "navigationBarBackgroundColor": "#1a1a2e",
+        "navigationBarTextStyle": "white"
+      }
+    },
+    {
+      "path": "pages/alerts/index",
+      "style": {
+        "navigationBarTitleText": "报警",
+        "navigationBarBackgroundColor": "#1a1a2e",
+        "navigationBarTextStyle": "white"
+      }
+    },
+    {
       "path": "pages/groups/index",
       "style": {
         "navigationBarTitleText": "群列表",
@@ -26,16 +42,17 @@
     {
       "path": "pages/diagnostics/index",
       "style": {
-        "navigationBarTitleText": "运行时诊断",
+        "navigationBarTitleText": "诊断",
         "navigationBarBackgroundColor": "#1a1a2e",
         "navigationBarTextStyle": "white"
       }
     }
   ],
   "globalStyle": {
+    "navigationStyle": "custom",
     "navigationBarBackgroundColor": "#1a1a2e",
     "navigationBarTextStyle": "white",
-    "navigationBarTitleText": "不是好评大师",
+    "navigationBarTitleText": "海豚智章",
     "backgroundColor": "#f0f2f5"
   }
 }

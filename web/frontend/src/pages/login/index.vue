@@ -1,8 +1,8 @@
 <template>
   <view class="page">
     <view class="card">
-      <text class="title">不是好评大师</text>
-      <text class="subtitle">监控面板</text>
+      <text class="title">海豚智章</text>
+      <text class="subtitle">Dolphin Mind · 监控面板</text>
 
       <view class="form">
         <input
@@ -53,7 +53,7 @@ async function doLogin() {
     const res = await login(username.value, password.value)
     if (res.token) {
       store.setToken(res.token)
-      uni.reLaunch({ url: '/pages/groups/index' })
+      uni.reLaunch({ url: '/pages/monitor/index' })
     }
   } catch (e: any) {
     errMsg.value = e.message || '登录失败'

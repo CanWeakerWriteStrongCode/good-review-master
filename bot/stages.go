@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"good-review-master/assets"
@@ -220,14 +221,28 @@ func (b *Bot) recordAging(workspaceID string, synced conversation.Synced, msgs [
 	}
 }
 
+// deadLetter 把一个重试超限的条目记成报警。
+//
+// Item 里只有 stage / key / id，没有账号。账号从分区键里拆：
+// key 是 conversation.ChatKey 拼的「workspaceID|chatID」，
+// 不拆的话报警在面板上只能显示「全局」，看不出是哪个账号出的问题。
 func (b *Bot) deadLetter(item pipeline.Item, err error) {
+	workspaceID, chatID := item.Key, ""
+	if left, right, found := strings.Cut(item.Key, "|"); found {
+		workspaceID, chatID = left, right
+	}
 	detail, _ := json.Marshal(map[string]any{
-		"stage": item.Stage, "key": item.Key, "item_id": item.ID,
+		"stage": item.Stage, "key": item.Key, "chat": chatID, "item_id": item.ID,
 		"attempts": item.Attempts, "error": err.Error(), "body": json.RawMessage(item.Body),
 	})
-	logutil.Error("阶段处理超过重试上限，已隔离", "stage", item.Stage, "item", item.ID, "err", err)
+	logutil.Error("阶段处理超过重试上限，已隔离",
+		"workspace", workspaceID, "chat", chatID, "stage", item.Stage, "item", item.ID, "err", err)
 	if store := b.workspaces.StateStore(); store != nil {
-		store.SaveAlert(state.Alert{Kind: "dead_letter_" + item.Stage, Detail: string(detail)})
+		store.SaveAlert(state.Alert{
+			WorkspaceID: workspaceID,
+			Kind:        "dead_letter_" + item.Stage,
+			Detail:      string(detail),
+		})
 	}
 }
 

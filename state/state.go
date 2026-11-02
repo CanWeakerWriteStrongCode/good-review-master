@@ -61,6 +61,16 @@ type Scope struct {
 	workspaceID string
 }
 
+// Store 返回作用域所属的共享库。
+// 面板做跨账号批量查询时，一两个视图的 scope 就能反查到同一个库，
+// 不用把 *Store 一路传下去。纯内存运行时为 nil。
+func (s *Scope) Store() *Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
 // Open 打开（必要时创建）指定路径的 state.db。
 func Open(path string) (*Store, error) {
 	if err := ensureFile(path); err != nil {

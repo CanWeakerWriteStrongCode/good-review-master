@@ -121,9 +121,11 @@ func (s *Server) botStatusOf(cfg *config.Config, views []workspace.View) BotStat
 	if len(views) == 0 {
 		return s.botStatus(cfg, len(panelGroupIDs(cfg)), 0)
 	}
+	// 走批量：所有账号的会话汇总一条 SQL 读完。
+	details := s.collectAllWorkspaceDetails(views)
 	list := make([]WorkspaceInfo, 0, len(views))
 	for _, view := range views {
-		list = append(list, s.workspaceInfo(view))
+		list = append(list, details[view.ID].Info)
 	}
 	return s.botStatusTotals(cfg, list)
 }
@@ -161,10 +163,11 @@ func (s *Server) handleAPISessions() gin.HandlerFunc {
 // 同一个物理群在不同机器人眼里是两个 group_openid，两边群名也拿不到，
 // 没法可靠判重，所以不合并：一条会话就是一条（账号 + 群号）。
 func (s *Server) collectSessions(views []workspace.View) []GroupDetail {
+	// 一次查询把全部账号的会话读回来，不逐个账号查。
+	details := s.collectAllWorkspaceDetails(views)
 	all := make([]GroupDetail, 0, len(views)*4)
 	for _, view := range views {
-		groups, _ := s.collectWorkspaceDetails(view)
-		all = append(all, groups...)
+		all = append(all, details[view.ID].Groups...)
 	}
 	// 时间相同的按账号、再按群号，保证同一个库每次打开顺序一致。
 	sort.SliceStable(all, func(i, j int) bool {
@@ -180,21 +183,33 @@ func (s *Server) collectSessions(views []workspace.View) []GroupDetail {
 }
 
 // handleAPIWorkspaces 返回工作空间列表与各自汇总。
+//
+// with_groups=1 时顺带返回每个账号的会话列表（groups_by_workspace）：
+// 面板要同时显示账号汇总和每个账号下的群，分两次请求会把每个账号的 groups 表
+// 读两遍。带上这个参数，一个账号只查一次库，前端也只发一个请求。
 func (s *Server) handleAPIWorkspaces() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := s.cfg()
 		views := s.workspaceViews()
+
+		// 一次查库把全部账号的会话读回来，汇总和群列表都从这份结果里算。
+		details := s.collectAllWorkspaceDetails(views)
 		list := make([]WorkspaceInfo, 0, len(views))
+		byWorkspace := make(map[string][]GroupDetail, len(views))
 		for _, view := range views {
-			list = append(list, s.workspaceInfo(view))
+			d := details[view.ID]
+			list = append(list, d.Info)
+			byWorkspace[view.ID] = d.Groups
 		}
-		c.JSON(http.StatusOK, APIResponse{
-			Code: 200,
-			Data: gin.H{
-				"workspaces": list,
-				"bot_info":   s.botStatusTotals(cfg, list),
-			},
-		})
+
+		data := gin.H{
+			"workspaces": list,
+			"bot_info":   s.botStatusTotals(cfg, list),
+		}
+		if c.Query("with_groups") == "1" {
+			data["groups_by_workspace"] = byWorkspace
+		}
+		c.JSON(http.StatusOK, APIResponse{Code: 200, Data: data})
 	}
 }
 
@@ -205,19 +220,37 @@ func (s *Server) handleAPIWorkspaces() gin.HandlerFunc {
 func (s *Server) handleAPIWorkspaceGroups() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg := s.cfg()
-		view, ok := s.workspaceView(c.Param("wid"))
-		if !ok {
+		views := s.workspaceViews()
+		wid := c.Param("wid")
+
+		var target workspace.View
+		found := false
+		for _, view := range views {
+			if view.ID == wid {
+				target, found = view, true
+				break
+			}
+		}
+		if !found {
 			c.JSON(http.StatusNotFound, APIResponse{Code: 404, Data: gin.H{"msg": "工作空间不存在"}})
 			return
 		}
-		groups, accounts := s.collectWorkspaceDetails(view)
+
+		// 一次查库同时拿到这个账号的群和全局 bot_info 需要的各账号汇总。
+		details := s.collectAllWorkspaceDetails(views)
+		list := make([]WorkspaceInfo, 0, len(views))
+		for _, view := range views {
+			list = append(list, details[view.ID].Info)
+		}
+		d := details[target.ID]
+
 		c.JSON(http.StatusOK, APIResponse{
 			Code: 200,
 			Data: gin.H{
-				"workspace": s.workspaceInfo(view),
-				"groups":    groups,
-				"accounts":  accounts,
-				"bot_info":  s.botStatusTotal(cfg),
+				"workspace": d.Info,
+				"groups":    d.Groups,
+				"accounts":  d.Accounts,
+				"bot_info":  s.botStatusTotals(cfg, list),
 			},
 		})
 	}

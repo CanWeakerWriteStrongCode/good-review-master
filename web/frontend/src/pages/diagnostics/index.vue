@@ -1,5 +1,7 @@
 <template>
   <view class="page">
+    <AppHeader title="诊断" />
+
     <!-- 概览卡片 -->
     <view class="cards" v-if="data">
       <view class="card">
@@ -31,7 +33,6 @@
       <text class="btn" :class="{ 'btn-on': autoRefresh }" @click="toggleAuto">
         {{ autoRefresh ? '停止自动' : '自动 10s' }}
       </text>
-      <text class="btn btn-ghost" @click="goBack">返回</text>
     </view>
 
     <!-- goroutine 分组：找泄漏的关键视图 -->
@@ -114,6 +115,8 @@
     <view class="error" v-if="error">
       <text>{{ error }}</text>
     </view>
+
+    <TabBar current="diagnostics" />
   </view>
 </template>
 
@@ -122,6 +125,8 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { fetchDiagnostics, fetchPprofBinary, fetchPprofText } from '@/api/diagnostics'
 import type { DiagnosticsData } from '@/api/types'
+import AppHeader from '@/components/AppHeader.vue'
+import TabBar from '@/components/TabBar.vue'
 
 interface ProfileSpec {
   name: string
@@ -279,10 +284,6 @@ function stopAuto() {
   }
 }
 
-function goBack() {
-  uni.navigateBack()
-}
-
 /**
  * 只压缩**显示**，不改数据。
  * 帧名形如 good-review-master/pool.(*Pool).worker，模块前缀在窄表格里是纯噪音；
@@ -312,6 +313,8 @@ function formatDuration(seconds: number): string {
 .page {
   min-height: 100vh;
   padding: 12px;
+  /* 底部给固定 tabbar 留位 */
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
 }
 
 /* 概览卡片 */
@@ -363,11 +366,6 @@ function formatDuration(seconds: number): string {
 }
 .btn-on {
   background: #e74c3c;
-}
-.btn-ghost {
-  background: #fff;
-  color: #1a1a2e;
-  border: 1px solid #ddd;
 }
 
 /* 面板 */

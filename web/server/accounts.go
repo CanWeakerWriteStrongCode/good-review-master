@@ -73,7 +73,17 @@ func (s *Server) collectGroupDetails(cfg *config.Config) ([]GroupDetail, []Accou
 //
 // 没开 state.db（纯内存运行）时没有库可查，才退回配置列表，数字全 0。
 func (s *Server) collectWorkspaceDetails(view workspace.View) ([]GroupDetail, []AccountDetail) {
-	stats := s.groupOverviews(view)
+	return s.collectWorkspaceDetailsFrom(view, s.groupOverviews(view))
+}
+
+// collectWorkspaceDetailsFrom 用已经查到的会话汇总拼面板行，不碰数据库。
+// 调用方手里已经有 overviews 时（批量查好的）走这个，不用再查一遍。
+func (s *Server) collectWorkspaceDetailsFrom(view workspace.View, overviews []state.GroupOverview) ([]GroupDetail, []AccountDetail) {
+	stats := make(map[string]state.GroupOverview, len(overviews))
+	for _, overview := range overviews {
+		stats[overview.GroupID] = overview
+	}
+
 	groupIDs := make([]string, 0, len(stats))
 	for groupID := range stats {
 		groupIDs = append(groupIDs, groupID)
@@ -99,11 +109,11 @@ func (s *Server) collectWorkspaceDetails(view workspace.View) ([]GroupDetail, []
 	return s.collectDetails(groupIDs, view.Account, view.ID, view.Name, stats)
 }
 
-// groupOverviews 读这个工作空间在库里的群汇总。
+// groupOverviews 读这个工作空间在库里的会话汇总。
 //
 // 库不可用（纯内存运行）或查询失败时返回空表：宁可在页面上不显示数字，
 // 也不拿内存缓存冒充——那会让"消息数"变成"最近 500 条"，读数全靠猜。
-func (s *Server) groupOverviews(view workspace.View) map[string]state.GroupOverview {
+func (s *Server) groupOverviews(view workspace.View) []state.GroupOverview {
 	if view.State == nil {
 		return nil
 	}
@@ -112,11 +122,7 @@ func (s *Server) groupOverviews(view workspace.View) map[string]state.GroupOverv
 		logutil.Warn("读取群汇总失败，面板按无统计显示", "workspace", view.ID, "err", err)
 		return nil
 	}
-	out := make(map[string]state.GroupOverview, len(list))
-	for _, overview := range list {
-		out[overview.GroupID] = overview
-	}
-	return out
+	return list
 }
 
 // collectDetails 把群号列表与库里的统计拼成表格行。
@@ -197,6 +203,14 @@ func (s *Server) collectDetails(groupIDs []string, account, wsID, wsName string,
 // workspaceInfo 汇总一个工作空间的展示数据。
 func (s *Server) workspaceInfo(view workspace.View) WorkspaceInfo {
 	groups, _ := s.collectWorkspaceDetails(view)
+	return workspaceInfoOf(view, groups)
+}
+
+// workspaceInfoOf 用已经查好的群列表算汇总，不碰数据库。
+//
+// workspaceInfo 内部就是「查一次库 + 算一次」，同一个请求里既要群列表
+// 又要汇总时必须走这个：多账号面板上一个账号多查一遍，N 个账号就是 N 倍的重复读。
+func workspaceInfoOf(view workspace.View, groups []GroupDetail) WorkspaceInfo {
 	info := WorkspaceInfo{
 		ID:         view.ID,
 		Name:       view.Name,
@@ -221,4 +235,77 @@ func (s *Server) workspaceInfo(view workspace.View) WorkspaceInfo {
 		info.LastActivity = formatTimestamp(lastTime)
 	}
 	return info
+}
+
+// workspaceDetails 是一个账号查完库之后的产物：群列表、账号汇总、卡片汇总。
+// 三者来自同一次查询，数字之间不会出现对不上的情况。
+type workspaceDetails struct {
+	Groups   []GroupDetail
+	Accounts []AccountDetail
+	Info     WorkspaceInfo
+}
+
+// collectAllWorkspaceDetails 一次查库，构建全部账号的群列表与汇总。
+//
+// 面板首屏要所有账号的数据。逐个调 collectWorkspaceDetails 就是 N 条
+// 只差 WHERE 值的 SQL；这里一次性把全部账号的会话读回来，再在内存里分发。
+// 纯内存运行的账号（view.State == nil）不参与批量查询，各自退回配置白名单。
+func (s *Server) collectAllWorkspaceDetails(views []workspace.View) map[string]workspaceDetails {
+	byWorkspace := s.allGroupOverviews(views)
+
+	out := make(map[string]workspaceDetails, len(views))
+	for _, view := range views {
+		groups, accounts := s.collectWorkspaceDetailsFrom(view, byWorkspace[view.ID])
+		out[view.ID] = workspaceDetails{
+			Groups:   groups,
+			Accounts: accounts,
+			Info:     workspaceInfoOf(view, groups),
+		}
+	}
+	return out
+}
+
+// allGroupOverviews 一条 SQL 读回多个账号的会话汇总。
+// 库不可用或查询失败时返回空表，各账号按「无统计」显示。
+func (s *Server) allGroupOverviews(views []workspace.View) map[string][]state.GroupOverview {
+	ids := make([]string, 0, len(views))
+	for _, view := range views {
+		if view.State != nil {
+			ids = append(ids, view.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	store := s.stateStore()
+	if store == nil {
+		// Server 没挂 manager（旧路径、测试）时从视图的 scope 反查共享库：
+		// 所有账号本来就共用同一个 state.db，从哪个视图拿都一样。
+		for _, view := range views {
+			if view.State != nil {
+				store = view.State.Store()
+				break
+			}
+		}
+	}
+	if store == nil {
+		return nil
+	}
+
+	byWorkspace, err := store.AllGroupOverviews(ids)
+	if err != nil {
+		logutil.Warn("批量读取群汇总失败，面板按无统计显示", "accounts", len(ids), "err", err)
+		return nil
+	}
+	return byWorkspace
+}
+
+// stateStore 返回共享的 state.db 句柄（报警、跨账号统计用）。
+// 没挂工作空间或纯内存运行时为 nil。
+func (s *Server) stateStore() *state.Store {
+	if s.workspaces == nil {
+		return nil
+	}
+	return s.workspaces.StateStore()
 }

@@ -1,34 +1,9 @@
 <template>
   <view class="page">
-    <!-- Bot 状态栏 -->
-    <view class="status-bar" v-if="store.botStatus">
-      <text class="status-text">
-        {{ store.botStatus.account_count }} 个账号 |
-        监控 {{ store.botStatus.group_count }} 个群
-      </text>
-      <view class="status-actions">
-        <text class="diag-btn" @click="goDiagnostics">诊断</text>
-        <text class="logout-btn" @click="doLogout">退出</text>
-      </view>
-    </view>
+    <AppHeader title="群列表" back />
 
-    <!-- 视图切换：只有一个账号时两种看法没区别，不显示 -->
-    <view class="view-switch" v-if="store.workspaces.length > 1">
-      <view
-        class="view-tab"
-        :class="{ active: store.viewMode === 'account' }"
-        @click="store.switchMode('account')"
-      >
-        <text>按账号</text>
-      </view>
-      <view
-        class="view-tab"
-        :class="{ active: store.viewMode === 'all' }"
-        @click="store.switchMode('all')"
-      >
-        <text>全部会话</text>
-      </view>
-    </view>
+    <!-- 本页选项：按监控账号分组看，或所有账号的会话平铺 -->
+    <SegmentTabs v-model="viewMode" :options="modeOptions" />
 
     <!-- 按账号：先选账号，再看它下面的会话 -->
     <template v-if="store.viewMode === 'account'">
@@ -162,12 +137,40 @@
 
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { useGroupsStore, sessionLabel } from '@/stores/groups'
+import { onLoad } from '@dcloudio/uni-app'
+import { useGroupsStore, sessionLabel, type ViewMode } from '@/stores/groups'
 import { useAuthStore } from '@/stores/auth'
-import { logout as apiLogout } from '@/api'
+import AppHeader from '@/components/AppHeader.vue'
+import SegmentTabs from '@/components/SegmentTabs.vue'
+import type { SegmentOption } from '@/components/SegmentTabs.vue'
 
 const authStore = useAuthStore()
 const store = useGroupsStore()
+
+// v-model 用 computed 中转：读的是 store 里的当前视图，写入交给 switchMode，
+// 它会顺手把该拉的列表拉一次。
+const viewMode = computed<ViewMode>({
+  get: () => store.viewMode,
+  set: (next) => {
+    store.switchMode(next)
+  },
+})
+
+const modeOptions = computed<SegmentOption[]>(() => [
+  { key: 'account', label: '按监控账号', badge: store.workspaces.length || undefined },
+  { key: 'all', label: '全部列表', badge: store.sessions.length || undefined },
+])
+
+// 从监控页点某个账号跳进来时链接上带了 ?ws=，先把这个账号设成选中：
+// loadGroups 会认出这个 id，直接拉它的群，不用先拉第一个再换一次。
+// 同时把视图拨回「按监控账号」——上次可能停在全部列表，不拨回去
+// 就会只显示全量列表，看不到刚点的那个账号。
+onLoad((query) => {
+  const ws = (query as Record<string, string> | undefined)?.ws
+  if (!ws) return
+  store.viewMode = 'account'
+  store.selectedWorkspaceId = ws
+})
 
 // 两种视图各自空了才算真没数据。
 const isEmpty = computed(() =>
@@ -187,12 +190,6 @@ onMounted(() => {
   store.loadGroups()
 })
 
-async function doLogout() {
-  await apiLogout()
-  authStore.logout()
-  uni.reLaunch({ url: '/pages/login/index' })
-}
-
 function goMessages(groupId: string, workspaceId?: string) {
   // 全部会话视图里的卡片来自不同账号，链接要带各自的 wid；
   // 按账号视图里只有当前选中的那个工作空间。
@@ -204,75 +201,12 @@ function goMessages(groupId: string, workspaceId?: string) {
     url: `/pages/messages/index?wid=${wid}&id=${groupId}`,
   })
 }
-
-function goDiagnostics() {
-  uni.navigateTo({ url: '/pages/diagnostics/index' })
-}
 </script>
 
 <style scoped>
 .page {
   min-height: 100vh;
   padding: 12px;
-}
-
-/* 状态栏 */
-.status-bar {
-  background: linear-gradient(135deg, #1a1a2e, #16213e);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.status-text {
-  color: #aab;
-  font-size: 13px;
-  flex: 1;
-}
-.status-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.diag-btn {
-  color: #7ec8e3;
-  font-size: 13px;
-  padding: 4px 12px;
-  border: 1px solid #7ec8e3;
-  border-radius: 6px;
-}
-.logout-btn {
-  color: #e74c3c;
-  font-size: 13px;
-  padding: 4px 12px;
-  border: 1px solid #e74c3c;
-  border-radius: 6px;
-}
-
-/* 视图切换：按账号 / 全部会话 */
-.view-switch {
-  display: flex;
-  gap: 4px;
-  background: #eef0f4;
-  border-radius: 10px;
-  padding: 4px;
-  margin-bottom: 14px;
-}
-.view-tab {
-  flex: 1;
-  text-align: center;
-  padding: 8px 0;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #666;
-}
-.view-tab.active {
-  background: #fff;
-  color: #1a1a2e;
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
 /* 工作空间切换 */

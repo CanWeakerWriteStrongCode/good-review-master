@@ -115,6 +115,33 @@ func (s *Store) SaveAlert(alert Alert) {
 	}
 }
 
+// LoadAlerts 读最近的报警，按时间倒序，同时给出总条数。
+//
+// total 不受 limit 影响：页面上要写「最近 20 条 / 共 137 条」，
+// 光看列表长度分不清是攒了很多条还是刚好就是这个数。
+// count 和取列表都走 idx_alerts_created，两条都是索引扫描。
+func (s *Store) LoadAlerts(limit int) ([]Alert, int64, error) {
+	if s == nil || s.closed.Load() {
+		return nil, 0, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	var total int64
+	if err := s.db.Model(&Alert{}).Count(&total).Error; err != nil {
+		s.noteFailure("统计报警", err)
+		return nil, 0, err
+	}
+
+	var list []Alert
+	if err := s.db.Order("created_at DESC, id DESC").Limit(limit).Find(&list).Error; err != nil {
+		s.noteFailure("读取报警", err)
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
 // LoadSettings 读取全局运行时设置；value 是 JSON。
 func (s *Store) LoadSettings() (map[string]json.RawMessage, error) {
 	if s == nil {

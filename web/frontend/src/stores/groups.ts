@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
+  fetchAlerts,
   fetchGroups,
   fetchMessages,
   fetchSessions,
@@ -9,7 +10,7 @@ import {
   fetchWorkspaceGroups,
   fetchWorkspaceMessages,
 } from '@/api'
-import type { AccountInfo, GroupInfo, BotStatus, Message, WorkspaceInfo } from '@/api/types'
+import type { AccountInfo, AlertItem, GroupInfo, BotStatus, Message, WorkspaceInfo } from '@/api/types'
 
 /** 群列表的两种看法：按账号分、所有账号的会话平铺 */
 export type ViewMode = 'account' | 'all'
@@ -39,6 +40,24 @@ function accountLabel(selfID: string, nickname: string): string {
   return selfID
 }
 
+/**
+ * 报警分类翻成人话。
+ * kind 是写库时定的分类（window_too_small、dead_letter_<stage>），
+ * 直接摆在页面上没人看得懂。监控页和报警页共用这一份，两边措辞不会跑偏。
+ */
+export function alertKindLabel(kind: string): string {
+  if (kind === 'window_too_small') return '窗口太小，放弃回复'
+  if (kind.startsWith('dead_letter_')) {
+    return `${kind.slice('dead_letter_'.length)} 阶段重试超限，已隔离`
+  }
+  return kind
+}
+
+/** 报警严重度：warn = 丢一条回复，error = 某个阶段彻底失败 */
+export function alertSeverity(kind: string): 'warn' | 'error' {
+  return kind === 'window_too_small' ? 'warn' : 'error'
+}
+
 export const useGroupsStore = defineStore('groups', () => {
   const botStatus = ref<BotStatus | null>(null)
   const groups = ref<GroupInfo[]>([])
@@ -50,6 +69,12 @@ export const useGroupsStore = defineStore('groups', () => {
   const viewMode = ref<ViewMode>('account')
   /** 全部会话视图的数据：所有账号的群/私聊，已按最近消息时间倒序 */
   const sessions = ref<GroupInfo[]>([])
+  /** 各账号的会话列表（账号 id → 会话）：进页面时跟汇总一次拉回来，切账号不再发请求 */
+  const groupsByWorkspace = ref<Record<string, GroupInfo[]>>({})
+  /** 最近的报警（alerts 表），按时间倒序 */
+  const alerts = ref<AlertItem[]>([])
+  /** 报警总条数，可能大于 alerts.length（只读了最近一批） */
+  const alertTotal = ref(0)
 
   const selectedWorkspace = computed<WorkspaceInfo | null>(() => {
     return workspaces.value.find((w) => w.id === selectedWorkspaceId.value) || null
@@ -95,12 +120,26 @@ export const useGroupsStore = defineStore('groups', () => {
     }
   }
 
+  // loadAlerts 拉最近一批报警。失败只记日志：报警区块坏了不该把整页拖黄。
+  async function loadAlerts(limit = 50) {
+    try {
+      const data = await fetchAlerts(limit)
+      alerts.value = data.alerts || []
+      alertTotal.value = data.total || 0
+    } catch (e) {
+      console.error('加载报警失败', e)
+    }
+  }
+
   async function loadGroups() {
     loading.value = true
     try {
-      const data = await fetchWorkspaces()
+      // 带上 with_groups：账号汇总和每个账号下的会话一起回来，
+      // 避免再对每个账号单发一次 /workspaces/{id}/groups。
+      const data = await fetchWorkspaces(true)
       botStatus.value = data.bot_info
       workspaces.value = data.workspaces || []
+      groupsByWorkspace.value = data.groups_by_workspace || {}
       if (workspaces.value.length > 0) {
         // 停在「全部会话」时刷新要回到同一个视图，不能把用户拽回按账号。
         if (viewMode.value === 'all') {
@@ -125,9 +164,34 @@ export const useGroupsStore = defineStore('groups', () => {
 
   // refreshSessions 拉一次全部会话，不碰 loading（调用方负责）。
   async function refreshSessions() {
+    // 各账号的会话在 loadGroups 时已经进缓存了，本地拼一下就行。
+    // 再打 /sessions 会把每个账号的 groups 表又读一遍，数字还跟卡片上的对不上。
+    if (Object.keys(groupsByWorkspace.value).length > 0) {
+      sessions.value = collectAllSessions()
+      return
+    }
     const data = await fetchSessions()
     botStatus.value = data.bot_info
     sessions.value = data.sessions || []
+  }
+
+  // collectAllSessions 把各账号的会话拼成一张表，排序规则跟后端 collectSessions 一致：
+  // 最近消息时间倒序，同一时间按账号、再按群号，保证每次打开顺序一样。
+  function collectAllSessions(): GroupInfo[] {
+    const all: GroupInfo[] = []
+    for (const list of Object.values(groupsByWorkspace.value)) {
+      all.push(...list)
+    }
+    all.sort((a, b) => {
+      const ta = a.last_activity || ''
+      const tb = b.last_activity || ''
+      if (ta !== tb) return ta < tb ? 1 : -1
+      const wa = a.workspace_id || ''
+      const wb = b.workspace_id || ''
+      if (wa !== wb) return wa < wb ? -1 : 1
+      return a.group_id < b.group_id ? -1 : a.group_id > b.group_id ? 1 : 0
+    })
+    return all
   }
 
   async function loadSessions() {
@@ -162,11 +226,34 @@ export const useGroupsStore = defineStore('groups', () => {
     }
   }
 
+  // accountFromWorkspace 把账号汇总转成群列表页用的 AccountInfo。
+  // 数值就是同一个 workspaceInfo，跟后端 /workspaces/{id}/groups 的 accounts 一致。
+  function accountFromWorkspace(ws: WorkspaceInfo): AccountInfo {
+    return {
+      self_id: ws.self_ids?.[0] || '',
+      nickname: ws.name || '',
+      group_count: ws.group_count,
+      active_group_count: ws.active_group_count,
+      message_count: ws.message_count,
+      last_activity: ws.last_activity,
+    }
+  }
+
   async function loadWorkspace(id: string) {
+    const ws = workspaces.value.find((w) => w.id === id)
+    const cached = groupsByWorkspace.value[id]
+    if (ws && cached) {
+      // 缓存命中：会话列表和汇总都是 loadGroups 一次拿回来的，这里只切换，不发请求。
+      selectedWorkspaceId.value = id
+      groups.value = cached
+      accounts.value = [accountFromWorkspace(ws)]
+      return
+    }
     const data = await fetchWorkspaceGroups(id)
     selectedWorkspaceId.value = id
     botStatus.value = data.bot_info
     groups.value = data.groups
+    groupsByWorkspace.value[id] = data.groups
     accounts.value = data.accounts || []
     const index = workspaces.value.findIndex((w) => w.id === id)
     if (index >= 0) workspaces.value[index] = data.workspace
@@ -202,7 +289,11 @@ export const useGroupsStore = defineStore('groups', () => {
     loading,
     viewMode,
     sessions,
+    groupsByWorkspace,
+    alerts,
+    alertTotal,
     loadStatus,
+    loadAlerts,
     loadGroups,
     loadSessions,
     selectWorkspace,
