@@ -262,9 +262,9 @@ GET /api/sessions
 
 这么做的原因很直接：以前每次打开面板都要跑一次 `SELECT group_id, COUNT(*), MAX(ts) FROM messages GROUP BY group_id`，几百万条消息就是几百万行扫一遍，多开几个页面还会叠加。现在只读 `groups` 一张小表（一个工作空间几十到几百行），消息量再大也不碰 `messages`。
 
-用触发器而不是在 Go 里再发一条 `UPDATE`：插入和计数在同一个语句里原子完成，不多一次往返；`AFTER INSERT` 只在真的插了新行时触发，重复消息走 `ON CONFLICT DO UPDATE` 分支不会把条数算两遍。升级（v10 → v11）时先补列、再拿 `messages`/`members` 存量数据回填、最后建触发器——顺序反了回填会经过触发器，计数会翻倍。
+用触发器而不是在 Go 里再发一条 `UPDATE`：插入和计数在同一个语句里原子完成，不多一次往返；`AFTER INSERT` 只在真的插了新行时触发，重复消息走 `UPDATE`（不产生新行），条数不会被算两遍。开发阶段没有升级这一步：库对不上就删掉重建，不存在「回填经过触发器导致计数翻倍」的顺序问题。
 
-**`identities` 已并进 `groups.self_user_id`（schema v12）。** 两张表主键都是 `(workspace_id, group_id)`，都是每会话一行，而 `identities` 只存「本群学到的机器人 openid」加一个学习时间——为两个字段单开一张表不值。并过来之后，面板汇总只读 `groups` 一张表（少一次 JOIN），启动恢复身份也从两次全表查询变成一次。升级（v11 → v12）先补列、再把 `identities` 的值 UPSERT 进去、最后删旧表；只有身份没有消息的会话会补出一行，不会丢。写身份时 `updated_at` 写 0，表示「档案还没写过」，不会把群名那条记录的更新时间冲掉。
+**`identities` 已并进 `groups.self_user_id`（schema v12）。** 两张表主键都是 `(workspace_id, group_id)`，都是每会话一行，而 `identities` 只存「本群学到的机器人 openid」加一个学习时间——为两个字段单开一张表不值。并过来之后，面板汇总只读 `groups` 一张表（少一次 JOIN），启动恢复身份也从两次全表查询变成一次。开发阶段没有升级这一步，`identities` 表已经不存在了。写身份时 `updated_at` 写 0，表示「档案还没写过」，不会把群名那条记录的更新时间冲掉。
 
 **群列表按最后一条消息的时间倒序。** 排序直接用 `groups.last_ts`，一条消息都没有的会话是 0，自然沉底；时间相同按群号排，保证同一个库每次打开顺序一致。
 

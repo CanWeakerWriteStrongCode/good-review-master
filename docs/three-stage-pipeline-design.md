@@ -477,7 +477,7 @@ type SendResult struct {
 
 - `state.Store` 是**全局单例**：一个 `*gorm.DB`；消息与身份信息同步写，不再保留“消息异步写队列”。`state.Scope(workspaceID)` 只是带 `workspace_id` 条件的视图。
 - GORM 使用 `github.com/glebarez/sqlite`（底层仍是 `modernc.org/sqlite`），保持纯 Go 构建；不使用官方 CGO 驱动。
-- **迁移继续使用现有版本化 DDL**（`PRAGMA user_version`），不启用 `AutoMigrate`，避免改坏已有 `state.db`。
+- **建库用手写 DDL**（`PRAGMA user_version` 记结构版本），不启用 `AutoMigrate`；不做旧库升级，版本对不上直接报错，删掉 `state.db` 重建。
 - 复杂查询保留 Raw：`LoadRecent` 的 `ROW_NUMBER() OVER`；方言敏感的 upsert 用 `clause.OnConflict`，MySQL 的 `VALUES()` 差异后续在方言层处理。
 - 表边界：
   - 全局表（无 `workspace_id`）：`image_notes`、未来的全局配置/统计；

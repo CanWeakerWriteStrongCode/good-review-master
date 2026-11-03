@@ -152,6 +152,8 @@ bot:
 每张表用 `workspace_id` 列区分机器人账号。一个库文件更好备份、统计口径一致；
 工作空间没有目录，清理某个账号就是按 `workspace_id` 删行，或停服删整个库。
 
+> 下面是这套设计最早一版的 DDL，留作记录。现状以 `state/schema.go` 的 `statements` 为准：12 张表、10 条索引、2 个群统计触发器，每张表都是 `id INTEGER PRIMARY KEY AUTOINCREMENT` 加业务键 `UNIQUE`。`identities` 已并进 `groups.self_user_id`，`group_personas` 压成 `groups.persona_keyword`，`meta` 换成 `workspace_profile`（常用字段建列、其余进 `extra` JSON），`groups` 多了 `type`/`message_count`/`member_count`/`last_ts`（由 `messages`/`members` 的插入触发器维护）。
+
 ```sql
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
@@ -222,9 +224,8 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
 );
 ```
 
-版本演进：`PRAGMA user_version` 当前是 4。v1（每工作空间一库、无 `workspace_id`）会重建本包
-自己的表；**v2→v3 只补 `groups`，v3→v4 只给 `messages` 补 `ref_idx`**，不重建其它表，
-已经攒下的消息与成员不会丢。
+结构版本：`PRAGMA user_version` 当前是 17。开发阶段不做原地升级——库里版本对不上就报错退出，
+删掉 `state.db` 让程序按 `schema.go` 重新建一份；已经攒下的消息与成员会一起清掉。
 
 每个工作空间通过 `Store.Scope(workspaceID)` 拿到一个视图，所有读写自动带上
 `workspace_id`；同一个群、同一个 `message_id` 在不同账号下互不冲突。
@@ -234,8 +235,8 @@ CREATE TABLE meta (                -- key/value：platform、account、name、cr
   「异步」只用于 `get_self_info` / 成员资料这类网络补全，不用于消息落盘。
 - **保留策略**：**不自动清理**，消息全部留在库里；内存环形缓冲仍按 `runtime.max_cache_msg`
   封顶，两者互不影响（DB 是档案，内存是工作窗口）。
-- **启动**：打开库 → `PRAGMA user_version` 做幂等建表/迁移 → 从 `meta` 读出
-  `(workspace_id, platform, account_kind, account)` 恢复工作空间（不依赖目录或第一条事件）→ 每个
+- **启动**：打开库 → 检查 `PRAGMA user_version`（全新库按 `schema.go` 建表）→ 从 `workspace_profile`
+  读出 `(workspace_id, platform, account_kind, account)` 恢复工作空间（不依赖目录或第一条事件）→ 每个
   工作空间把各群最近 `max_cache_msg` 条读回内存 → 恢复锚点、身份、人格关键字
   （关键字在配置里找不到时降级为默认人格并告警）。同时统计一次「消息总条数 +
   库文件大小（含 `-wal`）」并按 `workspace_id` 打印各账号条数；超过

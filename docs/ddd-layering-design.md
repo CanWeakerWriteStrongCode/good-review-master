@@ -53,7 +53,7 @@ type TagResult struct {
 
 ### 1.4 一个文件装 14 张表
 
-`workspace/state/state.go` 1463 行，一个 `Scope` 门面覆盖 14 张表：`messages`、`anchors`、`identities`、`members`、`groups`、`group_personas`、`workspace_profile`、`member_info_history`、`group_info_history`、`image_notes`、`asset_tag_jobs`、`send_ledger`、`alerts`、`settings`。`workspace_id` 这个词在这个文件里出现 69 次。
+`workspace/state/state.go` 1463 行，一个 `Scope` 门面覆盖 14 张表：`messages`、`anchors`、`identities`、`members`、`groups`、`group_personas`、`workspace_profile`、`member_info_history`、`group_info_history`、`image_notes`、`asset_tag_jobs`、`send_ledger`、`alerts`、`settings`。`workspace_id` 这个词在这个文件里出现 69 次。（这是拆文件之前的记录；现在已按表拆成 9 个文件，见 8.5。）
 
 ### 1.5 值对象被存储形状绑住
 
@@ -376,20 +376,20 @@ const (
 
 ### 8.1 现在跟 SQLite 绑死的有多少
 
-`state.go` 1463 行，按职责数：
+`state.go` 208 行 + `schema.go` 317 行，按职责数：
 
 | 位置 | 绑了什么 | 行数 |
 |---|---|---|
-| `Open()` 73-109 | `sqlite.Open(dsn)`、DSN 里 `_pragma=journal_mode(WAL)&synchronous(NORMAL)&busy_timeout(5000)`、`SetMaxOpenConns(1)` | 37 |
-| `migrate()` 145-405 | 14 条 `CREATE TABLE ... INTEGER PRIMARY KEY AUTOINCREMENT`、`PRAGMA user_version` 读写、v6 迁移里的 `strftime('%s','now')` | 261 |
-| `ensureFile()` 128-143 | 建本地文件、`chmod 0600` | 16 |
-| `Report()` 1390-1410 | 库体积含 WAL，阈值 `warnBytes = 100<<20` | 21 |
-| `tableExists()` 489-495 | `SELECT COUNT(*) FROM sqlite_master` | 7 |
-| **合计** | | **342，占 23%** |
+| `Open()` state.go 75-112 | `sqlite.Open(dsn)`、DSN 里 `_pragma=journal_mode(WAL)&synchronous(NORMAL)&busy_timeout(5000)`、`SetMaxOpenConns(1)` | 38 |
+| `migrate()` schema.go 48-261 | 12 条 `CREATE TABLE ... INTEGER PRIMARY KEY AUTOINCREMENT`、10 条索引、2 个群统计触发器（含 `strftime('%s','now')`、`MAX(last_ts, NEW.ts)`）、`PRAGMA user_version` 读写 | 214 |
+| `ensureFile()` schema.go 28-46 | 建本地文件、`chmod 0600` | 19 |
+| `Report()` state.go 136-156 | 库体积含 WAL，阈值 `warnBytes = 100<<20` | 21 |
+| `tableExists()` schema.go 311-317 | `SELECT COUNT(*) FROM sqlite_master` | 7 |
+| **合计** | | **299** |
 
-剩下的 1100 行是 `db.Clauses(...).Create / Where / Find / Update` 加字段映射，GORM 的链式 API，方言无关。
+`state` 包非测试代码共 2305 行。上面这些是纯 DDL 与驱动调用；剩下的既有 GORM 链式调用（`.Model(...).Where(...).Updates(...)`），也有各表写入的裸 SQL（`?` 占位、`ON CONFLICT(...) DO UPDATE SET`、`strftime`）——裸 SQL 这部分同样绑 SQLite 方言，换库时得另写。
 
-证据：消息写入用的是
+证据：消息写入的并发兜底用的是（主路径是按三元组先 `UPDATE`，没命中才插入）
 
 ```go
 clause.OnConflict{
@@ -402,7 +402,7 @@ clause.OnConflict{
 
 ### 8.2 为什么接口解决不了这个问题
 
-Repository 接口抽象的是方法签名——`SaveMessage`、`LoadRecent`、`LoadAnchors`……这些签名换库时一个都不变，因为 GORM 已经在做隔离了。要改的永远是接口**背后**那 342 行，而不管有没有接口，那 342 行都得另写一份。
+Repository 接口抽象的是方法签名——`SaveMessage`、`LoadRecent`、`LoadAnchors`……这些签名换库时一个都不变，因为 GORM 已经在做隔离了。要改的永远是接口**背后**那 299 行 DDL 加上各表的裸 SQL，而不管有没有接口，这部分都得另写一份。
 
 加接口的实际代价：
 
@@ -447,22 +447,22 @@ statePath := filepath.Join(filepath.Dir(systemPromptPath), state.FileName)
 
 ```
 state/dialect/dialect.go   // 4 个方法
-state/dialect/sqlite.go    // 现在这 261 行
+state/dialect/sqlite.go    // 现在的 schema.go 建库代码
 state/dialect/mysql.go     // 以后加
 ```
 
 ```go
 type Dialect interface {
-    CreateTables(*gorm.DB) error       // 14 张表建表语句
+    CreateTables(*gorm.DB) error       // 12 张表、10 条索引、2 个群统计触发器
     Version(*gorm.DB) (int, error)     // PRAGMA user_version ↔ SELECT version
     SetVersion(*gorm.DB, int) error
     TableExists(*gorm.DB, string) bool // sqlite_master ↔ information_schema.tables
 }
 ```
 
-**这个 4 方法接口才是真的移植边界**，它挡的是方言语法，而方言语法就是那 342 行。
+**这个 4 方法接口才是真的移植边界**，它挡的是方言语法，而方言语法就是上面那 299 行 DDL 加 `tableExists` 那类查系统表的语句。
 
-一个判断：**v1 到 v10 的历史迁移不用给 MySQL 写一遍。** 新库直接建成 v10，历史迁移只在 sqlite 方言里跑。v6 那段 `COALESCE(MAX(CASE WHEN key='platform' ...))` 加 `strftime('%s','now')` 加 `ON CONFLICT DO NOTHING`，翻译到 PG/MySQL 要两小时，收益是零——没有哪个 MySQL 用户的库里躺着 v5 的 `meta` 表。
+一个判断：**没有历史迁移要翻译。** 开发阶段已经把 v1→v16 的升级链整段删掉，建库只有一套语句，`migrate` 遇到版本对不上的库直接报错让人重建。换库时只要把 `CREATE TABLE`、10 条索引和那两个触发器按目标方言写一遍。
 
 **第 3 步：连接池参数交给方言**
 
@@ -701,16 +701,16 @@ func (w *Workspace) PrepareBatch(ctx context.Context, events []conversation.Inbo
 - 七个 Repo 各持同一个 `*gorm.DB`，等于一个壳拆七份，`db.WithContext(ctx)` 一行没少，只是多了七次构造
 - 要是不共享连接、各开一个——SQLite 单文件写锁，直接 `database is locked`
 
-分文件已经拿到想要的东西：一个文件一件事，找 `send_ledger` 的读写不用滚 1463 行。
+分文件已经拿到想要的东西：一个文件一件事，找 `send_ledger` 的读写不用在一个两千多行的文件里滚。
 
 | 文件 | 表 |
 |---|---|
 | `state/state.go` | 包文档、`Scope` 门面、公共类型与错误 |
-| `state/schema.go` | 建表、版本迁移、补列/重建 |
+| `state/schema.go` | 建表（只负责把空库建出来） |
 | `state/messages.go` | `messages` |
 | `state/anchors.go` | `anchors` |
-| `state/directory.go` | `identities` `members` `groups` `member_info_history` `group_info_history` |
-| `state/persona.go` | `group_personas`、`workspace_profile` 的身份部分 |
+| `state/directory.go` | `members` `groups` `member_info_history` `group_info_history` |
+| `state/persona.go` | `workspace_profile` |
 | `state/images.go` | `image_notes` |
 | `state/jobs.go` | `asset_tag_jobs` |
 | `state/ops.go` | `send_ledger` `alerts` `settings`、`workspace_profile` 的列表查询 |
