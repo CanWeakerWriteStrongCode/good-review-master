@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"good-review-master/conversation"
 	"good-review-master/logutil"
@@ -38,7 +39,9 @@ const (
 	// v15 self_user_id 从 groups 提到 workspace_profile：openid 由账号决定，
 	//     同一个机器人在所有群是同一个值（实测同账号 3 个群一个值），
 	//     学到一个群就该全账号可用，不必逐群等一次 @。
-	schemaVersion = 15
+	// v16 剩下的表也统一成「id INTEGER PRIMARY KEY AUTOINCREMENT + 原主键降为 UNIQUE」：
+	//     每张表都有一个整数自增主键，原来那组业务键退成唯一约束（upsert 目标仍是它）。
+	schemaVersion = 16
 )
 
 // ensureFile 先以 0600 建出文件再交给驱动：消息原文与昵称属于隐私数据。
@@ -100,15 +103,19 @@ func migrate(db *gorm.DB, path string) error {
 			ts           INTEGER NOT NULL,
 			UNIQUE (workspace_id, group_id, message_id)
 		)`,
+		// v16 起每张表都以 id 自增列作主键，原来的业务键降为 UNIQUE，
+		// 写入口的 ON CONFLICT 目标仍是那组业务键（见各表的写入方法）。
 		`CREATE TABLE IF NOT EXISTS anchors (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
 			workspace_id    TEXT NOT NULL,
 			group_id        TEXT NOT NULL,
 			window_first_id TEXT NOT NULL DEFAULT '',
 			window_last_id  TEXT NOT NULL DEFAULT '',
 			updated_at      INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, group_id)
+			UNIQUE (workspace_id, group_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS members (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			user_id      TEXT NOT NULL,
@@ -116,9 +123,10 @@ func migrate(db *gorm.DB, path string) error {
 			display_name TEXT NOT NULL DEFAULT '',
 			extra        TEXT NOT NULL DEFAULT '{}',
 			updated_at   INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, group_id, user_id)
+			UNIQUE (workspace_id, group_id, user_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
 			workspace_id    TEXT NOT NULL,
 			group_id        TEXT NOT NULL,
 			name            TEXT NOT NULL DEFAULT '',
@@ -129,10 +137,11 @@ func migrate(db *gorm.DB, path string) error {
 			last_ts         INTEGER NOT NULL DEFAULT 0,
 			extra           TEXT NOT NULL DEFAULT '{}',
 			updated_at      INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, group_id)
+			UNIQUE (workspace_id, group_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS workspace_profile (
-			workspace_id    TEXT PRIMARY KEY,
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id    TEXT NOT NULL UNIQUE,
 			platform        TEXT NOT NULL DEFAULT '',
 			account_kind    TEXT NOT NULL DEFAULT '',
 			account         TEXT NOT NULL DEFAULT '',
@@ -167,8 +176,9 @@ func migrate(db *gorm.DB, path string) error {
 			extra             TEXT NOT NULL DEFAULT '{}',
 			changed_at        INTEGER NOT NULL
 		)`,
-		// image_notes 是全局图库：不带 workspace_id，主键是内容哈希 + 字节大小。
+		// image_notes 是全局图库：不带 workspace_id，业务键是内容哈希 + 字节大小。
 		`CREATE TABLE IF NOT EXISTS image_notes (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
 			sha256         TEXT NOT NULL,
 			byte_size      INTEGER NOT NULL,
 			mime           TEXT NOT NULL DEFAULT '',
@@ -183,11 +193,12 @@ func migrate(db *gorm.DB, path string) error {
 			model          TEXT NOT NULL DEFAULT '',
 			prompt_version TEXT NOT NULL DEFAULT '',
 			updated_at     INTEGER NOT NULL,
-			PRIMARY KEY (sha256, byte_size)
+			UNIQUE (sha256, byte_size)
 		)`,
 		// status：pending 待补 / running 已被某个进程领走（updated_at 当租约） /
 		// failed 这次失败、还在重试名额内 / done 补好了 / missing 原始地址没了（终态）。
 		`CREATE TABLE IF NOT EXISTS asset_tag_jobs (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			workspace_id TEXT NOT NULL,
 			group_id     TEXT NOT NULL,
 			message_id   TEXT NOT NULL,
@@ -199,9 +210,10 @@ func migrate(db *gorm.DB, path string) error {
 			last_error   TEXT NOT NULL DEFAULT '',
 			created_at   INTEGER NOT NULL,
 			updated_at   INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, group_id, message_id, asset_index)
+			UNIQUE (workspace_id, group_id, message_id, asset_index)
 		)`,
 		`CREATE TABLE IF NOT EXISTS send_ledger (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			workspace_id TEXT NOT NULL,
 			action_id    TEXT NOT NULL,
 			message_id   TEXT NOT NULL DEFAULT '',
@@ -209,7 +221,7 @@ func migrate(db *gorm.DB, path string) error {
 			sent         INTEGER NOT NULL DEFAULT 0,
 			send_ok      INTEGER NOT NULL DEFAULT 0,
 			updated_at   INTEGER NOT NULL,
-			PRIMARY KEY (workspace_id, action_id)
+			UNIQUE (workspace_id, action_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS alerts (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,7 +231,8 @@ func migrate(db *gorm.DB, path string) error {
 			created_at   INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS settings (
-			key        TEXT PRIMARY KEY,
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			key        TEXT NOT NULL UNIQUE,
 			value      TEXT NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
@@ -336,6 +349,13 @@ func migrate(db *gorm.DB, path string) error {
 			return err
 		}
 		if err := dropColumn(db, "groups", "self_user_id"); err != nil {
+			return err
+		}
+	}
+	// v16：剩下的表补自增主键。SQLite 不能 ALTER TABLE 加主键，和 v9 一样重建表；
+	// 放在建索引之前，重建过程中被带走的索引随后统一建回来。
+	if version < 16 {
+		if err := db.Transaction(addIDPrimaryKey); err != nil {
 			return err
 		}
 	}
@@ -681,6 +701,222 @@ func rebuildMessagesWithID(db *gorm.DB) error {
 		}
 	}
 	logutil.Info("state.db messages 表已重建：新增自增主键 id")
+	return nil
+}
+
+// tableWithID 描述一张要补自增主键的表（v16 升级）。
+type tableWithID struct {
+	table string
+	// ddl 是新表结构，%s 由重建函数填成临时表名。
+	ddl string
+	// columns 是除 id 之外的全部列，搬家时按这个名单逐列复制。
+	columns []string
+	// orderBy 决定 id 的先后：按原来的主键排，重建前后的读取顺序一致。
+	orderBy string
+}
+
+// tablesWithNewID 是 v16 要补自增主键的表。原来做主键的那组业务键降成 UNIQUE，
+// 写入口的 ON CONFLICT 目标还是它们——换成 id 的话冲突永远不会发生，等于只插不更新。
+var tablesWithNewID = []tableWithID{
+	{
+		table: "anchors",
+		ddl: `CREATE TABLE %s (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id    TEXT NOT NULL,
+			group_id        TEXT NOT NULL,
+			window_first_id TEXT NOT NULL DEFAULT '',
+			window_last_id  TEXT NOT NULL DEFAULT '',
+			updated_at      INTEGER NOT NULL,
+			UNIQUE (workspace_id, group_id)
+		)`,
+		columns: []string{"workspace_id", "group_id", "window_first_id", "window_last_id", "updated_at"},
+		orderBy: "workspace_id, group_id",
+	},
+	{
+		table: "members",
+		ddl: `CREATE TABLE %s (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id TEXT NOT NULL,
+			group_id     TEXT NOT NULL,
+			user_id      TEXT NOT NULL,
+			name         TEXT NOT NULL DEFAULT '',
+			display_name TEXT NOT NULL DEFAULT '',
+			extra        TEXT NOT NULL DEFAULT '{}',
+			updated_at   INTEGER NOT NULL,
+			UNIQUE (workspace_id, group_id, user_id)
+		)`,
+		columns: []string{"workspace_id", "group_id", "user_id", "name", "display_name", "extra", "updated_at"},
+		orderBy: "workspace_id, group_id, user_id",
+	},
+	{
+		table: "groups",
+		ddl: `CREATE TABLE %s (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id    TEXT NOT NULL,
+			group_id        TEXT NOT NULL,
+			name            TEXT NOT NULL DEFAULT '',
+			type            TEXT NOT NULL DEFAULT 'group',
+			persona_keyword TEXT NOT NULL DEFAULT '',
+			message_count   INTEGER NOT NULL DEFAULT 0,
+			member_count    INTEGER NOT NULL DEFAULT 0,
+			last_ts         INTEGER NOT NULL DEFAULT 0,
+			extra           TEXT NOT NULL DEFAULT '{}',
+			updated_at      INTEGER NOT NULL,
+			UNIQUE (workspace_id, group_id)
+		)`,
+		columns: []string{
+			"workspace_id", "group_id", "name", "type", "persona_keyword",
+			"message_count", "member_count", "last_ts", "extra", "updated_at",
+		},
+		orderBy: "workspace_id, group_id",
+	},
+	{
+		table: "workspace_profile",
+		ddl: `CREATE TABLE %s (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id    TEXT NOT NULL UNIQUE,
+			platform        TEXT NOT NULL DEFAULT '',
+			account_kind    TEXT NOT NULL DEFAULT '',
+			account         TEXT NOT NULL DEFAULT '',
+			name            TEXT NOT NULL DEFAULT '',
+			self_user_id    TEXT NOT NULL DEFAULT '',
+			impl            TEXT NOT NULL DEFAULT '',
+			identity_scheme TEXT NOT NULL DEFAULT '',
+			identity_scope  TEXT NOT NULL DEFAULT '',
+			extra           TEXT NOT NULL DEFAULT '{}',
+			created_at      INTEGER NOT NULL,
+			updated_at      INTEGER NOT NULL
+		)`,
+		columns: []string{
+			"workspace_id", "platform", "account_kind", "account", "name", "self_user_id",
+			"impl", "identity_scheme", "identity_scope", "extra", "created_at", "updated_at",
+		},
+		orderBy: "workspace_id",
+	},
+	{
+		table: "image_notes",
+		ddl: `CREATE TABLE %s (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			sha256         TEXT NOT NULL,
+			byte_size      INTEGER NOT NULL,
+			mime           TEXT NOT NULL DEFAULT '',
+			width          INTEGER NOT NULL DEFAULT 0,
+			height         INTEGER NOT NULL DEFAULT 0,
+			animated       INTEGER NOT NULL DEFAULT 0,
+			note           TEXT NOT NULL DEFAULT '',
+			info_level     TEXT NOT NULL DEFAULT 'unknown',
+			has_text       INTEGER NOT NULL DEFAULT 0,
+			status         TEXT NOT NULL DEFAULT 'ok',
+			attempts       INTEGER NOT NULL DEFAULT 0,
+			model          TEXT NOT NULL DEFAULT '',
+			prompt_version TEXT NOT NULL DEFAULT '',
+			updated_at     INTEGER NOT NULL,
+			UNIQUE (sha256, byte_size)
+		)`,
+		columns: []string{
+			"sha256", "byte_size", "mime", "width", "height", "animated", "note",
+			"info_level", "has_text", "status", "attempts", "model", "prompt_version", "updated_at",
+		},
+		orderBy: "sha256, byte_size",
+	},
+	{
+		table: "asset_tag_jobs",
+		ddl: `CREATE TABLE %s (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id TEXT NOT NULL,
+			group_id     TEXT NOT NULL,
+			message_id   TEXT NOT NULL,
+			asset_index  INTEGER NOT NULL DEFAULT 0,
+			kind         TEXT NOT NULL DEFAULT 'image',
+			url          TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL DEFAULT 'pending',
+			attempts     INTEGER NOT NULL DEFAULT 0,
+			last_error   TEXT NOT NULL DEFAULT '',
+			created_at   INTEGER NOT NULL,
+			updated_at   INTEGER NOT NULL,
+			UNIQUE (workspace_id, group_id, message_id, asset_index)
+		)`,
+		columns: []string{
+			"workspace_id", "group_id", "message_id", "asset_index", "kind", "url",
+			"status", "attempts", "last_error", "created_at", "updated_at",
+		},
+		orderBy: "workspace_id, group_id, message_id, asset_index",
+	},
+	{
+		table: "send_ledger",
+		ddl: `CREATE TABLE %s (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id TEXT NOT NULL,
+			action_id    TEXT NOT NULL,
+			message_id   TEXT NOT NULL DEFAULT '',
+			text         TEXT NOT NULL DEFAULT '',
+			sent         INTEGER NOT NULL DEFAULT 0,
+			send_ok      INTEGER NOT NULL DEFAULT 0,
+			updated_at   INTEGER NOT NULL,
+			UNIQUE (workspace_id, action_id)
+		)`,
+		columns: []string{"workspace_id", "action_id", "message_id", "text", "sent", "send_ok", "updated_at"},
+		orderBy: "workspace_id, action_id",
+	},
+	{
+		table: "settings",
+		ddl: `CREATE TABLE %s (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			key        TEXT NOT NULL UNIQUE,
+			value      TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		columns: []string{"key", "value", "updated_at"},
+		orderBy: "key",
+	},
+}
+
+// addIDPrimaryKey 把还没有自增主键的表重建成「id 自增主键 + 原业务键 UNIQUE」（v16 升级）。
+//
+// SQLite 不能 ALTER TABLE 加主键，只能照 v9 重建 messages 的做法：建新表、按原主键
+// 顺序搬数据、删旧表、改名。已经带 id 的表跳过，所以重复执行也安全。
+// 群统计触发器挂在 members 上、又引用 groups（两张都要重建），先删掉，表建好再建回来。
+func addIDPrimaryKey(db *gorm.DB) error {
+	for _, name := range []string{"trg_messages_group_stats", "trg_members_group_stats"} {
+		if err := db.Exec(`DROP TRIGGER IF EXISTS ` + name).Error; err != nil {
+			return fmt.Errorf("删除群统计触发器 %s 失败：%w", name, err)
+		}
+	}
+	for _, spec := range tablesWithNewID {
+		if err := rebuildTableWithID(db, spec); err != nil {
+			return err
+		}
+	}
+	return createGroupStatTriggers(db)
+}
+
+// rebuildTableWithID 重建一张表，给它加上 id INTEGER PRIMARY KEY AUTOINCREMENT。
+// 表不存在或已经有 id 列时直接返回。
+func rebuildTableWithID(db *gorm.DB, spec tableWithID) error {
+	if !tableExists(db, spec.table) {
+		return nil
+	}
+	var count int
+	if err := db.Raw(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = 'id'`, spec.table).Scan(&count).Error; err != nil {
+		return fmt.Errorf("读取 %s 表结构失败：%w", spec.table, err)
+	}
+	if count > 0 {
+		return nil
+	}
+	temp := spec.table + "_v16"
+	columns := strings.Join(spec.columns, ", ")
+	steps := []string{
+		fmt.Sprintf(spec.ddl, temp),
+		fmt.Sprintf(`INSERT INTO %s (%s) SELECT %s FROM %s ORDER BY %s`, temp, columns, columns, spec.table, spec.orderBy),
+		`DROP TABLE ` + spec.table,
+		`ALTER TABLE ` + temp + ` RENAME TO ` + spec.table,
+	}
+	for _, statement := range steps {
+		if err := db.Exec(statement).Error; err != nil {
+			return fmt.Errorf("重建 %s 表失败：%w", spec.table, err)
+		}
+	}
+	logutil.Info("state.db 表已重建：新增自增主键 id", "table", spec.table)
 	return nil
 }
 

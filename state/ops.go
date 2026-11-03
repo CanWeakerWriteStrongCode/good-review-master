@@ -14,8 +14,10 @@ import (
 
 // SendRecord 发送台账的一行：动作编号是幂等键。
 type SendRecord struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	ActionID    string `gorm:"column:action_id;primaryKey"`
+	// ID 是自增主键；(workspace_id, action_id) 是业务键（表上是 UNIQUE）。
+	ID          int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	WorkspaceID string `gorm:"column:workspace_id"`
+	ActionID    string `gorm:"column:action_id"`
 	MessageID   string `gorm:"column:message_id"`
 	Text        string `gorm:"column:text"`
 	Sent        bool   `gorm:"column:sent"`
@@ -38,7 +40,9 @@ func (Alert) TableName() string { return "alerts" }
 
 // Setting 全局运行时设置。Key 是开放集合，所以保留 KV；画像那种固定字段不用它。
 type Setting struct {
-	Key       string `gorm:"column:key;primaryKey"`
+	// ID 是自增主键；key 是业务键（表上是 UNIQUE），upsert 的冲突目标按它写。
+	ID        int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	Key       string `gorm:"column:key"`
 	Value     string `gorm:"column:value"`
 	UpdatedAt int64  `gorm:"column:updated_at"`
 }
@@ -97,7 +101,11 @@ func (s *Scope) MarkSend(record SendRecord) {
 	}
 	record.WorkspaceID = s.workspaceID
 	record.UpdatedAt = time.Now().Unix()
-	if err := s.store.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&record).Error; err != nil {
+	// 冲突目标必须显式指定业务键：主键是自增 id 后，默认目标会变成 id，等于只插不更新。
+	if err := s.store.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "action_id"}},
+		UpdateAll: true,
+	}).Create(&record).Error; err != nil {
 		s.store.noteFailure("保存发送台账", err)
 	}
 }
@@ -168,5 +176,9 @@ func (s *Store) SaveSetting(key string, value any) error {
 		return err
 	}
 	row := Setting{Key: key, Value: string(payload), UpdatedAt: time.Now().Unix()}
-	return s.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error
+	// 冲突目标是 key，不是自增主键 id：写错的话每次都会新插一行，设置越存越多。
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		UpdateAll: true,
+	}).Create(&row).Error
 }

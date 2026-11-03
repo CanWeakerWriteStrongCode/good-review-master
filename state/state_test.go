@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -989,4 +990,214 @@ func TestLookupMemberNames批量补名(t *testing.T) {
 	if got := scope.LookupMemberNames("g1", ids); len(got) != 450 {
 		t.Fatalf("分批查询应返回全部 450 个名字，实际 %d", len(got))
 	}
+}
+
+// TestV15升级各表补自增主键 v16 把剩下 8 张表重建成「id 自增主键 + 原业务键 UNIQUE」：
+// 行数与字段值不能变；重复写还得更新原来那行、不能插新行；群统计触发器要建回来。
+func TestV15升级各表补自增主键(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			user_id TEXT NOT NULL, content TEXT NOT NULL,
+			mentions TEXT NOT NULL DEFAULT '[]', mentions_resolved INTEGER NOT NULL DEFAULT 1,
+			images TEXT NOT NULL DEFAULT '[]', image_ids TEXT NOT NULL DEFAULT '[]',
+			reply_to TEXT NOT NULL DEFAULT '', ref_idx TEXT NOT NULL DEFAULT '',
+			ts INTEGER NOT NULL, UNIQUE (workspace_id, group_id, message_id))`,
+		`CREATE TABLE anchors (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL,
+			window_first_id TEXT NOT NULL DEFAULT '', window_last_id TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, group_id))`,
+		`CREATE TABLE members (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
+			extra TEXT NOT NULL DEFAULT '{}', updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id, user_id))`,
+		`CREATE TABLE groups (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL DEFAULT 'group', persona_keyword TEXT NOT NULL DEFAULT '',
+			message_count INTEGER NOT NULL DEFAULT 0, member_count INTEGER NOT NULL DEFAULT 0,
+			last_ts INTEGER NOT NULL DEFAULT 0, extra TEXT NOT NULL DEFAULT '{}',
+			updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, group_id))`,
+		`CREATE TABLE workspace_profile (
+			workspace_id TEXT PRIMARY KEY, platform TEXT NOT NULL DEFAULT '',
+			account_kind TEXT NOT NULL DEFAULT '', account TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '', self_user_id TEXT NOT NULL DEFAULT '',
+			impl TEXT NOT NULL DEFAULT '', identity_scheme TEXT NOT NULL DEFAULT '',
+			identity_scope TEXT NOT NULL DEFAULT '', extra TEXT NOT NULL DEFAULT '{}',
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE image_notes (
+			sha256 TEXT NOT NULL, byte_size INTEGER NOT NULL, mime TEXT NOT NULL DEFAULT '',
+			width INTEGER NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0,
+			animated INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
+			info_level TEXT NOT NULL DEFAULT 'unknown', has_text INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'ok', attempts INTEGER NOT NULL DEFAULT 0,
+			model TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL, PRIMARY KEY (sha256, byte_size))`,
+		`CREATE TABLE asset_tag_jobs (
+			workspace_id TEXT NOT NULL, group_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			asset_index INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'image',
+			url TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, group_id, message_id, asset_index))`,
+		`CREATE TABLE send_ledger (
+			workspace_id TEXT NOT NULL, action_id TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '',
+			text TEXT NOT NULL DEFAULT '', sent INTEGER NOT NULL DEFAULT 0,
+			send_ok INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+			PRIMARY KEY (workspace_id, action_id))`,
+		`CREATE TABLE settings (
+			key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+		`INSERT INTO messages (workspace_id, group_id, message_id, user_id, content, ts)
+			VALUES ('qq_a', 'g1', 'm1', 'u1', '旧消息', 100)`,
+		`INSERT INTO anchors (workspace_id, group_id, window_first_id, window_last_id, updated_at)
+			VALUES ('qq_a', 'g1', '10', '20', 1761955200)`,
+		`INSERT INTO members (workspace_id, group_id, user_id, name, updated_at)
+			VALUES ('qq_a', 'g1', 'u1', '甲', 1)`,
+		`INSERT INTO groups
+			(workspace_id, group_id, name, type, message_count, member_count, last_ts, updated_at)
+			VALUES ('qq_a', 'g1', '群一', 'group', 2, 1, 300, 500),
+			       ('qq_a', 'private:u9', '', 'private', 1, 0, 200, 500)`,
+		`INSERT INTO workspace_profile (workspace_id, platform, account_kind, account, name, created_at, updated_at)
+			VALUES ('qq_a', 'qq', 'official_bot', '1906', '小助手', 1, 2)`,
+		`INSERT INTO image_notes (sha256, byte_size, note, updated_at)
+			VALUES ('s1', 10, '一张图', 3)`,
+		`INSERT INTO asset_tag_jobs (workspace_id, group_id, message_id, asset_index, url, created_at, updated_at)
+			VALUES ('qq_a', 'g1', 'm1', 0, 'http://x/1.png', 4, 5)`,
+		`INSERT INTO send_ledger (workspace_id, action_id, message_id, text, sent, send_ok, updated_at)
+			VALUES ('qq_a', 'act1', 'bot-1', '发过的', 1, 1, 6)`,
+		`INSERT INTO settings (key, value, updated_at) VALUES ('window', '{"k":1}', 7)`,
+		`PRAGMA user_version = 15`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("造 v15 库失败：%v\n%s", err, statement)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("升级后应能打开：%v", err)
+	}
+	defer st.Close()
+
+	// 8 张表都要有 id 自增主键。
+	for _, table := range tablesWithNewID {
+		assertAutoincrementID(t, st, table.table)
+	}
+
+	// 数据要原样还在：行数、关键字段都不能因为重建而丢。
+	counts := map[string]int64{
+		"messages": 1, "anchors": 1, "members": 1, "groups": 2, "workspace_profile": 1,
+		"image_notes": 1, "asset_tag_jobs": 1, "send_ledger": 1, "settings": 1,
+	}
+	for table, want := range counts {
+		if got := countRows(t, st, table); got != want {
+			t.Fatalf("%s 行数不对：%d，期望 %d", table, got, want)
+		}
+	}
+	var anchorFirst, anchorLast string
+	if err := st.db.Raw(`SELECT window_first_id, window_last_id FROM anchors
+		WHERE workspace_id = 'qq_a' AND group_id = 'g1'`).Row().Scan(&anchorFirst, &anchorLast); err != nil {
+		t.Fatalf("读锚点失败：%v", err)
+	}
+	if anchorFirst != "10" || anchorLast != "20" {
+		t.Fatalf("重建后锚点丢了：%q / %q", anchorFirst, anchorLast)
+	}
+	// id 按原主键顺序发：g1 在前，private:u9 在后。
+	var ids []int64
+	if err := st.db.Raw(`SELECT id FROM groups WHERE workspace_id = 'qq_a' ORDER BY id`).Scan(&ids).Error; err != nil {
+		t.Fatalf("读 groups 主键失败：%v", err)
+	}
+	if len(ids) != 2 || ids[0] != 1 || ids[1] != 2 {
+		t.Fatalf("重建后的 id 应从 1 连续发：%v", ids)
+	}
+
+	// 冲突目标还是业务键：同一个键写两次只更新，不新增行。
+	scope := st.Scope("qq_a")
+	if err := st.SaveSetting("window", map[string]int{"k": 2}); err != nil {
+		t.Fatalf("SaveSetting: %v", err)
+	}
+	if err := st.SaveSetting("window", map[string]int{"k": 3}); err != nil {
+		t.Fatalf("SaveSetting: %v", err)
+	}
+	scope.SaveAnchor("g1", conversation.LLMAnchor{Start: "30", LastSent: "40"})
+	scope.SaveAnchor("g1", conversation.LLMAnchor{Start: "50", LastSent: "60"})
+	scope.MarkSend(SendRecord{ActionID: "act1", MessageID: "bot-1", Text: "改过的", Sent: true, SendOK: true})
+	scope.SaveProfile(WorkspaceProfile{Platform: "qq", AccountKind: "official_bot", Account: "1906", Name: "改名了"})
+	if err := st.SaveAssetTagJob(AssetTagJob{
+		WorkspaceID: "qq_a", GroupID: "g1", MessageID: "m1", AssetIndex: 0, Status: "done",
+	}); err != nil {
+		t.Fatalf("SaveAssetTagJob: %v", err)
+	}
+	if err := st.SaveImageNote(conversation.ImageNote{
+		ImageID: conversation.ImageID{SHA: "s1", Size: 10}, Note: "换了描述", Status: "ok",
+	}); err != nil {
+		t.Fatalf("SaveImageNote: %v", err)
+	}
+	scope.SaveMember("g1", "u1", "甲改", "")
+	for table, want := range counts {
+		if table == "groups" || table == "messages" {
+			continue
+		}
+		if got := countRows(t, st, table); got != want {
+			t.Fatalf("%s 重复写之后行数涨了：%d，期望 %d", table, got, want)
+		}
+	}
+	var note, profileName, jobStatus string
+	if err := st.db.Raw(`SELECT note FROM image_notes WHERE sha256 = 's1'`).Scan(&note).Error; err != nil || note != "换了描述" {
+		t.Fatalf("图库描述没更新：%q, %v", note, err)
+	}
+	if err := st.db.Raw(`SELECT name FROM workspace_profile WHERE workspace_id = 'qq_a'`).Scan(&profileName).Error; err != nil || profileName != "改名了" {
+		t.Fatalf("画像没更新：%q, %v", profileName, err)
+	}
+	if err := st.db.Raw(`SELECT status FROM asset_tag_jobs WHERE message_id = 'm1'`).Scan(&jobStatus).Error; err != nil || jobStatus != "done" {
+		t.Fatalf("欠条状态没更新：%q, %v", jobStatus, err)
+	}
+
+	// 群统计触发器要建回来：新消息、新成员各自把 groups 的计数加上去。
+	scope.SaveMessage(conversation.Message{MessageID: "m2", GroupID: "g1", Content: "新消息", Time: 400})
+	scope.SaveMember("g1", "u2", "乙", "")
+	var messageCount, memberCount int
+	if err := st.db.Raw(`SELECT message_count, member_count FROM groups
+		WHERE workspace_id = 'qq_a' AND group_id = 'g1'`).Row().Scan(&messageCount, &memberCount); err != nil {
+		t.Fatalf("读群统计失败：%v", err)
+	}
+	if messageCount != 3 || memberCount != 2 {
+		t.Fatalf("重建后触发器没接上：消息数 %d（期望 3），成员数 %d（期望 2）", messageCount, memberCount)
+	}
+}
+
+// assertAutoincrementID 断言表里有 id INTEGER PRIMARY KEY AUTOINCREMENT。
+func assertAutoincrementID(t *testing.T, st *Store, table string) {
+	t.Helper()
+	var pk int
+	if err := st.db.Raw(`SELECT pk FROM pragma_table_info(?) WHERE name = 'id'`, table).Scan(&pk).Error; err != nil {
+		t.Fatalf("读 %s 表结构失败：%v", table, err)
+	}
+	if pk == 0 {
+		t.Fatalf("%s 没有 id 主键", table)
+	}
+	var ddl string
+	if err := st.db.Raw(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&ddl).Error; err != nil {
+		t.Fatalf("读 %s 建表语句失败：%v", table, err)
+	}
+	if !strings.Contains(ddl, "AUTOINCREMENT") {
+		t.Fatalf("%s 的 id 不是自增：%s", table, ddl)
+	}
+}
+
+func countRows(t *testing.T, st *Store, table string) int64 {
+	t.Helper()
+	var count int64
+	if err := st.db.Raw(`SELECT COUNT(*) FROM ` + table).Scan(&count).Error; err != nil {
+		t.Fatalf("统计 %s 失败：%v", table, err)
+	}
+	return count
 }

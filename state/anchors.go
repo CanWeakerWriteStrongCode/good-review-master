@@ -16,8 +16,10 @@ import (
 // 改名带上 window_ 前缀是因为 start/last_sent 看不出说的是"窗口的起点和终点"，
 // 光看列名会以为是时间或者队列位置。
 type anchorRow struct {
-	WorkspaceID   string `gorm:"column:workspace_id;primaryKey"`
-	GroupID       string `gorm:"column:group_id;primaryKey"`
+	// ID 是自增主键；(workspace_id, group_id) 是业务键（表上是 UNIQUE）。
+	ID            int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	WorkspaceID   string `gorm:"column:workspace_id"`
+	GroupID       string `gorm:"column:group_id"`
 	WindowFirstID string `gorm:"column:window_first_id"` // 上次窗口第一条消息的编号（messages.id）
 	WindowLastID  string `gorm:"column:window_last_id"`  // 上次窗口最后一条消息的编号，之后的就是"新增"
 	UpdatedAt     int64  `gorm:"column:updated_at"`      // 写入时刻（Unix 秒），同时用作缓存是否过期的基准
@@ -63,7 +65,11 @@ func (s *Scope) SaveAnchor(groupID string, anchor conversation.LLMAnchor) {
 		WindowLastID:  anchor.LastSent,
 		UpdatedAt:     at.Unix(),
 	}
-	if err := s.store.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+	// 冲突目标是 (workspace_id, group_id)：主键换成自增 id 后不显式指定就会打到 id 上。
+	if err := s.store.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "group_id"}},
+		UpdateAll: true,
+	}).Create(&row).Error; err != nil {
 		s.store.noteFailure("保存锚点", err)
 	}
 }

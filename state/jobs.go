@@ -16,10 +16,12 @@ import (
 
 // AssetTagJob 一条“某消息里的第几个资产”的补标签欠条。
 type AssetTagJob struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	GroupID     string `gorm:"column:group_id;primaryKey"`
-	MessageID   string `gorm:"column:message_id;primaryKey"`
-	AssetIndex  int    `gorm:"column:asset_index;primaryKey"`
+	// ID 是自增主键；四列是业务键（表上是 UNIQUE），upsert 的冲突目标按它们写。
+	ID          int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	WorkspaceID string `gorm:"column:workspace_id"`
+	GroupID     string `gorm:"column:group_id"`
+	MessageID   string `gorm:"column:message_id"`
+	AssetIndex  int    `gorm:"column:asset_index"`
 	Kind        string `gorm:"column:kind"`
 	URL         string `gorm:"column:url"`
 	Status      string `gorm:"column:status"`

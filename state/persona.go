@@ -16,7 +16,9 @@ import (
 
 // WorkspaceProfile 是工作空间画像：常用字段建列，其余进 Extra JSON。
 type WorkspaceProfile struct {
-	WorkspaceID    string `gorm:"column:workspace_id;primaryKey"`
+	// ID 是自增主键；workspace_id 是业务键（表上是 UNIQUE），upsert 的冲突目标按它写。
+	ID             int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	WorkspaceID    string `gorm:"column:workspace_id"`
 	Platform       string `gorm:"column:platform"`
 	AccountKind    string `gorm:"column:account_kind"`
 	Account        string `gorm:"column:account"`

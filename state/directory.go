@@ -24,9 +24,11 @@ const (
 )
 
 type memberRow struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	GroupID     string `gorm:"column:group_id;primaryKey"`
-	UserID      string `gorm:"column:user_id;primaryKey"`
+	// ID 是自增主键；三元组是业务键（表上是 UNIQUE），upsert 的冲突目标按它写。
+	ID          int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	WorkspaceID string `gorm:"column:workspace_id"`
+	GroupID     string `gorm:"column:group_id"`
+	UserID      string `gorm:"column:user_id"`
 	Name        string `gorm:"column:name"`
 	DisplayName string `gorm:"column:display_name"`
 	Extra       string `gorm:"column:extra"`
@@ -36,8 +38,10 @@ type memberRow struct {
 func (memberRow) TableName() string { return "members" }
 
 type groupRow struct {
-	WorkspaceID string `gorm:"column:workspace_id;primaryKey"`
-	GroupID     string `gorm:"column:group_id;primaryKey"`
+	// ID 是自增主键；(workspace_id, group_id) 是业务键（表上是 UNIQUE）。
+	ID          int64  `gorm:"column:id;primaryKey;autoIncrement"`
+	WorkspaceID string `gorm:"column:workspace_id"`
+	GroupID     string `gorm:"column:group_id"`
 	Name        string `gorm:"column:name"`
 	// Type 会话类型：group = 群聊，private = 私聊。
 	// 私聊在库里的 group_id 是 private:<openid>，和群号一样按会话存。
