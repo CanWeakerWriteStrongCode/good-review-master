@@ -370,6 +370,7 @@ type Tagger interface {
 
 ```sql
 CREATE TABLE IF NOT EXISTS asset_tag_jobs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT, -- v16 起：自增主键，原来那组业务键降为 UNIQUE
     workspace_id TEXT NOT NULL,
     group_id     TEXT NOT NULL,
     message_id   TEXT NOT NULL,
@@ -381,7 +382,7 @@ CREATE TABLE IF NOT EXISTS asset_tag_jobs (
     last_error   TEXT NOT NULL DEFAULT '',
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
-    PRIMARY KEY (workspace_id, group_id, message_id, asset_index)
+    UNIQUE (workspace_id, group_id, message_id, asset_index)
 );
 CREATE INDEX IF NOT EXISTS idx_asset_tag_jobs_pending
     ON asset_tag_jobs(status, updated_at);
