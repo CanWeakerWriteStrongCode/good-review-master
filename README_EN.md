@@ -422,7 +422,7 @@ cd tests/e2e && pnpm test
 
 - Covers: auth, group data, message data, the full bot flow (inject → trigger review → assert reply), and cache-hit cost (extend vs reset window).
 - In-process cache/anchors are global, so tests run serially (`workers: 1`) and are isolated via `/api/debug/reset`; `trigger` blocks until the handler finishes (anchor updated) before returning, so async side effects never leak across tests.
-- See [docs/testing.md](docs/testing.md) for details.
+- See [docs/ops/testing.md](docs/ops/testing.md) for details.
 
 ## Core Mechanisms
 

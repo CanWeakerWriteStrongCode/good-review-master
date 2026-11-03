@@ -357,7 +357,7 @@ apppath → (无内部依赖)
 version → (无内部依赖)
 ```
 
-层次约束：`conversation`、`assets`、`speech`、`workspace`、`policy` 是中层，**不许 import `pipeline`、`bot`、`app`、`web/server`**。完整的分层理由、刻意不做的事和已知例外见 [`docs/ddd-layering-design.md`](docs/ddd-layering-design.md)。
+层次约束：`conversation`、`assets`、`speech`、`workspace`、`policy` 是中层，**不许 import `pipeline`、`bot`、`app`、`web/server`**。分层、每个包的职责和依赖规则见 [`docs/architecture/domains.md`](docs/architecture/domains.md)。
 
 `app` 是组合根，只有 `main` 引它；组件需要别的组件时在 `app` 里注入，不要跨包直接 import。
 
@@ -449,7 +449,7 @@ cd tests/e2e && pnpm test
 
 - 覆盖：登录鉴权、群数据、消息数据、bot 全流程（注入→触发锐评→断言回复）、缓存命中成本（扩展 vs 重置窗口）。
 - 进程内缓存/锚点是全局的，用例串行（`workers: 1`），靠 `/api/debug/reset` 隔离；`trigger` 同步等待 handler 收尾（锚点更新）再返回，异步副作用不跨用例泄漏。
-- 详情见 [docs/testing.md](docs/testing.md)。
+- 详情见 [docs/ops/testing.md](docs/ops/testing.md)。
 
 ## 🛠 核心机制
 
