@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"good-review-master/conversation"
-
-	"gorm.io/gorm/clause"
 )
 
 // anchorRow 每个群「上次发出去的那个窗口」的首尾两条消息。
@@ -58,18 +56,20 @@ func (s *Scope) SaveAnchor(groupID string, anchor conversation.LLMAnchor) {
 	if at.IsZero() {
 		at = time.Now()
 	}
-	row := anchorRow{
-		WorkspaceID:   s.workspaceID,
-		GroupID:       groupID,
-		WindowFirstID: anchor.Start,
-		WindowLastID:  anchor.LastSent,
-		UpdatedAt:     at.Unix(),
+	// 先 UPDATE、没命中才 INSERT：upsert 即使只走更新分支，SQLite 也会先分配
+	// 自增 rowid 推进 sqlite_sequence，每推进一次窗口就把 anchors.id 白推高一个
+	// （详见 schema.go 的 createGroupStatTriggers）。
+	res := s.store.db.Exec(`UPDATE anchors SET
+			window_first_id = ?, window_last_id = ?, updated_at = ?
+		WHERE workspace_id = ? AND group_id = ?`,
+		anchor.Start, anchor.LastSent, at.Unix(), s.workspaceID, groupID)
+	if res.Error == nil && res.RowsAffected == 0 {
+		res = s.store.db.Exec(`INSERT INTO anchors
+				(workspace_id, group_id, window_first_id, window_last_id, updated_at)
+			VALUES (?, ?, ?, ?, ?)`,
+			s.workspaceID, groupID, anchor.Start, anchor.LastSent, at.Unix())
 	}
-	// 冲突目标是 (workspace_id, group_id)：主键换成自增 id 后不显式指定就会打到 id 上。
-	if err := s.store.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "group_id"}},
-		UpdateAll: true,
-	}).Create(&row).Error; err != nil {
-		s.store.noteFailure("保存锚点", err)
+	if res.Error != nil {
+		s.store.noteFailure("保存锚点", res.Error)
 	}
 }

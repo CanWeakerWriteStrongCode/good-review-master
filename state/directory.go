@@ -99,13 +99,23 @@ func (s *Scope) SaveSelfUserID(selfUserID string) {
 	}
 	// UPSERT：画像行一般早就在了，但调试注入或纯内存跑起来时可能还没有。
 	// 值没变就不更新（WHERE 只放行真变化的那种），免得每条消息都写一遍。
-	if err := s.store.db.Exec(`INSERT INTO workspace_profile
-			(workspace_id, self_user_id, extra, created_at, updated_at)
-		VALUES (?, ?, '{}', ?, ?)
-		ON CONFLICT(workspace_id) DO UPDATE SET self_user_id = excluded.self_user_id
-		WHERE workspace_profile.self_user_id <> excluded.self_user_id`,
-		s.workspaceID, selfUserID, time.Now().Unix(), time.Now().Unix()).Error; err != nil {
-		s.store.noteFailure("保存机器人身份", err)
+	//
+	// 写成"先 UPDATE、没命中才 INSERT"而不是 upsert：upsert 即使被 WHERE 挡下
+	// 没更新任何列，SQLite 也已经分配了自增 rowid（详见 schema.go 的
+	// createGroupStatTriggers）。
+	now := time.Now().Unix()
+	res := s.store.db.Exec(`UPDATE workspace_profile SET self_user_id = ?, updated_at = ?
+			WHERE workspace_id = ? AND self_user_id <> ?`,
+		selfUserID, now, s.workspaceID, selfUserID)
+	if res.Error == nil && res.RowsAffected == 0 {
+		res = s.store.db.Exec(`INSERT INTO workspace_profile
+				(workspace_id, self_user_id, extra, created_at, updated_at)
+			SELECT ?, ?, '{}', ?, ?
+			WHERE NOT EXISTS (SELECT 1 FROM workspace_profile WHERE workspace_id = ?)`,
+			s.workspaceID, selfUserID, now, now, s.workspaceID)
+	}
+	if res.Error != nil {
+		s.store.noteFailure("保存机器人身份", res.Error)
 	}
 }
 
@@ -184,6 +194,7 @@ func (s *Scope) SaveMemberInfo(info MemberInfo) (bool, error) {
 	var current memberRow
 	err := s.store.db.Where("workspace_id = ? AND group_id = ? AND user_id = ?",
 		s.workspaceID, info.GroupID, info.UserID).First(&current).Error
+	exists := err == nil
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		s.store.noteFailure("读取成员", err)
 		return false, err
@@ -196,8 +207,8 @@ func (s *Scope) SaveMemberInfo(info MemberInfo) (bool, error) {
 	if display == "" {
 		display = current.DisplayName
 	}
-	extraChanged := current.UpdatedAt == 0 || (extra != "{}" && extra != current.Extra)
-	changed := current.UpdatedAt == 0 || name != current.Name || display != current.DisplayName || extraChanged
+	extraChanged := !exists || (extra != "{}" && extra != current.Extra)
+	changed := !exists || name != current.Name || display != current.DisplayName || extraChanged
 	if !changed {
 		return false, nil
 	}
@@ -205,24 +216,45 @@ func (s *Scope) SaveMemberInfo(info MemberInfo) (bool, error) {
 	now := time.Now().Unix()
 	// 历史先写：即使随后更新当前值失败，也不会漏记一次变更。
 	if info.Source != "" || info.SourceMessageID != "" {
+		// 唯一索引只覆盖 source_message_id <> '' 的行，空编号不可能冲突；
+		// 非空时先 NOT EXISTS 判断再插 —— ON CONFLICT DO NOTHING 在冲突时
+		// 也已经分配了自增 rowid（详见 schema.go 的 createGroupStatTriggers）。
 		if err := s.store.db.Exec(`INSERT INTO member_info_history
-			(workspace_id, group_id, user_id, name, display_name, source, source_message_id, extra, changed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT DO NOTHING`,
+				(workspace_id, group_id, user_id, name, display_name, source, source_message_id, extra, changed_at)
+			SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+			WHERE ? = '' OR NOT EXISTS (
+				SELECT 1 FROM member_info_history
+				WHERE workspace_id = ? AND group_id = ? AND user_id = ? AND source_message_id = ?)`,
 			s.workspaceID, info.GroupID, info.UserID, name, display,
-			info.Source, info.SourceMessageID, extra, now).Error; err != nil {
+			info.Source, info.SourceMessageID, extra, now,
+			info.SourceMessageID,
+			s.workspaceID, info.GroupID, info.UserID, info.SourceMessageID).Error; err != nil {
 			s.store.noteFailure("写成员历史", err)
 		}
 	}
-	if err := s.store.db.Exec(`INSERT INTO members
-		(workspace_id, group_id, user_id, name, display_name, extra, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(workspace_id, group_id, user_id) DO UPDATE SET
-			name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE members.name END,
-			display_name = CASE WHEN excluded.display_name <> '' THEN excluded.display_name ELSE members.display_name END,
-			extra = CASE WHEN excluded.extra <> '{}' THEN excluded.extra ELSE members.extra END,
-			updated_at = excluded.updated_at`,
-		s.workspaceID, info.GroupID, info.UserID, name, display, extra, now).Error; err != nil {
+	// 行已经在了就只 UPDATE：upsert 即使走更新分支也会分配自增 rowid，
+	// 同一个成员每改一次名就把 members.id 白推高一个。
+	if exists {
+		err = s.store.db.Exec(`UPDATE members SET
+				name = ?, display_name = ?,
+				extra = CASE WHEN ? <> '{}' THEN ? ELSE extra END,
+				updated_at = ?
+			WHERE workspace_id = ? AND group_id = ? AND user_id = ?`,
+			name, display, extra, extra, now,
+			s.workspaceID, info.GroupID, info.UserID).Error
+	} else {
+		// 新成员：INSERT 仍带 ON CONFLICT，只防并发下两个调用方同时写同一个人。
+		err = s.store.db.Exec(`INSERT INTO members
+			(workspace_id, group_id, user_id, name, display_name, extra, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(workspace_id, group_id, user_id) DO UPDATE SET
+				name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE members.name END,
+				display_name = CASE WHEN excluded.display_name <> '' THEN excluded.display_name ELSE members.display_name END,
+				extra = CASE WHEN excluded.extra <> '{}' THEN excluded.extra ELSE members.extra END,
+				updated_at = excluded.updated_at`,
+			s.workspaceID, info.GroupID, info.UserID, name, display, extra, now).Error
+	}
+	if err != nil {
 		s.store.noteFailure("保存成员名", err)
 		return false, err
 	}
@@ -417,13 +449,27 @@ func (s *Scope) SaveGroupInfo(groupID, name, source, sourceMessageID, extra stri
 			s.store.noteFailure("写群历史", err)
 		}
 	}
-	if err := s.store.db.Exec(`INSERT INTO groups (workspace_id, group_id, name, extra, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
-			name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE groups.name END,
-			extra = CASE WHEN excluded.extra <> '{}' THEN excluded.extra ELSE groups.extra END,
-			updated_at = excluded.updated_at`,
-		s.workspaceID, groupID, effectiveName, extra, now).Error; err != nil {
+	// 行已经在了就只 UPDATE：upsert 即使走更新分支也会分配自增 rowid，
+	// 把 groups.id 白白推高（详见 schema.go 的 createGroupStatTriggers）。
+	if exists {
+		err = s.store.db.Exec(`UPDATE groups SET
+				name = ?,
+				extra = CASE WHEN ? <> '{}' THEN ? ELSE extra END,
+				updated_at = ?
+			WHERE workspace_id = ? AND group_id = ?`,
+			effectiveName, extra, extra, now, s.workspaceID, groupID).Error
+	} else {
+		// 新行：INSERT 仍带 ON CONFLICT，只防同进程里两个调用方同时给一个群建档，
+		// 正常路径不会走冲突分支。
+		err = s.store.db.Exec(`INSERT INTO groups (workspace_id, group_id, name, extra, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+				name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE groups.name END,
+				extra = CASE WHEN excluded.extra <> '{}' THEN excluded.extra ELSE groups.extra END,
+				updated_at = excluded.updated_at`,
+			s.workspaceID, groupID, effectiveName, extra, now).Error
+	}
+	if err != nil {
 		s.store.noteFailure("保存群档案", err)
 		return false, err
 	}

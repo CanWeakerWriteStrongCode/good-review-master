@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // WorkspaceProfile 是工作空间画像：常用字段建列，其余进 Extra JSON。
@@ -35,20 +34,29 @@ func (WorkspaceProfile) TableName() string { return "workspace_profile" }
 
 // SaveGroupPersona 记录某群当前人格的源关键字（写 groups.persona_keyword）。
 //
-// 用 UPSERT 而不是 UPDATE：切换人格要求先命中一个带人格的关键字，那时群里
-// 通常已经有消息、groups 行早建出来了；但「一条消息都没存过」的极端情况
-// 也不该把人格丢掉。updated_at 写 0，表示档案本身还没写过。
+// 切换人格要求先命中一个带人格的关键字，那时群里通常已经有消息、groups 行
+// 早建出来了；但"一条消息都没存过"的极端情况也不该把人格丢掉，所以要补行。
+// updated_at 写 0，表示档案本身还没写过。
 func (s *Scope) SaveGroupPersona(groupID, keyword string) {
 	if s == nil || s.store == nil || s.store.closed.Load() {
 		return
 	}
-	if err := s.store.db.Exec(`INSERT INTO groups
-			(workspace_id, group_id, type, persona_keyword, extra, updated_at)
-		VALUES (?, ?, CASE WHEN ? LIKE 'private:%' THEN 'private' ELSE 'group' END, ?, '{}', 0)
-		ON CONFLICT(workspace_id, group_id) DO UPDATE SET
-			persona_keyword = excluded.persona_keyword`,
-		s.workspaceID, groupID, groupID, keyword).Error; err != nil {
-		s.store.noteFailure("保存群人格", err)
+	// 先 UPDATE，没命中才补行：upsert 即使只走更新分支也会分配自增 rowid，
+	// 每切一次人格就把 groups.id 推高一个（详见 schema.go 的 createGroupStatTriggers）。
+	res := s.store.db.Exec(`UPDATE groups SET persona_keyword = ?
+			WHERE workspace_id = ? AND group_id = ?`,
+		keyword, s.workspaceID, groupID)
+	if res.Error == nil && res.RowsAffected == 0 {
+		// 群里一条消息都没存过：补一行。仍带 ON CONFLICT，只防并发下别人刚插过。
+		res = s.store.db.Exec(`INSERT INTO groups
+				(workspace_id, group_id, type, persona_keyword, extra, updated_at)
+			VALUES (?, ?, CASE WHEN ? LIKE 'private:%' THEN 'private' ELSE 'group' END, ?, '{}', 0)
+			ON CONFLICT(workspace_id, group_id) DO UPDATE SET
+				persona_keyword = excluded.persona_keyword`,
+			s.workspaceID, groupID, groupID, keyword)
+	}
+	if res.Error != nil {
+		s.store.noteFailure("保存群人格", res.Error)
 	}
 }
 
@@ -113,11 +121,24 @@ func (s *Scope) SaveProfile(profile WorkspaceProfile) error {
 	if strings.TrimSpace(profile.Extra) == "" {
 		profile.Extra = "{}"
 	}
-	return s.store.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "workspace_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"platform", "account_kind", "account", "name", "impl",
-			"identity_scheme", "identity_scope", "extra", "updated_at",
-		}),
-	}).Create(&profile).Error
+	// 先 UPDATE、没命中才 INSERT：upsert 即使走更新分支也会分配自增 rowid，
+	// 每同步一次画像就把 workspace_profile.id 推高一个（详见 schema.go 的
+	// createGroupStatTriggers）。created_at 只在插入时写。
+	res := s.store.db.Exec(`UPDATE workspace_profile SET
+			platform = ?, account_kind = ?, account = ?, name = ?, impl = ?,
+			identity_scheme = ?, identity_scope = ?, extra = ?, updated_at = ?
+		WHERE workspace_id = ?`,
+		profile.Platform, profile.AccountKind, profile.Account, profile.Name, profile.Impl,
+		profile.IdentityScheme, profile.IdentityScope, profile.Extra, profile.UpdatedAt,
+		profile.WorkspaceID)
+	if res.Error == nil && res.RowsAffected == 0 {
+		res = s.store.db.Exec(`INSERT INTO workspace_profile
+				(workspace_id, platform, account_kind, account, name, impl,
+				 identity_scheme, identity_scope, extra, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			profile.WorkspaceID, profile.Platform, profile.AccountKind, profile.Account,
+			profile.Name, profile.Impl, profile.IdentityScheme, profile.IdentityScope,
+			profile.Extra, profile.CreatedAt, profile.UpdatedAt)
+	}
+	return res.Error
 }

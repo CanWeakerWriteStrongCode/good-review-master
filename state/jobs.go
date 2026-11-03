@@ -49,14 +49,28 @@ func (s *Store) SaveAssetTagJob(job AssetTagJob) error {
 		job.CreatedAt = now
 	}
 	job.UpdatedAt = now
-	return s.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{
-			{Name: "workspace_id"}, {Name: "group_id"}, {Name: "message_id"}, {Name: "asset_index"},
-		},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"kind", "url", "status", "attempts", "last_error", "updated_at",
-		}),
-	}).Create(&job).Error
+	// 先 UPDATE、没命中才 INSERT：upsert 即使走更新分支也会先分配自增 rowid，
+	// 同一张欠条反复改状态就把 asset_tag_jobs.id 白推高一个
+	// （详见 schema.go 的 createGroupStatTriggers）。created_at 只在插入时写。
+	res := s.db.Model(&AssetTagJob{}).
+		Where("workspace_id = ? AND group_id = ? AND message_id = ? AND asset_index = ?",
+			job.WorkspaceID, job.GroupID, job.MessageID, job.AssetIndex).
+		Updates(map[string]any{
+			"kind": job.Kind, "url": job.URL, "status": job.Status,
+			"attempts": job.Attempts, "last_error": job.LastError, "updated_at": job.UpdatedAt,
+		})
+	if res.Error == nil && res.RowsAffected == 0 {
+		// 新欠条：插入。仍带 ON CONFLICT，只防并发下两个进程同时记同一张欠条。
+		res = s.db.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "workspace_id"}, {Name: "group_id"}, {Name: "message_id"}, {Name: "asset_index"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"kind", "url", "status", "attempts", "last_error", "updated_at",
+			}),
+		}).Create(&job)
+	}
+	return res.Error
 }
 
 // AssetTagClaim 是一次领取的时间边界，由调用方按当前配置算好传进来

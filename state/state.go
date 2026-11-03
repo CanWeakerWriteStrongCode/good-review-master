@@ -9,7 +9,7 @@
 //
 // 按表拆文件，一个文件一类数据：
 //
-//	schema.go     表结构、版本迁移、补列/重建
+//	schema.go     表结构（只负责把空库建出来）
 //	messages.go   messages（消息台账，也是发给大模型的 message_id 来源）
 //	images.go     image_notes（全局图库，不带 workspace_id）
 //	anchors.go    anchors（上次发出去的窗口首尾，前缀缓存的命门）

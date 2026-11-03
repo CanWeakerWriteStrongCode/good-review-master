@@ -67,18 +67,34 @@ func (s *Scope) SaveMessage(msg conversation.Message) int64 {
 		ImageIDs: string(imageIDs), ReplyTo: msg.ReplyToID, RefIdx: msg.RefIdx, TS: msg.Time,
 	}
 	// 冲突目标必须显式指定三元组：主键换成自增 id 后，默认目标会变成 id，等于永不更新。
-	err = s.store.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "group_id"}, {Name: "message_id"}},
-		UpdateAll: true,
-	}).Create(&row).Error
-	if err != nil {
-		s.store.noteFailure("写入消息", err)
+	//
+	// 先 UPDATE、没命中才 INSERT 而不是直接 upsert：upsert 即使最后只走更新分支，
+	// SQLite 也会先分配自增 rowid，同一条消息重试落库就把 messages.id 白推高一个
+	// （详见 schema.go 的 createGroupStatTriggers）。
+	res := s.store.db.Model(&messageRow{}).
+		Where("workspace_id = ? AND group_id = ? AND message_id = ?",
+			s.workspaceID, msg.GroupID, msg.MessageID).
+		Updates(map[string]any{
+			"user_id": row.UserID, "content": row.Content,
+			"mentions": row.Mentions, "mentions_resolved": row.MentionsResolved,
+			"images": row.Images, "image_ids": row.ImageIDs,
+			"reply_to": row.ReplyTo, "ref_idx": row.RefIdx, "ts": row.TS,
+		})
+	if res.Error == nil && res.RowsAffected == 0 {
+		// 还没有这行：插入。仍带 ON CONFLICT，只防并发下一个进程刚插过同一条消息。
+		res = s.store.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "group_id"}, {Name: "message_id"}},
+			UpdateAll: true,
+		}).Create(&row)
+	}
+	if res.Error != nil {
+		s.store.noteFailure("写入消息", res.Error)
 		return 0
 	}
 	if row.ID > 0 {
 		return row.ID
 	}
-	// 走 ON CONFLICT DO UPDATE 分支时驱动的 RETURNING 由 SQLite 负责，个别版本不回填，回查一次。
+	// UPDATE 命中的分支不会回填 id；upsert 的 RETURNING 个别版本也不回填，统一回查一次。
 	var id int64
 	if err := s.store.db.Raw(`SELECT id FROM messages WHERE workspace_id = ? AND group_id = ? AND message_id = ?`,
 		s.workspaceID, msg.GroupID, msg.MessageID).Scan(&id).Error; err != nil {

@@ -102,11 +102,24 @@ func (s *Scope) MarkSend(record SendRecord) {
 	record.WorkspaceID = s.workspaceID
 	record.UpdatedAt = time.Now().Unix()
 	// 冲突目标必须显式指定业务键：主键是自增 id 后，默认目标会变成 id，等于只插不更新。
-	if err := s.store.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "action_id"}},
-		UpdateAll: true,
-	}).Create(&record).Error; err != nil {
-		s.store.noteFailure("保存发送台账", err)
+	//
+	// 先 UPDATE、没命中才 INSERT：upsert 即使走更新分支也会先分配自增 rowid，
+	// 同一个动作重试就把 send_ledger.id 白推高一个（详见 schema.go 的 createGroupStatTriggers）。
+	res := s.store.db.Model(&SendRecord{}).
+		Where("workspace_id = ? AND action_id = ?", s.workspaceID, record.ActionID).
+		Updates(map[string]any{
+			"message_id": record.MessageID, "text": record.Text,
+			"sent": record.Sent, "send_ok": record.SendOK, "updated_at": record.UpdatedAt,
+		})
+	if res.Error == nil && res.RowsAffected == 0 {
+		// 新动作：插入。仍带 ON CONFLICT，只防并发下同一个动作被写两次。
+		res = s.store.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "action_id"}},
+			UpdateAll: true,
+		}).Create(&record)
+	}
+	if res.Error != nil {
+		s.store.noteFailure("保存发送台账", res.Error)
 	}
 }
 
@@ -177,8 +190,16 @@ func (s *Store) SaveSetting(key string, value any) error {
 	}
 	row := Setting{Key: key, Value: string(payload), UpdatedAt: time.Now().Unix()}
 	// 冲突目标是 key，不是自增主键 id：写错的话每次都会新插一行，设置越存越多。
-	return s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "key"}},
-		UpdateAll: true,
-	}).Create(&row).Error
+	//
+	// 先 UPDATE、没命中才 INSERT：upsert 即使只走更新分支也会分配自增 rowid，
+	// 改一次设置就把 settings.id 白推高一个（详见 schema.go 的 createGroupStatTriggers）。
+	res := s.db.Model(&Setting{}).Where("key = ?", key).
+		Updates(map[string]any{"value": row.Value, "updated_at": row.UpdatedAt})
+	if res.Error == nil && res.RowsAffected == 0 {
+		res = s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "key"}},
+			UpdateAll: true,
+		}).Create(&row)
+	}
+	return res.Error
 }

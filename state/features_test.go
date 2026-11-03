@@ -2,6 +2,7 @@ package state
 
 import (
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,6 +64,141 @@ func Test群历史与当前值(t *testing.T) {
 	}
 	if got := scope.GroupName("g1"); got != "群B" {
 		t.Fatalf("群名 = %q", got)
+	}
+}
+
+// Test群统计不再白烧自增号 消息、成员、群档案都是反复写入同一个群，
+// groups.id 只能按群的数量增长。SQLite 的 upsert 即使只走更新分支也会分配
+// 自增 rowid 并推进 sqlite_sequence，所以触发器和写入口都改成"先 UPDATE、
+// 没命中才 INSERT"；这里用重复写入把这条约束钉住。
+func Test群统计不再白烧自增号(t *testing.T) {
+	st, scope := openTemp(t)
+	for i := 0; i < 20; i++ {
+		scope.SaveMessage(conversation.Message{
+			GroupID: "g1", MessageID: "m" + strconv.Itoa(i), UserID: "u1",
+			Content: "hi", Time: int64(100 + i),
+		})
+		scope.SaveMember("g1", "u1", "甲", "老甲")
+		scope.SaveGroupInfo("g1", "群一", "group_info", "", "{}")
+		scope.SaveGroupPersona("g1", "锐评下")
+	}
+	scope.SaveMessage(conversation.Message{
+		GroupID: "g2", MessageID: "m-x", UserID: "u2", Content: "hi", Time: 300,
+	})
+
+	var rows []groupRow
+	if err := st.db.Raw(`SELECT id, group_id, message_count, member_count FROM groups ORDER BY id`).
+		Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ID != 1 || rows[1].ID != 2 {
+		t.Fatalf("groups.id 应跟着群数走，实际 %+v", rows)
+	}
+	if rows[0].MessageCount != 20 || rows[0].MemberCount != 1 {
+		t.Fatalf("计数被改坏了：%+v", rows[0])
+	}
+	if rows[1].MessageCount != 1 {
+		t.Fatalf("新群计数应为 1：%+v", rows[1])
+	}
+}
+
+// Test重复写入不再白烧其余表的自增号 members / member_info_history / anchors /
+// workspace_profile 都是反复命中同一行的写入，序列号只该跟着真实新行增长。
+// 老写法用 upsert（含 ON CONFLICT DO NOTHING），SQLite 在冲突前就分配了 rowid，
+// 就算最后只更新/被忽略，序列也白跑一格。
+func Test重复写入不再白烧其余表的自增号(t *testing.T) {
+	st, scope := openTemp(t)
+
+	// 同一个成员反复改名：members 只有 1 行。
+	for i := 0; i < 5; i++ {
+		scope.SaveMemberInfo(MemberInfo{
+			GroupID: "g1", UserID: "u1", Name: "名字" + strconv.Itoa(i),
+			Source: "sender", SourceMessageID: "m" + strconv.Itoa(i),
+		})
+	}
+	// 同一条消息重试、信息却不一样：历史按 source_message_id 去重，不该插第二行。
+	scope.SaveMemberInfo(MemberInfo{
+		GroupID: "g1", UserID: "u1", Name: "重试名", Source: "sender", SourceMessageID: "m0",
+	})
+
+	// 锚点反复推进、画像反复同步。
+	for i := 0; i < 5; i++ {
+		scope.SaveAnchor("g1", conversation.LLMAnchor{
+			Start: strconv.Itoa(i), LastSent: strconv.Itoa(i + 1),
+		})
+	}
+	for i := 0; i < 5; i++ {
+		if err := scope.SaveProfile(WorkspaceProfile{Name: "画像" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scope.SaveSelfUserID("openid-a")
+	scope.SaveSelfUserID("openid-a") // 值没变，什么都不该动
+
+	want := map[string]int{
+		"members": 1, "member_info_history": 5, "anchors": 1, "workspace_profile": 1,
+	}
+	for table, wantRows := range want {
+		var rows, seq int
+		if err := st.db.Raw(`SELECT COUNT(*) FROM ` + table).Scan(&rows).Error; err != nil {
+			t.Fatalf("统计 %s: %v", table, err)
+		}
+		if err := st.db.Raw(`SELECT seq FROM sqlite_sequence WHERE name = ?`, table).Scan(&seq).Error; err != nil {
+			t.Fatalf("读 %s 序列: %v", table, err)
+		}
+		if rows != wantRows {
+			t.Fatalf("%s 应有 %d 行，实际 %d", table, wantRows, rows)
+		}
+		if seq != wantRows {
+			t.Fatalf("%s 序列应等于行数 %d（没有空烧），实际 %d", table, wantRows, seq)
+		}
+	}
+}
+
+// Test单行写入不再白烧自增号 messages / send_ledger / settings / asset_tag_jobs
+// 都是"业务键唯一、反复重写同一行"的表，序列号只该跟着真实新行增长。
+func Test单行写入不再白烧自增号(t *testing.T) {
+	st, scope := openTemp(t)
+
+	for i := 0; i < 5; i++ {
+		scope.SaveMessage(conversation.Message{
+			GroupID: "g1", MessageID: "m1", UserID: "u1",
+			Content: "第" + strconv.Itoa(i) + "次", Time: int64(i),
+		})
+	}
+	for i := 0; i < 5; i++ {
+		scope.MarkSend(SendRecord{
+			ActionID: "a1", MessageID: "bot-1", Text: "第" + strconv.Itoa(i) + "次", Sent: true,
+		})
+	}
+	for i := 0; i < 5; i++ {
+		if err := st.SaveSetting("window", i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		if err := st.SaveAssetTagJob(AssetTagJob{
+			WorkspaceID: "w1", GroupID: "g1", MessageID: "m1", AssetIndex: 0, Status: "pending",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := map[string]int{"messages": 1, "send_ledger": 1, "settings": 1, "asset_tag_jobs": 1}
+	for table, wantRows := range want {
+		var rows, seq int
+		if err := st.db.Raw(`SELECT COUNT(*) FROM ` + table).Scan(&rows).Error; err != nil {
+			t.Fatalf("统计 %s: %v", table, err)
+		}
+		if err := st.db.Raw(`SELECT seq FROM sqlite_sequence WHERE name = ?`, table).Scan(&seq).Error; err != nil {
+			t.Fatalf("读 %s 序列: %v", table, err)
+		}
+		if rows != wantRows {
+			t.Fatalf("%s 应有 %d 行，实际 %d", table, wantRows, rows)
+		}
+		if seq != wantRows {
+			t.Fatalf("%s 序列应等于行数 %d（没有空烧），实际 %d", table, wantRows, seq)
+		}
 	}
 }
 
@@ -268,45 +404,6 @@ func Test画像三元组唯一(t *testing.T) {
 	}
 }
 
-func TestV5升级迁移meta到画像(t *testing.T) {
-	path := filepath.Join(t.TempDir(), FileName)
-	st, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	execDB(t, st, `DROP TABLE workspace_profile`)
-	execDB(t, st, `CREATE TABLE meta (workspace_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (workspace_id, key))`)
-	execDB(t, st, `INSERT INTO meta (workspace_id, key, value) VALUES
-		('qq_official_bot_1906','platform','qq'),
-		('qq_official_bot_1906','account_kind','official_bot'),
-		('qq_official_bot_1906','account','1906'),
-		('qq_official_bot_1906','name','小助理')`)
-	execDB(t, st, `PRAGMA user_version = 5`)
-	_ = st.Close()
-
-	st, err = Open(path)
-	if err != nil {
-		t.Fatalf("升级后应能打开：%v", err)
-	}
-	defer st.Close()
-	metas, err := st.Workspaces()
-	if err != nil || len(metas) != 1 {
-		t.Fatalf("workspaces = %+v, %v", metas, err)
-	}
-	if metas[0].Platform != "qq" || metas[0].AccountKind != "official_bot" ||
-		metas[0].Account != "1906" || metas[0].Name != "小助理" {
-		t.Fatalf("迁移结果 = %+v", metas[0])
-	}
-	if tableExists(st.db, "meta") {
-		t.Fatal("迁移后应删除旧 meta 表")
-	}
-	// 迁移后仍可正常写图片描述。
-	id := conversation.ImageID{SHA: "s1", Size: 1}
-	if err := st.SaveImageNote(conversation.ImageNote{ImageID: id, Note: "图", Status: "ok"}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // Test消息占位待办 落库时就定下“这条 @ 了谁”和“正文里还有没有占位”，
 // 回填只改正文与待办标记；where 带旧正文是为了多副本同时改同一行时不互相覆盖。
 func Test消息占位待办(t *testing.T) {
@@ -378,52 +475,6 @@ func Test消息占位待办(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("LoadRecent 应读到 m1")
-	}
-}
-
-// Test从旧库升级补出占位待办 v14 升级要在老库上把两列补出来，
-// 并把正文里还有 @用户( 的行标成待办、把 openid 抽进 mentions。
-func Test从旧库升级补出占位待办(t *testing.T) {
-	path := filepath.Join(t.TempDir(), FileName)
-	st, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	const rice = "ADA3988201B97492C659ADDAB0EAF113"
-	placeholder := "@用户(" + rice + ") 你好啊"
-	if st.Scope("qq_test").SaveMessage(conversation.Message{
-		MessageID: "m1", GroupID: "g1", UserID: "u1", Content: placeholder, Time: 100,
-	}) == 0 {
-		t.Fatal("消息应落库")
-	}
-	// 退回 v13 的样子：没有这两列，也没有那条索引。
-	for _, statement := range []string{
-		`DROP INDEX IF EXISTS idx_messages_mention_pending`,
-		`ALTER TABLE messages DROP COLUMN mentions`,
-		`ALTER TABLE messages DROP COLUMN mentions_resolved`,
-		`PRAGMA user_version = 13`,
-	} {
-		if err := st.db.Exec(statement).Error; err != nil {
-			t.Fatalf("%s: %v", statement, err)
-		}
-	}
-	st.Close()
-
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("升级后重新 Open: %v", err)
-	}
-	defer reopened.Close()
-	rows, err := reopened.Scope("qq_test").PendingMentionRows("g1", 10)
-	if err != nil || len(rows) != 1 || rows[0].Content != placeholder {
-		t.Fatalf("升级后应把老消息标成待办：%+v, %v", rows, err)
-	}
-	var mentions string
-	if err := reopened.db.Raw(`SELECT mentions FROM messages WHERE message_id = 'm1'`).Scan(&mentions).Error; err != nil {
-		t.Fatal(err)
-	}
-	if mentions != `["`+rice+`"]` {
-		t.Fatalf("mentions 应从正文补出来，实际 %q", mentions)
 	}
 }
 
