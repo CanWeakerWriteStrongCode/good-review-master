@@ -45,7 +45,7 @@ Go 侧统一通过 `onebot.Event` 的访问方法读，不直接按 JSON 路径�
 | `GetSelfInfo` / `GetSelfInfoFor` | 取机器人昵称与 ID | 启动、昵称核对（10 分钟一次） |
 | `GetGroupInfo` | 群名、群人数 | 面板展示、群档案 |
 | `GetUserInfo` | 用户资料 | 补名 |
-| `GetGroupMemberInfo` | 群成员的名片与昵称 | Stage 1 补名 |
+| `GetGroupMemberInfo` | 群成员的名片与昵称 | 前置补名（`sync`） |
 | `GetVersion` / `GetSupportedActions` | 实现端版本与支持的动作清单 | 排障、能力探测 |
 | `SendGroupMessageE` | 发群消息（纯文本） | 普通回复 |
 | `SendGroupReplyE` | 发群消息并带引用、带 @ | 回复被 @ 的那条 |

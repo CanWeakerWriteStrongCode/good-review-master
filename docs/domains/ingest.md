@@ -8,7 +8,7 @@
 | --- | --- |
 | 校验共享 token、限制请求体积、解 JSON | 群白名单判定（`policy` 做，`bot` 调） |
 | 按路径里的 `{account}` 找到或开通工作空间 | 消息去重（`bot.AcceptEvent` 里按 workspace+msgID 做） |
-| 把事件塞进 B1，2 秒内必须返回 | 补成员名、落库、调模型、发回复 |
+| 把事件交给 `bot.AcceptEvent` 入前置队列，2 秒内必须返回 | 补成员名、落库、调模型、发回复 |
 
 这条界线是刻意的：HTTP 处理器里同步做大模型调用，AstrBot 那边会超时重推，同一条消息被处理两遍。
 
@@ -43,7 +43,7 @@ flowchart TD
   E -->|"名单含 * 或含该 ID"| F["自动开通<br/>写 workspace_profile"]
   F --> G{"dedup.claim<br/>workspace|chat|msgID"}
   G -->|已见过| R4["404（不接管）"]
-  G -->|首次| H["b1.Put(Inbound)<br/>最多等 2 秒"]
+  G -->|首次| H["orch.admit(Inbound)<br/>最多等 2 秒"]
   H -->|入队成功| OK["204"]
   H -->|队列等满 2 秒| R5["503"]
 ```

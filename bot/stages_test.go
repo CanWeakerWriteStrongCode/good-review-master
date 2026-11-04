@@ -15,9 +15,9 @@ import (
 	"good-review-master/workspace"
 )
 
-// TestDeadLetter报警带上账号 验证阶段重试超限写报警时账号没丢。
+// TestDeadLetter报警带上账号 验证节点重试超限写报警时账号没丢。
 //
-// Item 里只有 stage / key / id，没有账号字段，账号是从分区键
+// Item 里只有 node / tag / key / id，没有账号字段，账号是从分区键
 // 「workspaceID|chatID」拆出来的；拆不出来面板上就只能显示「全局」。
 func TestDeadLetter报警带上账号(t *testing.T) {
 	dir := t.TempDir()
@@ -36,7 +36,7 @@ func TestDeadLetter报警带上账号(t *testing.T) {
 
 	// 真实链路里的 key 就是这个拼法（bot/ingest.go、bot/stages.go）。
 	key := conversation.ChatKey("qq_official_bot_1906", "g1")
-	item, err := pipeline.NewItem(pipeline.StageSync, "", key, "m1",
+	item, err := pipeline.NewItem(pipeline.NodeSync, "", key, "m1",
 		conversation.Inbound{WorkspaceID: "qq_official_bot_1906"})
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)

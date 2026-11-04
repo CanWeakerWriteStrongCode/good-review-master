@@ -53,7 +53,7 @@ func TestStage同会话串行与跨会话并行(t *testing.T) {
 
 	for _, key := range []string{"a", "b"} {
 		for i := 0; i < 4; i++ {
-			item := mustItem(t, StageSync, key, key+string(rune('0'+i)), struct{}{})
+			item := mustItem(t, NodeSync, key, key+string(rune('0'+i)), struct{}{})
 			if err := buf.Put(ctx, item); err != nil {
 				t.Fatal(err)
 			}
@@ -114,7 +114,7 @@ func TestStage批量取数与重试死信(t *testing.T) {
 	stage.Run(ctx)
 
 	for _, id := range []string{"good1", "good2", "bad"} {
-		item := mustItem(t, StageSync, "k", id, struct{}{})
+		item := mustItem(t, NodeSync, "k", id, struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}
@@ -158,7 +158,7 @@ func TestStage空闲会话不占名额(t *testing.T) {
 	stage.Run(ctx)
 
 	put := func(key, id string) {
-		item := mustItem(t, StageSync, key, id, struct{}{})
+		item := mustItem(t, NodeSync, key, id, struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}
@@ -213,7 +213,7 @@ func TestStage并发数热调整(t *testing.T) {
 	}
 
 	limit.Store(4)
-	if err := buf.Put(ctx, mustItem(t, StageSync, "k", "1", struct{}{})); err != nil {
+	if err := buf.Put(ctx, mustItem(t, NodeSync, "k", "1", struct{}{})); err != nil {
 		t.Fatal(err)
 	}
 	stage.Submit("k")
@@ -258,7 +258,7 @@ func TestStage指标跟着状态走(t *testing.T) {
 		t.Fatalf("workers = %v, want 2", got)
 	}
 
-	if err := buf.Put(ctx, mustItem(t, StageSync, "k", "1", struct{}{})); err != nil {
+	if err := buf.Put(ctx, mustItem(t, NodeSync, "k", "1", struct{}{})); err != nil {
 		t.Fatal(err)
 	}
 	stage.Submit("k")
@@ -314,7 +314,7 @@ func TestStage同一会话不并发(t *testing.T) {
 	stage.Run(ctx)
 
 	for i := 0; i < 20; i++ {
-		item := mustItem(t, StageSync, "same", string(rune('a'+i)), struct{}{})
+		item := mustItem(t, NodeSync, "same", string(rune('a'+i)), struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}

@@ -18,14 +18,16 @@ flowchart TB
   RT -->|"回执 command（tag）"| O
 
   subgraph W1["工作流一：聊天"]
-    S2["assets · handleAssets"] --> S3["agent · handleAgent"]
+    S2["assets · handleAssets"]
+    S3["agent · handleAgent"]
   end
   subgraph W2["工作流二：管理指令"]
     SC["command · handleCommand"]
   end
 
-  O -->|"chat：入口 assets"| S2
-  O -->|"command：入口 command"| SC
+  O -->|"enter(chat)：入口 assets"| S2
+  O -->|"advance(chat, tagged)：下一站 agent"| S3
+  O -->|"enter(command)：入口 command"| SC
   S2 -->|"Tagger.TagURLs"| AS["assets.ImageTagger"]
   S2 -->|"回执 tagged（chat）"| O
   S3 --> GC["conversation.GroupMsgCache"]
@@ -77,7 +79,7 @@ flowchart TB
 | `workspace.Manager.ResolveOrCreate` | `workspace/workspace.go` | `(platform, account_kind, account)` → `*Workspace`；不在开通名单就返 nil，事件被丢弃 |
 | `conversation.ChatKey` | `conversation/types.go` | `workspaceID + "\|" + chatID`，后面所有分片、缓存、落库都用它当键 |
 | `messageDedup` | `bot/handler.go` | TTL 10 分钟的内存短表，兜住「前置的缓存还看不到这条消息」这段窗口；入队失败会 `forget` 撤占位 |
-| `pipeline.Item` | `pipeline/buffer.go` | 阶段之间**唯一**搬运的东西：`ID`（`stage\|tag\|key\|消息ID`）、`Key`、`Stage`（topic）、`Tag`（工作流）、`Body`（JSON）、`Attempts` |
+| `pipeline.Item` | `pipeline/buffer.go` | 阶段之间**唯一**搬运的东西：`ID`（`node\|tag\|key\|消息ID`）、`Key`、`Node`（topic）、`Tag`（工作流）、`Body`（JSON）、`Attempts` |
 | `pipeline.MemoryBuffer` | `pipeline/buffer.go` | 每分区一条 FIFO + 全局限量；满了阻塞不丢 |
 | `conversation.Inbound` | `conversation/types.go` | `Body` 里装的值：`{WorkspaceID, Event}` |
 
@@ -102,9 +104,9 @@ flowchart TB
 
 前置、域、缓冲、连线、终点、工作流都在 `bot.NewBot` 里一次装完：`orch.mountRouter(名字, handler, 配置)` 挂前置，`orch.mount(名字, handler, 配置)` 挂一个域，`orch.workflow(工作流名, 入口域)` 声明一条工作流，`orch.connect(工作流名, topic, 名字)` 说清「这条工作流里这类去向由谁接手」，`orch.exit(工作流名, topic)` 说清「这条工作流里这类去向到此为止」。域自己不知道下游是谁，也不知道自己是不是最后一站。
 
-`dispatch` 分两级解析：`Item.Tag` 为空说明是前置交回来的——`Route.Topic` 就是工作流名，查它的入口域，并把工作流名写进下一跳的 `Tag`；`Tag` 非空说明是域交回来的——`Route.Topic` 是去向，只在这条工作流的 `next` / `ends` 里查。查不到是装配错误，打 Error 丢弃。
+`dispatch` 按 `Item.Tag` 空/非空分两条路：`Tag` 为空说明是前置交回来的，调 `enter` 把 `Route.Topic`（工作流名）换成入口域，并把工作流名写进下一跳的 `Tag`；`Tag` 非空说明是域交回来的，先问 `isEnd`（终点就结束），再由 `advance` 在本工作流的 `next` 里查去向。查不到是装配错误，打 Error 丢弃。
 
-这就是 RocketMQ 的 **topic + tag**：`Item.Stage` 是 topic（谁消费），`Item.Tag` 是 tag（属于哪条工作流）。tag 只在所属工作流内唯一，所以两条工作流可以各有一个 `done`，同一个域也可以被两条工作流复用。
+这就是 RocketMQ 的 **topic + tag**：`Item.Node` 是 topic（谁消费），`Item.Tag` 是 tag（属于哪条工作流）。tag 只在所属工作流内唯一，所以两条工作流可以各有一个 `done`，同一个域也可以被两条工作流复用。
 
 ## ④ 前置：`sync` 补全 + `router` 择路
 
@@ -271,7 +273,7 @@ else                                                     → WorkflowChat
 
 `Sink` 现在只有 `SinkChat` 一个实现；`SinkPanel` / `SinkAgent` 会明确报「尚未实现」，不静默丢。
 
-## 同一条消息变了五次形状
+## 同一条消息变了七次形状
 
 | 阶段 | 类型 | 谁填 | 关键字段 |
 | --- | --- | --- | --- |

@@ -50,7 +50,7 @@
 - **两个例外**：`#帮助` 对所有人开放（查看列表无副作用）；私聊直接放行（只有一个人，没必要再压权限）。
 - **只判 `internal`**：「锐评」这类功能指令（`chat_review`）不受影响。
 
-权限判定只有一份实现（`policy.CanUseCommand`），调用点只有 `RunInternalCommand`。`MatchInternalCommand` 是只读的、不判权限，它只回答“这条消息要不要送到指令阶段”。
+权限判定只有一份实现（`policy.CanUseCommand`），调用点只有 `RunInternalCommand`。`MatchInternalCommand` 是只读的、不判权限，它只回答“这条消息要不要送到 `command` 域”。
 
 指令参数按**文本段**解析（`commandText`）：渲染后的正文会把 `@昵称(ID)` 按原位置拼进去，直接拿来切参数会让「`#切换人格` + 末尾还 @ 了机器人」变成「未找到人格：@昵称(ID)」。
 

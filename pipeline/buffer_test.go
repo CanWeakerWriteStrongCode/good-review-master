@@ -20,7 +20,7 @@ func TestMemoryBuffer同分区FIFO(t *testing.T) {
 	b := NewMemoryBuffer(8, 8)
 	ctx := context.Background()
 	for _, id := range []string{"1", "2", "3"} {
-		if err := b.Put(ctx, mustItem(t, StageSync, SerialKey, id, struct{}{})); err != nil {
+		if err := b.Put(ctx, mustItem(t, NodeSync, SerialKey, id, struct{}{})); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 	}
@@ -46,9 +46,9 @@ func TestMemoryBuffer批量上限与分区隔离(t *testing.T) {
 	b := NewMemoryBuffer(8, 8)
 	ctx := context.Background()
 	for _, id := range []string{"a1", "a2", "a3"} {
-		_ = b.Put(ctx, mustItem(t, StageSync, "a", id, struct{}{}))
+		_ = b.Put(ctx, mustItem(t, NodeSync, "a", id, struct{}{}))
 	}
-	_ = b.Put(ctx, mustItem(t, StageSync, "b", "b1", struct{}{}))
+	_ = b.Put(ctx, mustItem(t, NodeSync, "b", "b1", struct{}{}))
 
 	first, err := b.Take(ctx, "a", 2)
 	if err != nil || len(first) != 2 {
@@ -66,14 +66,14 @@ func TestMemoryBuffer批量上限与分区隔离(t *testing.T) {
 
 func TestMemoryBuffer满时等待并尊重超时(t *testing.T) {
 	b := NewMemoryBuffer(1, 1)
-	item := mustItem(t, StageSync, SerialKey, "1", struct{}{})
+	item := mustItem(t, NodeSync, SerialKey, "1", struct{}{})
 	if err := b.Put(context.Background(), item); err != nil {
 		t.Fatalf("首次 Put: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if err := b.Put(ctx, mustItem(t, StageSync, SerialKey, "2", struct{}{})); err == nil {
+	if err := b.Put(ctx, mustItem(t, NodeSync, SerialKey, "2", struct{}{})); err == nil {
 		t.Fatal("满队列应阻塞到超时")
 	}
 
@@ -89,11 +89,11 @@ func TestMemoryBuffer满时等待并尊重超时(t *testing.T) {
 func TestMemoryBuffer关闭后唤醒阻塞方(t *testing.T) {
 	b := NewMemoryBuffer(1, 1)
 	ctx := context.Background()
-	_ = b.Put(ctx, mustItem(t, StageSync, SerialKey, "1", struct{}{}))
+	_ = b.Put(ctx, mustItem(t, NodeSync, SerialKey, "1", struct{}{}))
 
 	putDone := make(chan error, 1)
 	go func() {
-		putDone <- b.Put(ctx, mustItem(t, StageSync, SerialKey, "2", struct{}{}))
+		putDone <- b.Put(ctx, mustItem(t, NodeSync, SerialKey, "2", struct{}{}))
 	}()
 	time.Sleep(20 * time.Millisecond)
 	if err := b.Close(); err != nil {
@@ -117,15 +117,15 @@ func TestMemoryBuffer关闭后唤醒阻塞方(t *testing.T) {
 	}
 }
 
-func Test阶段载荷可序列化(t *testing.T) {
-	// 阶段载荷的具体类型归会话域（conversation 包），这里只验证 Item 能把
+func Test节点载荷可序列化(t *testing.T) {
+	// 节点载荷的具体类型归会话域（conversation 包），这里只验证 Item 能把
 	// 任意可序列化载荷原样带过去。
 	type payload struct {
 		WorkspaceID string `json:"workspace_id"`
 		MessageID   string `json:"message_id"`
 	}
 	in := payload{WorkspaceID: "qq_official_bot_1906", MessageID: "m1"}
-	item := mustItem(t, StageSync, SerialKey, "m1", in)
+	item := mustItem(t, NodeSync, SerialKey, "m1", in)
 	got, err := DecodeItem[payload](item)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)

@@ -12,15 +12,15 @@ var ErrClosed = errors.New("pipeline: buffer closed")
 
 // Item 是缓冲区里的最小单位。Body 是 JSON，保证换成 MQ 时不用改业务代码。
 type Item struct {
-	ID       string // 幂等键：stage + tag + key + 消息 ID
-	Key      string // 分区键：M0 是 serial，M4 起是 workspaceID|chatID
-	Stage    string // 目标节点：接 MQ 时它就是 topic（谁消费）。前置阶段记 sync
-	Tag      string // 属于哪条工作流：接 MQ 时它就是 tag。前置阶段为空
-	Body     []byte // JSON 编码的阶段载荷
+	ID       string // 幂等键：node + tag + key + 消息 ID
+	Key      string // 分区键：现在是 workspaceID|chatID
+	Node     string // 目标节点：接 MQ 时它就是 topic（谁消费）。前置是 sync
+	Tag      string // 属于哪条工作流：接 MQ 时它就是 tag。前置为空
+	Body     []byte // JSON 编码的节点载荷
 	Attempts int
 }
 
-// Buffer 是阶段之间的传送带。Put 放、Take 批量取、Ack 确认、Close 关闭。
+// Buffer 是节点之间的传送带。Put 放、Take 批量取、Ack 确认、Close 关闭。
 //
 // 这五个是所有传输都做得到的：内存队列能做，MQ 也能做。
 // “看一眼队列有多长”“不阻塞地取”是调度需要的能力，在 Peeker 里——

@@ -35,7 +35,7 @@
 | `ByID` / `Find` / `Default` | 按 ID 找、按平台+账号找、取默认那个 |
 | `List` / `Views` / `ViewByID` | 面板用的只读视图（ID、平台、账号、昵称、群数） |
 | `GroupName` / `MemberCount` / `NicknameUnique` | 面板展示与起名冲突检查 |
-| `Tagger()` / `StateStore()` | 把共享的打标签器与库作用域给阶段用 |
+| `Tagger()` / `StateStore()` | 把共享的打标签器与库作用域给各节点用 |
 | `ReloadPrompts()` | 配置热重载后重建各 Router 的指令表 |
 | `Wait()` | 等所有异步任务退完（关闭时用） |
 
@@ -62,18 +62,23 @@ flowchart TD
 sequenceDiagram
   participant IM as bot.AcceptEvent
   participant M as workspace.Manager
-  participant S1 as Stage1
-  participant S3 as Stage3
+  participant S as sync 前置
+  participant A as assets
+  participant G as agent
   participant R as Router
 
   IM->>M: ResolveOrCreate
   M-->>IM: *Workspace
-  IM->>S1: Inbound（带 workspaceID）
-  S1->>M: ByID(workspaceID)
-  S1->>S1: ws.PrepareBatch：补成员名、补引用、写库
-  S3->>S3: ws.Cache.GetGroupCache(chatID).Add(msg)
-  S3->>S3: ws.LearnIdentity(self.user_id) / SyncSelfName
-  S3->>R: RouteMessageNow 或 TryProactiveNow
+  IM->>S: orch.admit(Inbound)（带 workspaceID）
+  S->>M: ByID(workspaceID)
+  S->>S: ws.PrepareBatch：补成员名、补引用、写库
+  Note over S: 补完择路：交回工作流名，编排层据此进 chat 或 command
+  S->>A: 进 chat 工作流（中间经编排层查表）
+  A->>A: 查图库，缺的写 asset_tag_jobs
+  A->>G: 回 tagged，再进 agent（同样经编排层）
+  G->>G: ws.Cache.GetGroupCache(chatID).Add(msg)
+  G->>G: ws.LearnIdentity(self.user_id) / SyncSelfName
+  G->>R: RouteMessageNow 或 TryProactiveNow
 ```
 
 同一个群的处理是串行的（`pipeline` 的 `inflight` 保证），不同工作空间的同一个群 ID 互不影响——所以主备两个号可以在同一个物理群里各自维护一份缓存。

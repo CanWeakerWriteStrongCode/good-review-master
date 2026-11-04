@@ -33,6 +33,10 @@
 | `pipeline_stage_active{stage}` | 正在处理的会话数，上限就是该阶段并发 |
 | `pipeline_stage_workers{stage}` | 池里的协程数；与 `active` 的差就是睡着的协程 |
 
+这几个 `pipeline_stage_*` 的 label 叫 `stage`（历史名字），值是 `Item.Node`——`sync` / `assets` / `agent` / `command`。按它分组就是按节点分组，四个节点都在，包含前置 `sync`。
+
+死信告警的分类 `dead_letter_<node>` 用的是同一个值。
+
 ### 3. 大模型
 
 | 指标 | 说明 |

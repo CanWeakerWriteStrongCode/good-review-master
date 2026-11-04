@@ -40,7 +40,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// Test消息走完三段流水线 验证 M0 的 IM→B1→Stage1→B2→Stage2→B3→Stage3 主链路。
+// Test消息走完三段流水线 验证 IM→前置 sync→assets→agent 这条主链路走通。
 func Test消息走完三段流水线(t *testing.T) {
 	dir := t.TempDir()
 	system := filepath.Join(dir, "prompt_system.yaml")
@@ -98,7 +98,7 @@ func Test消息走完三段流水线(t *testing.T) {
 	}
 	calls := fake.Calls()
 	if len(calls) == 0 {
-		t.Fatal("消息没有走到 Stage 3（FakeLLM 未被调用）")
+		t.Fatal("消息没有走到 agent（FakeLLM 未被调用）")
 	}
 	if !strings.Contains(calls[0].ChatLog, "你好") {
 		t.Fatalf("发给模型的群聊记录缺少正文：%s", calls[0].ChatLog)
@@ -197,7 +197,7 @@ func Test图片消息在Stage2生成描述并入库(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if len(msgs) != 1 || len(msgs[0].ImageNotes) != 1 || msgs[0].ImageNotes[0].Note != "一张测试图" {
-		t.Fatalf("Stage 2 描述未进缓存：%+v", msgs)
+		t.Fatalf("assets 写入的图片描述未进缓存：%+v", msgs)
 	}
 	if len(msgs[0].ImageIDs) != 1 || msgs[0].ImageIDs[0].SHA == "" {
 		t.Fatalf("图片标识缺失：%+v", msgs[0].ImageIDs)

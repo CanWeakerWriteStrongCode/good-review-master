@@ -22,15 +22,15 @@
 
 ## 决策
 
-1. `schemaVersion = 17`，`migrate` 只有一条路：**把空库建成最新结构**。
+1. `schemaVersion` 取当前最新值（具体数字随改表上涨，只在 `state/schema.go` 写一处），`migrate` 只有一条路：**把空库建成最新结构**。
 2. 闸门比"版本号等于 0"更严一点：`user_version > 0` **或者** 库里已经有 `messages` 表，都算旧库，直接报错并提示删文件。
 3. 旧库没有"原地升级"，也没有"自动备份再迁移"。删掉 `state.db`、`-shm`、`-wal`，重启就是新库。
 
-第 2 条里那个"或者已有 `messages` 表"是必要的：`CREATE TABLE IF NOT EXISTS` 遇到一个有表但没有版本号的库会一声不响地跳过，最后得到一个缺列却写着 17 的库，错误会推迟到运行时才爆。
+第 2 条里那个"或者已有 `messages` 表"是必要的：`CREATE TABLE IF NOT EXISTS` 遇到一个有表但没有版本号的库会一声不响地跳过，最后得到一个缺列却写着最新版本号的库，错误会推迟到运行时才爆。
 
 ## 后果
 
-- `schema.go` 从 955 行降到 317 行，删掉 12 个辅助函数（`ensureColumn`、`rebuildTableWithID`、`mergeIdentitiesIntoGroups` 等）和 12 个升级测试。
+- `schema.go` 删掉了 12 个辅助函数（`ensureColumn`、`rebuildTableWithID`、`mergeIdentitiesIntoGroups` 等）和 12 个升级测试，只剩建表 DDL。
 - 建表 DDL 成了结构的唯一真相。想知道表长什么样，只看一个文件的一处。
 - 代价：**每次改表都要清库**。开发时无所谓，将来如果有真实部署，升级会变成"导出、删库、重启、导入"的人工步骤，必须写进发布说明。
 - 代价：再也不能说"我兼容旧版本"。遇到旧库只能让用户删文件，这需要产品上接受。

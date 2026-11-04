@@ -216,7 +216,7 @@ func Test前置把消息路由到不同工作流(t *testing.T) {
 
 	o := newOrchestrator(nil)
 	// 前置：按 key 决定走哪条（真实实现里看的是“是不是管理指令”）。
-	o.mountRouter(pipeline.StageSync, func(_ context.Context, key string, items []pipeline.Item) Outcome {
+	o.mountRouter(pipeline.NodeSync, func(_ context.Context, key string, items []pipeline.Item) Outcome {
 		workflow := WorkflowChat
 		if key == "cmd" {
 			workflow = WorkflowCommand
@@ -407,6 +407,23 @@ func testItem(t *testing.T, stage, tag, key, id string) pipeline.Item {
 		t.Fatalf("NewItem: %v", err)
 	}
 	return it
+}
+
+// Test前置的积压也数得清 前置不在 nodes 里，如果 backlog 只查 nodes，
+// 传前置的名字会静默返回 0——和「没有积压」分不清。
+func Test前置的积压也数得清(t *testing.T) {
+	ctx := context.Background()
+	o := newOrchestrator(nil)
+	o.mountRouter(pipeline.NodeSync, func(context.Context, string, []pipeline.Item) Outcome {
+		return Outcome{}
+	}, testStageConfig, 8, 8)
+
+	if err := o.admit(ctx, "k1", "m1", struct{}{}); err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if got := o.backlog(pipeline.NodeSync, "k1"); got != 1 {
+		t.Fatalf("前置积压 = %d，want 1", got)
+	}
 }
 
 // Test工作流入口没挂载会panic 声明了工作流却没有这个入口域，说明挂载与声明脱节。

@@ -9,8 +9,9 @@
 > 后续演变：本文落地后，结构又理了一道——**入口与补名（`sync`）抽成工作流之外的前置**（`mountRouter`），
 > 业务拆成两条互不相连的工作流（`workflow` 声明），前置回执直接用工作流名
 > （`WorkflowChat` / `WorkflowCommand`）而不是 `TopicChatter` / `TopicCommand`。
-> 正文里的 `handleSync` / `topicOf` / `TopicChatter` 是当时的名字，现状看
-> [message-flow](../architecture/message-flow.md) 与 [domains/pipeline](../domains/pipeline.md)。
+> 正文里的 `handleSync` / `topicOf` / `TopicChatter`，以及后来陆续改掉的 `edges` / `StageIngest` / `Item.Stage`，
+> 都是当时的名字，现状看 [message-flow](../architecture/message-flow.md) 与
+> [domains/pipeline](../domains/pipeline.md)。
 
 一次改造方案，不是决策记录。要回答的是：怎么让「域」和「顺序」真正分开，以及这样做的边界在哪。
 

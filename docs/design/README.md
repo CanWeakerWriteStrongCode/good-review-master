@@ -50,5 +50,6 @@
 | [mq-readiness-2026-11.md](mq-readiness-2026-11.md) | 上 MQ 之前必须补什么、什么时候才真该换 | Accepted（本期不做） | [ADR-0005](../adr/0005-orchestration-layer.md) 的「后果」 |
 | [orchestrator-workflow-2026-11.md](orchestrator-workflow-2026-11.md) | 域回消息、编排层转发的改造方案 | Implemented | [ADR-0005](../adr/0005-orchestration-layer.md)、[message-flow](../architecture/message-flow.md)、[domains/pipeline](../domains/pipeline.md) |
 | [command-permission-2026-11.md](command-permission-2026-11.md) | 管理指令加权限、前移成独立域 | Implemented | [ADR-0005](../adr/0005-orchestration-layer.md)、[domains/speech](../domains/speech.md) |
+| [structure-self-evidence-2026-11.md](structure-self-evidence-2026-11.md) | 四处「结构说不清」的清理：包注释过期、`forward` 双义、`Stage` 一词两义、`backlog` 静默 | Implemented | 本文（一次性清理，不改架构） |
 
-`command-permission-2026-11.md` 主要是待办与实施顺序，已经全部兑现，是这四篇里唯一现成可删的。
+`command-permission-2026-11.md` 主要是待办与实施顺序，已经全部兑现，是这几篇里唯一现成可删的。

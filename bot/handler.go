@@ -42,7 +42,7 @@ type Bot struct {
 	closeOnce sync.Once
 }
 
-// messageDedup 在入口做消息去重：Stage 1 的缓存去重只能看到已经走完 Stage 3 的消息，
+// messageDedup 在入口做消息去重：sync 的缓存去重只能看到已经走完 agent 的消息，
 // 高并发补推时同一条消息可能在进入缓存前被处理两次。这里用 TTL 短表兜住这段窗口。
 type messageDedup struct {
 	mu   sync.Mutex
@@ -112,21 +112,21 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 
 	// 挂载节点。handler 只把结果交回来，不碰任何缓冲，所以这里不需要告诉它下游是谁。
 	// 前置不放进工作流：它只做入口与补全，不属于任何一条。
-	b.orch.mountRouter(pipeline.StageSync, b.handleSync, b.syncConfig, perChat, global)
-	b.orch.mount(pipeline.StageAssets, b.handleAssets, b.assetConfig, perChat, global)
-	b.orch.mount(pipeline.StageAgent, b.handleAgent, b.agentConfig, perChat, global)
-	b.orch.mount(pipeline.StageCommand, b.handleCommand, b.commandConfig, perChat, global)
+	b.orch.mountRouter(pipeline.NodeSync, b.handleSync, b.syncConfig, perChat, global)
+	b.orch.mount(pipeline.NodeAssets, b.handleAssets, b.assetConfig, perChat, global)
+	b.orch.mount(pipeline.NodeAgent, b.handleAgent, b.agentConfig, perChat, global)
+	b.orch.mount(pipeline.NodeCommand, b.handleCommand, b.commandConfig, perChat, global)
 
 	// 工作流一：聊天。前置路由到这里，之后打标签 → 生成。
-	b.orch.workflow(WorkflowChat, pipeline.StageAssets)
-	b.orch.connect(WorkflowChat, TopicTagged, pipeline.StageAgent)
+	b.orch.workflow(WorkflowChat, pipeline.NodeAssets)
+	b.orch.connect(WorkflowChat, TopicTagged, pipeline.NodeAgent)
 	b.orch.exit(WorkflowChat, TopicReplied)
 
 	// 工作流二：管理指令。只走控制平面，执行完就结束。
 	//
 	// 终点写在这里而不是让域“沉默”——域只汇报发生过什么，链决定还要不要往下走。
 	// 将来要让指令执行完接下一个域，把这里换成 connect 即可，域一行代码都不用改。
-	b.orch.workflow(WorkflowCommand, pipeline.StageCommand)
+	b.orch.workflow(WorkflowCommand, pipeline.NodeCommand)
 	b.orch.exit(WorkflowCommand, TopicCommandDone)
 	return b
 }
@@ -155,7 +155,7 @@ func (b *Bot) agentConfig() pipeline.StageConfig {
 	}
 }
 
-// commandConfig 管理指令阶段。Retries 固定 0：指令副作用不幂等，
+// commandConfig 管理指令域。Retries 固定 0：指令副作用不幂等，
 // 重试一次就等于执行两次（#添加人格 会生成两个人格），所以不开放配置。
 func (b *Bot) commandConfig() pipeline.StageConfig {
 	p := b.cfg().Pipeline

@@ -244,12 +244,8 @@ func (o *orchestrator) exit(workflowName, topic string) {
 // dispatch 把节点交回来的回执分派出去。tag 是「当前消息属于哪条工作流」，
 // 前置投递时打上，之后每一跳都带着走。
 //
-//   - tag 为空：前置交回来的。Route.Topic 是工作流名，查它的入口域，
-//     并把工作流名记成下一跳的 tag。
-//   - tag 非空：工作流里的域交回来的。Route.Topic 是去向，只在这条工作流里查：
-//     声明为终点就结束，连了线就交给下一个域。
-//
-// 查不着是装配错误，记日志丢弃。
+// 两类回执走两条路，各调一个名字说明用途的函数：**前置交回的是工作流名**（enter），
+// **域交回的是去向**（advance）。tag 为空就是前者——全文件只在这里用空值区分层级。
 //
 // 投递失败不重试本批：走到这一步说明节点的副作用已经发生了（入库、打标签、发出回复），
 // 重跑一遍等于重复执行。所以记死信让这条消息停在这一跳，而不是把它塞回重试队列。
@@ -257,35 +253,38 @@ func (o *orchestrator) exit(workflowName, topic string) {
 // 报警的话每次正常重启都会刷一堆假死信。
 func (o *orchestrator) dispatch(ctx context.Context, tag string, routes []Route) {
 	for _, route := range routes {
+		if tag == "" {
+			// 前置选了工作流：进它的入口域，工作流名从此成为消息的 tag。
+			o.send(ctx, o.enter(route.Topic), route.Topic, route)
+			continue
+		}
+		// 工作流里的域报了去向：声明为终点就结束，连了线就交给下一个域。
 		if o.isEnd(tag, route.Topic) {
 			continue
 		}
-		name, next := o.forward(tag, route.Topic)
-		if name == "" {
-			logutil.Error("编排层不知道这条回执去哪，消息已丢弃",
-				"tag", tag, "topic", route.Topic, "key", route.Key, "msgID", route.MsgID)
-			continue
-		}
-		item, err := pipeline.NewItem(name, next, route.Key, route.MsgID, route.Payload)
-		if err != nil {
-			logutil.Error("编排层编码下一跳载荷失败，消息已丢弃",
-				"tag", tag, "topic", route.Topic, "node", name, "err", err)
-			o.deadLetter(item, err)
-			continue
-		}
-		if err := o.nodes[name].buffer.Put(ctx, item); err != nil {
-			if errors.Is(err, pipeline.ErrClosed) {
-				logutil.Warn("编排层投递时缓冲已关闭，消息停在这一跳",
-					"topic", route.Topic, "node", name, "item", item.ID)
-				continue
-			}
-			logutil.Error("编排层投递失败，消息停在这一跳",
-				"topic", route.Topic, "node", name, "item", item.ID, "err", err)
-			o.deadLetter(item, err)
-			continue
-		}
-		o.nodes[name].stage.Submit(route.Key)
+		o.send(ctx, o.advance(tag, route.Topic), tag, route)
 	}
+}
+
+// enter 前置选了哪条工作流：返回它的入口域。查不到返回空。
+func (o *orchestrator) enter(workflowName string) string {
+	wf, ok := o.workflows[workflowName]
+	if !ok {
+		return ""
+	}
+	return wf.entry
+}
+
+// advance 工作流里的域报了哪类去向：返回下一个域。
+//
+// 没连线返回空。终点不在这里判——「明确到此为止」与「漏了连线」是两件事，
+// 前者走 isEnd，后者要作为装配错误叫出来。
+func (o *orchestrator) advance(tag, topic string) string {
+	wf, ok := o.workflows[tag]
+	if !ok {
+		return ""
+	}
+	return wf.next[topic]
 }
 
 // isEnd 判断这条回执是不是某条工作流声明过的终点。
@@ -297,23 +296,35 @@ func (o *orchestrator) isEnd(tag, topic string) bool {
 	return ok && wf.ends[topic]
 }
 
-// forward 把一条回执翻译成「投给哪个节点 + 记成哪条工作流」。
+// send 把一条回执投给指定节点。
 //
-// 返回空节点名表示没查着：前置回了不存在的工作流名，或域回了本工作流没连线的去向。
-// 两种都是装配错误，由调用方记日志丢弃。
-func (o *orchestrator) forward(tag, topic string) (string, string) {
-	if tag == "" {
-		wf, ok := o.workflows[topic]
-		if !ok {
-			return "", ""
+// name 为空说明没查着去哪：前置回了不存在的工作流名，或域回了本工作流没连线的去向。
+// 两种都是装配错误，记日志丢弃。
+func (o *orchestrator) send(ctx context.Context, name, tag string, route Route) {
+	if name == "" {
+		logutil.Error("编排层不知道这条回执去哪，消息已丢弃",
+			"tag", tag, "topic", route.Topic, "key", route.Key, "msgID", route.MsgID)
+		return
+	}
+	item, err := pipeline.NewItem(name, tag, route.Key, route.MsgID, route.Payload)
+	if err != nil {
+		logutil.Error("编排层编码下一跳载荷失败，消息已丢弃",
+			"tag", tag, "topic", route.Topic, "node", name, "err", err)
+		o.deadLetter(item, err)
+		return
+	}
+	if err := o.nodes[name].buffer.Put(ctx, item); err != nil {
+		if errors.Is(err, pipeline.ErrClosed) {
+			logutil.Warn("编排层投递时缓冲已关闭，消息停在这一跳",
+				"topic", route.Topic, "node", name, "item", item.ID)
+			return
 		}
-		return wf.entry, topic
+		logutil.Error("编排层投递失败，消息停在这一跳",
+			"topic", route.Topic, "node", name, "item", item.ID, "err", err)
+		o.deadLetter(item, err)
+		return
 	}
-	wf, ok := o.workflows[tag]
-	if !ok {
-		return "", ""
-	}
-	return wf.next[topic], tag
+	o.nodes[name].stage.Submit(route.Key)
 }
 
 func (o *orchestrator) deadLetter(item pipeline.Item, err error) {
@@ -323,7 +334,7 @@ func (o *orchestrator) deadLetter(item pipeline.Item, err error) {
 }
 
 // admit 是入站的唯一入口：把一条事件放进前置，由前置补全后决定进哪条工作流。
-// 前置阶段还不知道 tag（哪条工作流），所以传空。
+// 前置还不知道 tag（哪条工作流），所以传空。
 func (o *orchestrator) admit(ctx context.Context, key, msgID string, payload any) error {
 	if o.router == nil {
 		return fmt.Errorf("bot: 编排层没有挂载前置")
@@ -358,18 +369,35 @@ func (o *orchestrator) put(ctx context.Context, n *node, tag, key, msgID string,
 	return nil
 }
 
-// backlog 返回某个域当前的积压条数。域用它判断"这一批之后还有没有活"，
+// lookup 按名字找节点：业务域优先，找不到再比前置。
+//
+// 前置不在 nodes 里（它不是任何一条工作流的一部分），但它同样有队列。
+// 指向它的查询不能静默返回 0——那和「没有积压」分不清。
+func (o *orchestrator) lookup(name string) *node {
+	if n, ok := o.nodes[name]; ok {
+		return n
+	}
+	if o.router != nil && o.router.name == name {
+		return o.router
+	}
+	return nil
+}
+
+// backlog 返回某个节点当前的积压条数。域用它判断"这一批之后还有没有活"，
 // 不需要也不该去摸别人的队列。
 //
 // 断言不会失败：Stage 构造期就要求 Buffer 实现 Peeker（否则 panic）。
 // 这里只依赖"数得清"这一件事，不把 Len 塞回 Buffer。
 func (o *orchestrator) backlog(name, key string) int {
-	if n, ok := o.nodes[name]; ok {
-		if p, ok := n.buffer.(pipeline.Peeker); ok {
-			return p.Len(key)
-		}
+	n := o.lookup(name)
+	if n == nil {
+		return 0
 	}
-	return 0
+	p, ok := n.buffer.(pipeline.Peeker)
+	if !ok {
+		return 0
+	}
+	return p.Len(key)
 }
 
 // allNodes 返回前置与全部业务域：起停、排空、指标都要覆盖它们。

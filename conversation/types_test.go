@@ -7,7 +7,7 @@ import (
 	"good-review-master/pipeline"
 )
 
-// TestInbound可序列化 阶段载荷要能原样过缓冲（以后还要能过消息队列）。
+// TestInbound可序列化 节点载荷要能原样过缓冲（以后还要能过消息队列）。
 func TestInbound可序列化(t *testing.T) {
 	in := Inbound{
 		WorkspaceID: "qq_official_bot_1906",
@@ -22,7 +22,7 @@ func TestInbound可序列化(t *testing.T) {
 			QQAtMe:      true,
 		},
 	}
-	item, err := pipeline.NewItem(pipeline.StageSync, "", pipeline.SerialKey, "m1", in)
+	item, err := pipeline.NewItem(pipeline.NodeSync, "", pipeline.SerialKey, "m1", in)
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestInbound可序列化(t *testing.T) {
 
 // TestSynced带图片描述过缓冲 图片描述以前挂在 EnrichedMessage 上，
 // 因为 Message.ImageNotes 是 json:"-"。现在同一个值对象走完全程，
-// 这里守住"Stage 2 填的东西 Stage 3 还看得到"。
+// 这里守住"assets 填的东西 agent 还看得到"。
 func TestSynced带图片描述过缓冲(t *testing.T) {
 	id := ImageID{SHA: "abc", Size: 3}
 	synced := Synced{
@@ -59,7 +59,7 @@ func TestSynced带图片描述过缓冲(t *testing.T) {
 		},
 		AssetStatus: StatusOK,
 	}
-	item, err := pipeline.NewItem(pipeline.StageAssets, "", pipeline.SerialKey, "m1", synced)
+	item, err := pipeline.NewItem(pipeline.NodeAssets, "", pipeline.SerialKey, "m1", synced)
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)
 	}

@@ -17,7 +17,7 @@
 | --- | --- |
 | 把消息按会话分片、批量派发、失败重试、超限记现场 | 决定消息怎么补名（`workspace.PrepareBatch`） |
 | 保证同一个群的消息按到达顺序处理、不同群并行 | 决定回复内容（`speech`） |
-| 阶段间只传 `pipeline.Item`（JSON 载荷） | 入站 HTTP、发送动作 |
+| 节点间只传 `pipeline.Item`（JSON 载荷） | 入站 HTTP、发送动作 |
 
 ## 四个队列
 
@@ -30,9 +30,9 @@
 | `agent` | 编排层收到 `TopicTagged` 回执 | `handleAgent` | `conversation.Synced`（多了 `Assets` / `ImageNotes`） | `chat` |
 | `command` | 前置回执 `command` → 指令工作流入口 | `handleCommand` | `conversation.Synced`（管理指令，只走这一个域） | `command` |
 
-`Item` 字段：`ID`（`stage|tag|key|消息ID`，天然幂等键）、`Key`（分区键，现在是 `workspaceID|chatID`）、`Stage`（**要去**的那个节点，接 MQ 时就是 topic）、`Tag`（**所属工作流**，接 MQ 时就是 tag；前置阶段为空）、`Body`（JSON）、`Attempts`。载荷类型定义在 `conversation` 里，`pipeline` 不定义——否则底层包为了用值对象会反过来 import 编排层。
+`Item` 字段：`ID`（`node|tag|key|消息ID`，天然幂等键）、`Key`（分区键，现在是 `workspaceID|chatID`）、`Node`（**要去**的那个节点，接 MQ 时就是 topic）、`Tag`（**所属工作流**，接 MQ 时就是 tag；前置阶段为空）、`Body`（JSON）、`Attempts`。载荷类型定义在 `conversation` 里，`pipeline` 不定义——否则底层包为了用值对象会反过来 import 编排层。
 
-`Stage` 与 `Tag` 就是 RocketMQ 的 topic 与 tag：tag 只在所属工作流内唯一，每条工作流可以各有一个 `done`，同一个域也可以被多条工作流复用。
+`Node` 与 `Tag` 就是 RocketMQ 的 topic 与 tag：tag 只在所属工作流内唯一，每条工作流可以各有一个 `done`，同一个域也可以被多条工作流复用。
 
 ## 前置与三个域各干什么
 
@@ -43,7 +43,7 @@
 | `agent` 生成回复 | `handleAgent` | 进群聊缓存 → 学身份 → 判断该不该回 → 交 `speech` | `TopicReplied`（聊天工作流的终点） | 生成的失败由 `speech` 自己兜 |
 | `command` 管理指令 | `handleCommand` | 交 `speech.RunInternalCommand`：再判一次匹配 → 判权限 → 执行 handler | `TopicCommandDone`（指令工作流的终点） | 不重试（`Retries` 固定 0，指令副作用不幂等），失败只记日志 |
 
-**字段名上的一个坑**：`Item.Stage` 记的是目标节点。前置造出「进聊天工作流」那条 item 时，`Stage` 已经是 `assets`，不是 `sync`。幂等键与告警分类（`dead_letter_<stage>`）都按它算。
+**字段的含义**：`Item.Node` 记的是目标节点，不是造出它的节点。前置造出「进聊天工作流」那条 item 时，`Node` 已经是 `assets`，不是 `sync`。幂等键与告警分类（`dead_letter_<node>`）都按它算。
 
 前置的路由用的是只读匹配（`speech.MatchInternalCommand`），它不执行任何东西；真正的执行集中在 `RunInternalCommand`，权限判定只写在它里面。路由与执行各判一次：两次之间路由表可能被别的指令改过（`#删除人格` 会把关键字删掉），第二次失配就丢弃（正文在前置已经入库）。
 
@@ -69,11 +69,11 @@ flowchart TB
     PC["command 域<br/>固定协程池 ×command_concurrency"]
   end
   IN["orch.admit(Inbound)<br/>tag 为空"] --> R0
-  R0 -->|"回执 chat → tag=chat"| P2
-  R0 -->|"回执 command → tag=command"| PC
-  P2 -->|"回执 tagged（chat）"| P3
-  P3 -->|"回执 replied（chat）"| EX["到此为止<br/>这条工作流把它声明为终点"]
-  PC -->|"回执 command_done（command）"| EX
+  R0 -->|"enter(chat) → tag=chat"| P2
+  R0 -->|"enter(command) → tag=command"| PC
+  P2 -->|"回执 tagged → advance(chat)"| P3
+  P3 -->|"回执 replied → 声明为终点"| EX["到此为止"]
+  PC -->|"回执 command_done → 声明为终点"| EX
 ```
 
 每条箭头都由编排层执行：节点把手里的活干完、把「这一步发生了什么」交回去，编排层在**消息自带的那条工作流**里查到下一站，再投进对应队列（同时把 tag 带下去）。域之间没有直接连线，也没有“我到终点了”这种汇报——终点是工作流的属性。
@@ -125,7 +125,7 @@ sequenceDiagram
 | 载荷解码失败 | 这条永远解不开 | 直接进失败列表，不重试 |
 | 工作空间已不存在 | 整批跳过 | 记 DEBUG，不报错 |
 | 写库失败 | `SaveMessage` 返回 0 | 不阻塞，这条当"没有行号"继续走 |
-| 阶段处理超重试次数 | 面板的"异常现场"里出现 | 写 `alerts`，人工看一眼 |
+| 节点处理超过重试上限 | 面板的"异常现场"里出现 | 写 `alerts`，人工看一眼 |
 | 关停排空超时 | 日志 `关停排空超时` | 有在途生成没结束，属正常 |
 
 ## 相关决策
@@ -138,10 +138,10 @@ sequenceDiagram
 
 | 文件 | 看什么 |
 | --- | --- |
-| `pipeline/contracts.go` | `Item`、`NewItem`、`DecodeItem`，阶段常量 |
+| `pipeline/contracts.go` | `Item`、`NewItem`、`DecodeItem`，节点名常量（`Node*`） |
 | `pipeline/buffer.go` | `Buffer`（放/取/确认/关/量）与 `Peeker`（数积压/非阻塞取）为什么拆开、`MemoryBuffer` 的阻塞与关闭语义 |
 | `pipeline/worker.go` | `Stage` 的池、ready 队列、inflight、`maxBurstPerTurn`、重试与死信；`BatchHandler` 的批边界契约 |
-| `bot/ingest.go` | `Run`（起停、排空）、`AcceptEvent`（入 B1） |
+| `bot/ingest.go` | `Run`（起停、排空）、`AcceptEvent`（归属、去重、入前置） |
 | `bot/stages.go` | `handleSync`（补全）/ `handleAssets` / `handleAgent` / `handleCommand` |
 | `bot/router.go` | `route` / `workflowOf`：补全之后择路。为什么它是函数不是阶段，文件头写清了 |
 | `conversation/types.go` | `Inbound`、`Synced` 的字段与谁填什么 |

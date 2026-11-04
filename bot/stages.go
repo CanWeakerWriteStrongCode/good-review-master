@@ -60,7 +60,7 @@ func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item
 	for _, item := range items {
 		synced, err := pipeline.DecodeItem[conversation.Synced](item)
 		if err != nil {
-			logutil.Warn("指令阶段载荷解码失败，已丢弃", "item", item.ID, "err", err)
+			logutil.Warn("指令域载荷解码失败，已丢弃", "item", item.ID, "err", err)
 			continue
 		}
 		// 如实汇报"这一条经手完了"，不管下面走了哪个分支。之后还有没有下一站
@@ -79,7 +79,7 @@ func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item
 		if !ws.Router.RunInternalCommand(ctx, synced.Event, synced.ChatID,
 			synced.Message.Content, b.allowNicknameFallback(ws, cfg.BotNickname)) {
 			// 分流后路由表被别的指令改掉（关键字被删了）：丢弃即可，
-			// 消息正文在 Stage 1 已经入库。
+			// 消息正文在 sync 已经入库。
 			logutil.Warn("指令在分流后已匹配不上，已丢弃",
 				"workspace", ws.ID, "chat", synced.ChatID,
 				"message", synced.Message.MessageID, "content", synced.Message.Content)
@@ -218,7 +218,7 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 		// 交给下一批的最后一条。避免刷屏时每条都跑一次裁判。
 		latestProactive = &proactiveTask{ws: ws, synced: synced, snapshot: snapshot}
 	}
-	if latestProactive != nil && b.orch.backlog(pipeline.StageAgent, key) == 0 {
+	if latestProactive != nil && b.orch.backlog(pipeline.NodeAgent, key) == 0 {
 		latestProactive.ws.Router.TryProactiveNow(ctx, latestProactive.synced.Event,
 			latestProactive.synced.ChatID, latestProactive.synced.Message.Content, latestProactive.snapshot)
 	}
@@ -272,7 +272,7 @@ func (b *Bot) recordAging(workspaceID string, synced conversation.Synced, msgs [
 
 // deadLetter 把一个重试超限的条目记成报警。
 //
-// Item 里只有 stage / key / id，没有账号。账号从分区键里拆：
+// Item 里只有 node / key / id，没有账号。账号从分区键里拆：
 // key 是 conversation.ChatKey 拼的「workspaceID|chatID」，
 // 不拆的话报警在面板上只能显示「全局」，看不出是哪个账号出的问题。
 func (b *Bot) deadLetter(item pipeline.Item, err error) {
@@ -281,19 +281,19 @@ func (b *Bot) deadLetter(item pipeline.Item, err error) {
 		workspaceID, chatID = left, right
 	}
 	detail, _ := json.Marshal(map[string]any{
-		"stage": item.Stage, "key": item.Key, "chat": chatID, "item_id": item.ID,
+		"node": item.Node, "key": item.Key, "chat": chatID, "item_id": item.ID,
 		"attempts": item.Attempts, "error": err.Error(), "body": json.RawMessage(item.Body),
 	})
-	logutil.Error("阶段处理超过重试上限，已隔离",
-		"workspace", workspaceID, "chat", chatID, "stage", item.Stage, "item", item.ID, "err", err)
+	logutil.Error("节点处理超过重试上限，已隔离",
+		"workspace", workspaceID, "chat", chatID, "node", item.Node, "item", item.ID, "err", err)
 	if store := b.workspaces.StateStore(); store != nil {
 		store.SaveAlert(state.Alert{
 			WorkspaceID: workspaceID,
-			Kind:        "dead_letter_" + item.Stage,
+			Kind:        "dead_letter_" + item.Node,
 			Detail:      string(detail),
 		})
 	}
 }
 
-// forward 与 closeBuffers 都不在这个文件里了：域只管处理，投递与起停在
-// orchestrator 与 ingest.go（Run/drain/closeBuffers）。
+// enter / advance / send 与 closeBuffers 都不在这个文件里了：域只管处理，
+// 投递与起停在 orchestrator 与 ingest.go（Run/drain/closeBuffers）。
