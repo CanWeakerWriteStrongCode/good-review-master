@@ -20,6 +20,12 @@
 > 业务拆成两条互不相连的工作流（`workflow` 声明）。这不是为 MQ 做的，
 > 但正好对应下面「只把入口那一跳先换」的落点：前置就是那个入口消费组，
 > 工作流之间的边界才是真正需要跨进程的地方。
+>
+> 再后来把 **topic + tag** 也对齐了（照 RocketMQ 的模型）：`Item.Stage` 是目标域
+> （就是 topic，谁消费），`Item.Tag` 是所属工作流（就是 tag，属于哪条链）。
+> 顶上那条「工作流名不能和 topic 重名」的约束随之消失——去向只在本工作流的
+> `next` / `ends` 里解析，两条工作流各有一个 `done` 互不干扰，同一个域也能被
+> 多条工作流复用而不串线。换 MQ 时一个域对应一个 topic、消费组配置不用复制。
 
 ## 结论
 
@@ -35,7 +41,7 @@
 | --- | --- | --- |
 | 缓冲是接口 | `Put` / `Take` / `Ack` / `Close` / `Total`；`TakeReady` / `Len` 在 `Peeker` 里，`Stage` 构造期要求两者都有 | `pipeline/buffer.go` |
 | 载荷可序列化 | `Body` 是 JSON，`Inbound` / `Synced` 都是值对象，没有 `*Workspace` 这类指针 | `pipeline/contracts.go`、`conversation/types.go` |
-| 幂等键 | `Item.ID = stage\|key\|消息ID` | `pipeline/contracts.go` |
+| 幂等键 | `Item.ID = stage\|tag\|key\|消息ID` | `pipeline/contracts.go` |
 | 幂等台账 | `processed_items` 表 + `Processed` / `MarkProcessed` / `PurgeProcessed`（成功之后记账，崩溃时宁可重做） | `state/processed.go` |
 | 分区键 | `Item.Key = workspaceID\|chatID` | `conversation.ChatKey` |
 | 批的边界 | `BatchHandler` 的注释写明：非空、同 Key、到达顺序——跨 key 的批必须由适配层先分组 | `pipeline/worker.go` |

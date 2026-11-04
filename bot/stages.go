@@ -18,12 +18,14 @@ import (
 	"good-review-master/workspace"
 )
 
-// handleIngest 是前置：所有消息都从它过。同一会话的一批统一补名、组装并同步入库，
-// 然后交回编排层——这里的回执里 Topic 是工作流名，不是去向。
+// handleSync 是前置的补全段：同一会话的一批消息统一补名、组装并同步入库。
 //
-// 它不属于任何一条工作流：加一条工作流不用动它，它也只管“这条消息走哪条”，
-// 不管那条工作流里有什么。
-func (b *Bot) handleIngest(ctx context.Context, _ string, items []pipeline.Item) Outcome {
+// 它只回答「这条消息现在长什么样」，不回答「它该去哪」——后者是 router 的事，
+// 在下面那行 b.route 里（见 router.go 的文件头：为什么它是函数不是阶段）。
+// 分开的理由很实际：这一段会失败、要重试；那一件不会。
+//
+// 它不属于任何一条工作流：加一条工作流不用动它。
+func (b *Bot) handleSync(ctx context.Context, _ string, items []pipeline.Item) Outcome {
 	var out Outcome
 	byWorkspace := make(map[string][]conversation.Inbound)
 	for _, item := range items {
@@ -43,38 +45,10 @@ func (b *Bot) handleIngest(ctx context.Context, _ string, items []pipeline.Item)
 		}
 		cfg := ws.Snapshot()()
 		for _, synced := range ws.PrepareBatch(ctx, inbounds) {
-			out.Routes = append(out.Routes, Route{
-				Topic:   b.workflowOf(ws, cfg, synced),
-				Key:     conversation.ChatKey(synced.WorkspaceID, synced.ChatID),
-				MsgID:   synced.Message.MessageID,
-				Payload: synced,
-			})
+			out.Routes = append(out.Routes, b.route(ws, cfg, synced))
 		}
 	}
 	return out
-}
-
-// workflowOf 回答“这条消息进哪条工作流”，只读、无副作用，可以单独测。
-//
-// 管理指令走独立工作流：控制平面不占打标签与生成的并发槽，也不进群聊缓存
-// （模型看不到“刚才有人切了人格”，已确认可接受）。
-// record-only 的指令不转出：备用号只记录，交回聊天工作流由生成域回固定话术。
-func (b *Bot) workflowOf(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) string {
-	if b.isInternalCommand(ws, cfg, synced) && !policy.IsRecordOnly(cfg, ws.ID) {
-		return WorkflowCommand
-	}
-	return WorkflowChat
-}
-
-// isInternalCommand 只做只读匹配：命中就说明这条消息该走指令工作流。
-// 执行前的第二次匹配在 speech.RunInternalCommand 里，两处不能合并。
-func (b *Bot) isInternalCommand(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) bool {
-	if ws == nil || ws.Router == nil {
-		return false
-	}
-	_, ok := ws.Router.MatchInternalCommand(synced.Event, synced.Message.Content,
-		b.allowNicknameFallback(ws, cfg.BotNickname))
-	return ok
 }
 
 // handleCommand 是管理指令域：执行指令，不进入打标签与生成。

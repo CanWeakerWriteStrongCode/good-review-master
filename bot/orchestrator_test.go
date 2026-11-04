@@ -12,16 +12,18 @@ func testStageConfig() pipeline.StageConfig {
 	return pipeline.StageConfig{Batch: 1, Concurrency: 1}
 }
 
-// assertTopicsCovered 断言编排层认识这些回执：每一类要么连到某个域、
-// 要么是某条工作流的名字（前置回它），要么显式声明为终点。
-// 三样都没有的话，运行期会被当成装配错误丢弃。加了一条回执却没接上时，这里会先报错。
-func assertTopicsCovered(t *testing.T, o *orchestrator, topics ...string) {
+// assertTopicsCovered 断言某条工作流认识这些回执：每一类要么连到某个域、
+// 要么显式声明为终点。两样都没有的话，运行期会被当成装配错误丢弃。
+// 加了一条回执却没接上时，这里会先报错。
+func assertTopicsCovered(t *testing.T, o *orchestrator, workflowName string, topics ...string) {
 	t.Helper()
+	wf, ok := o.workflows[workflowName]
+	if !ok {
+		t.Fatalf("工作流 %q 没有声明", workflowName)
+	}
 	for _, topic := range topics {
-		_, linked := o.edges[topic]
-		_, workflow := o.workflows[topic]
-		if !linked && !workflow && !o.exits[topic] {
-			t.Fatalf("回执 %q 既没连线、也不是工作流名、也没声明为终点，走到这里会被丢弃", topic)
+		if _, linked := wf.next[topic]; !linked && !wf.ends[topic] {
+			t.Fatalf("工作流 %q 的回执 %q 既没连线、也没声明为终点，走到这里会被丢弃", workflowName, topic)
 		}
 	}
 }
@@ -41,8 +43,8 @@ func Test编排层把回执投给下一个域(t *testing.T) {
 		delivered <- items[0].ID
 		return Outcome{}
 	}, testStageConfig, 8, 8)
-	o.connect("next", "b")
 	o.workflow("w", "a")
+	o.connect("w", "next", "b")
 
 	o.run(ctx)
 	defer func() {
@@ -56,8 +58,8 @@ func Test编排层把回执投给下一个域(t *testing.T) {
 	}
 	select {
 	case id := <-delivered:
-		if id != "b|k1|m1" {
-			t.Fatalf("投递到的条目 ID = %q，want b|k1|m1（Item.Stage 应记目标节点）", id)
+		if id != "b|w|k1|m1" {
+			t.Fatalf("投递到的条目 ID = %q，want b|w|k1|m1（stage 是目标节点，w 是工作流 tag）", id)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("回执没有被投到下游域")
@@ -110,10 +112,11 @@ func Test编排层投递到已关闭的缓冲不报警(t *testing.T) {
 	o := newOrchestrator(func(pipeline.Item, error) { dead++ })
 	o.mount("b", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
 		testStageConfig, 4, 4)
-	o.connect("next", "b")
+	o.workflow("w", "b")
+	o.connect("w", "next", "b")
 	o.closeBuffers()
 
-	o.dispatch(context.Background(), []Route{
+	o.dispatch(context.Background(), "w", []Route{
 		{Topic: "next", Key: "k", MsgID: "m", Payload: struct{}{}},
 	})
 	if dead != 0 {
@@ -130,7 +133,10 @@ func Test编排层连线指向未挂载的域会panic(t *testing.T) {
 		}
 	}()
 	o := newOrchestrator(nil)
-	o.connect("next", "nope")
+	o.mount("a", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
+		testStageConfig, 4, 4)
+	o.workflow("w", "a")
+	o.connect("w", "next", "nope")
 }
 
 // Test编排层声明为终点的去向不投递 终点是链的声明，不是域的沉默：
@@ -150,8 +156,8 @@ func Test编排层声明为终点的去向不投递(t *testing.T) {
 		reached <- struct{}{}
 		return Outcome{}
 	}, testStageConfig, 8, 8)
-	o.exit("done")
 	o.workflow("w", "a")
+	o.exit("w", "done")
 
 	o.run(ctx)
 	defer func() {
@@ -186,13 +192,14 @@ func Test编排层同一个去向既连线又称终点会panic(t *testing.T) {
 			o := newOrchestrator(nil)
 			o.mount("b", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
 				testStageConfig, 4, 4)
+			o.workflow("w", "b")
 			if order == "先连线后终点" {
-				o.connect("next", "b")
-				o.exit("next")
+				o.connect("w", "next", "b")
+				o.exit("w", "next")
 				return
 			}
-			o.exit("next")
-			o.connect("next", "b")
+			o.exit("w", "next")
+			o.connect("w", "next", "b")
 		})
 	}
 }
@@ -271,29 +278,135 @@ func Test没挂前置时admit报错(t *testing.T) {
 	}
 }
 
-// Test工作流名和去向重名会panic 两者都在 Route.Topic 里，同名就分不清是
-// “进工作流”还是“去下一个域”。两种书写顺序都要在构造期炸。
-func Test工作流名和去向重名会panic(t *testing.T) {
-	for _, order := range []string{"先连线后工作流", "先工作流后连线"} {
-		t.Run(order, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Fatal("工作流名与去向重名应当 panic")
-				}
-			}()
-			o := newOrchestrator(nil)
-			handler := func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} }
-			o.mount("a", handler, testStageConfig, 4, 4)
-			o.mount("b", handler, testStageConfig, 4, 4)
-			if order == "先连线后工作流" {
-				o.connect("same", "b")
-				o.workflow("same", "a")
-				return
-			}
-			o.workflow("same", "a")
-			o.connect("same", "b")
-		})
+// Test两条工作流各自解析同名去向 是 topic + tag 模型的核心：
+// 去向只在所属的那条工作流里查，所以 chat 和 command 各声明一个 "done" 互不干扰。
+// 消息带着自己的 tag 走到底，投到各自工作流的下一个域。
+func Test两条工作流各自解析同名去向(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	got := make(chan string, 4)
+	o := newOrchestrator(nil)
+
+	// 两条工作流的入口都只回一个同名去向 "done"。
+	enter := func(name string) DomainHandler {
+		return func(_ context.Context, key string, _ []pipeline.Item) Outcome {
+			return Outcome{Routes: []Route{{Topic: "done", Key: key, MsgID: name, Payload: struct{}{}}}}
+		}
 	}
+	o.mount("chat_entry", enter("chat"), testStageConfig, 8, 8)
+	o.mount("cmd_entry", enter("command"), testStageConfig, 8, 8)
+	o.mount("chat_next", func(_ context.Context, _ string, items []pipeline.Item) Outcome {
+		got <- "chat:" + items[0].Tag
+		return Outcome{}
+	}, testStageConfig, 8, 8)
+	o.mount("cmd_next", func(_ context.Context, _ string, items []pipeline.Item) Outcome {
+		got <- "command:" + items[0].Tag
+		return Outcome{}
+	}, testStageConfig, 8, 8)
+
+	o.workflow(WorkflowChat, "chat_entry")
+	o.connect(WorkflowChat, "done", "chat_next")
+	o.workflow(WorkflowCommand, "cmd_entry")
+	o.connect(WorkflowCommand, "done", "cmd_next")
+
+	o.run(ctx)
+	defer func() {
+		o.closeBuffers()
+		o.closeStages()
+		o.wait()
+	}()
+
+	if err := o.start(ctx, WorkflowChat, "k1", "m1", struct{}{}); err != nil {
+		t.Fatalf("start chat: %v", err)
+	}
+	if err := o.start(ctx, WorkflowCommand, "k2", "m2", struct{}{}); err != nil {
+		t.Fatalf("start command: %v", err)
+	}
+
+	want := map[string]bool{"chat:chat": false, "command:command": false}
+	for range want {
+		select {
+		case v := <-got:
+			if _, ok := want[v]; !ok {
+				t.Fatalf("收到了不属于任何工作流的投递：%q（tag 没跟着消息走或串线了）", v)
+			}
+			want[v] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("同名去向没有被投递到各自工作流的下一站")
+		}
+	}
+	for v, seen := range want {
+		if !seen {
+			t.Fatalf("%s 没有被投递", v)
+		}
+	}
+}
+
+// Test同一个工作流里同一个去向往两处连会panic 两条路径抢同一个 tag，
+// 后写覆盖先写会让装配看起来成功、运行时分流。
+func Test同一个工作流里同一个去向往两处连会panic(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("同一个去向连到两个域应当 panic")
+		}
+	}()
+	o := newOrchestrator(nil)
+	handler := func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} }
+	o.mount("a", handler, testStageConfig, 4, 4)
+	o.mount("b", handler, testStageConfig, 4, 4)
+	o.workflow("w", "a")
+	o.connect("w", "done", "a")
+	o.connect("w", "done", "b")
+}
+
+// Test一批里混两条工作流时按tag分开处理 一个域被多条工作流复用时，
+// 一批里可能有两种 tag。消费端必须按 tag 分派（MQ 消费者订阅多个 tag 的做法），
+// 而不是按第一条算——否则第二条会被送到另一条工作流的下游。
+func Test一批里混两条工作流时按tag分开处理(t *testing.T) {
+	ctx := context.Background()
+
+	var calls []string
+	o := newOrchestrator(nil)
+	shared := func(_ context.Context, key string, items []pipeline.Item) Outcome {
+		calls = append(calls, items[0].Tag)
+		return Outcome{Routes: []Route{{Topic: "done", Key: key, MsgID: "m", Payload: struct{}{}}}}
+	}
+	o.mount("shared", shared, testStageConfig, 8, 8)
+	o.mount("w1_next", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
+		testStageConfig, 8, 8)
+	o.mount("w2_next", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
+		testStageConfig, 8, 8)
+	o.workflow("w1", "shared")
+	o.connect("w1", "done", "w1_next")
+	o.workflow("w2", "shared")
+	o.connect("w2", "done", "w2_next")
+
+	items := []pipeline.Item{
+		testItem(t, "shared", "w1", "k1", "m1"),
+		testItem(t, "shared", "w2", "k1", "m2"),
+	}
+	o.consume(ctx, "k1", items, shared)
+
+	if got := o.backlog("w1_next", "k1"); got != 1 {
+		t.Fatalf("w1 的消息应投到 w1_next，实际积压 %d", got)
+	}
+	if got := o.backlog("w2_next", "k1"); got != 1 {
+		t.Fatalf("w2 的消息应投到 w2_next，实际积压 %d", got)
+	}
+	if len(calls) != 2 || calls[0] != "w1" || calls[1] != "w2" {
+		t.Fatalf("handler 按 tag 分组的调用 = %v，want [w1 w2]", calls)
+	}
+}
+
+// testItem 造一条带 tag 的条目，模拟从前置投下来的消息。
+func testItem(t *testing.T, stage, tag, key, id string) pipeline.Item {
+	t.Helper()
+	it, err := pipeline.NewItem(stage, tag, key, id, struct{}{})
+	if err != nil {
+		t.Fatalf("NewItem: %v", err)
+	}
+	return it
 }
 
 // Test工作流入口没挂载会panic 声明了工作流却没有这个入口域，说明挂载与声明脱节。

@@ -21,8 +21,10 @@ const SerialKey = "serial"
 // 节点名。Item.Stage 记的永远是消息将要去的那个节点，而不是造出它的那个节点——
 // 幂等键与告警分类都按它算。
 //
-// 本包不知道有几个节点、它们怎么接：那是编排层的事（`bot` 的 workflows / edges / exits）。
+// 本包不知道有几个节点、它们怎么接：那是编排层的事（`bot` 的 workflows）。
 // StageSync 现在指前置（入口 + 补名），沿用旧名是为了面板指标和 dead_letter_sync 不用改。
+//
+// 接 MQ 时这两级的对应关系：Stage 是 topic（谁消费），Item.Tag 是 tag（哪条工作流）。
 const (
 	StageSync    = "sync"
 	StageAssets  = "assets"
@@ -37,9 +39,10 @@ const (
 
 var itemSeq atomic.Uint64
 
-// NewItem 把阶段载荷编码进 Item。id 为空时用进程内序号兜底，
-// 保证 Item.ID 始终非空，方便以后 MQ 做幂等。
-func NewItem(stage, key, id string, payload any) (Item, error) {
+// NewItem 把阶段载荷编码进 Item。tag 是“这条消息属于哪条工作流”，前置阶段还没有
+// 定，传空字符串；定了之后每一跳都带着走，MQ 落地时它就是消息的 tag。
+// id 为空时用进程内序号兜底，保证 Item.ID 始终非空，方便以后 MQ 做幂等。
+func NewItem(stage, tag, key, id string, payload any) (Item, error) {
 	if stage == "" || key == "" {
 		return Item{}, fmt.Errorf("pipeline: stage/key 不能为空")
 	}
@@ -50,10 +53,16 @@ func NewItem(stage, key, id string, payload any) (Item, error) {
 	if id == "" {
 		id = fmt.Sprintf("%d", itemSeq.Add(1))
 	}
+	// 前置阶段没有 tag，不拼一段空的进去。
+	itemID := stage + "|" + key + "|" + id
+	if tag != "" {
+		itemID = stage + "|" + tag + "|" + key + "|" + id
+	}
 	return Item{
-		ID:    stage + "|" + key + "|" + id,
+		ID:    itemID,
 		Key:   key,
 		Stage: stage,
+		Tag:   tag,
 		Body:  body,
 	}, nil
 }

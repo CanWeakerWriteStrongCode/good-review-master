@@ -9,7 +9,7 @@ import (
 
 func mustItem(t *testing.T, stage, key, id string, payload any) Item {
 	t.Helper()
-	item, err := NewItem(stage, key, id, payload)
+	item, err := NewItem(stage, "", key, id, payload)
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)
 	}

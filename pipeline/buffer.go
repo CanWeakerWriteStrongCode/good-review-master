@@ -12,9 +12,10 @@ var ErrClosed = errors.New("pipeline: buffer closed")
 
 // Item 是缓冲区里的最小单位。Body 是 JSON，保证换成 MQ 时不用改业务代码。
 type Item struct {
-	ID       string // 幂等键：stage + key + 消息 ID
+	ID       string // 幂等键：stage + tag + key + 消息 ID
 	Key      string // 分区键：M0 是 serial，M4 起是 workspaceID|chatID
-	Stage    string // ingest / sync / assets / agent
+	Stage    string // 目标节点：接 MQ 时它就是 topic（谁消费）。前置阶段记 sync
+	Tag      string // 属于哪条工作流：接 MQ 时它就是 tag。前置阶段为空
 	Body     []byte // JSON 编码的阶段载荷
 	Attempts int
 }

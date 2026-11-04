@@ -18,11 +18,14 @@ import (
 //
 // 现在是**一个前置 + 两条工作流**：
 //
-//	聊天   前置补名 → 打标签（assets）→ 生成（agent）
-//	指令   前置补名 → 管理指令（command）
+//	聊天   前置补全 → 打标签（assets）→ 生成（agent）
+//	指令   前置补全 → 管理指令（command）
 //
-// 两条工作流在补名之后分开：控制平面不占打标签与生成的并发槽，也不进群聊缓存。
+// 两条工作流在补全之后分开：控制平面不占打标签与生成的并发槽，也不进群聊缓存。
 // 加一条工作流 = 一行 workflow + 几次 connect，前置不用动、也不需要新实例。
+//
+// 接 MQ 时：**工作流名就是消息的 tag，域的名字就是 topic**。消息带着 tag 在域之间
+// 走，每个域只订阅自己的 topic，所以加一条工作流不建 topic、不复制消费组配置。
 //
 // 每个节点都是一个固定大小的协程池（pipeline.Stage）：同一个会话在节点内串行，
 // 不同会话并行；会话闲着不占协程。
@@ -108,23 +111,23 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 	b.orch = newOrchestrator(b.deadLetter)
 
 	// 挂载节点。handler 只把结果交回来，不碰任何缓冲，所以这里不需要告诉它下游是谁。
-	// 前置不放进工作流：它只回答“这条消息走哪条”，不属于任何一条。
-	b.orch.mountRouter(pipeline.StageSync, b.handleIngest, b.syncConfig, perChat, global)
+	// 前置不放进工作流：它只做入口与补全，不属于任何一条。
+	b.orch.mountRouter(pipeline.StageSync, b.handleSync, b.syncConfig, perChat, global)
 	b.orch.mount(pipeline.StageAssets, b.handleAssets, b.assetConfig, perChat, global)
 	b.orch.mount(pipeline.StageAgent, b.handleAgent, b.agentConfig, perChat, global)
 	b.orch.mount(pipeline.StageCommand, b.handleCommand, b.commandConfig, perChat, global)
 
 	// 工作流一：聊天。前置路由到这里，之后打标签 → 生成。
 	b.orch.workflow(WorkflowChat, pipeline.StageAssets)
-	b.orch.connect(TopicTagged, pipeline.StageAgent)
-	b.orch.exit(TopicReplied)
+	b.orch.connect(WorkflowChat, TopicTagged, pipeline.StageAgent)
+	b.orch.exit(WorkflowChat, TopicReplied)
 
 	// 工作流二：管理指令。只走控制平面，执行完就结束。
 	//
 	// 终点写在这里而不是让域“沉默”——域只汇报发生过什么，链决定还要不要往下走。
 	// 将来要让指令执行完接下一个域，把这里换成 connect 即可，域一行代码都不用改。
 	b.orch.workflow(WorkflowCommand, pipeline.StageCommand)
-	b.orch.exit(TopicCommandDone)
+	b.orch.exit(WorkflowCommand, TopicCommandDone)
 	return b
 }
 

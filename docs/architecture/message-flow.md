@@ -10,11 +10,12 @@
 flowchart TB
   A["AstrBot 边车"] -->|"POST /im/event/{account}"| IM["im.Server.handleEvent"]
   IM -->|"EventConsumer.AcceptEvent"| AC["bot.Bot.AcceptEvent"]
-  AC -->|"admit"| R["前置 router · handleIngest<br/>入口 + 补名，不属于任何工作流"]
+  AC -->|"admit"| R["前置 sync · handleSync<br/>补全入库"]
   R -->|"PrepareBatch"| WS["workspace.Workspace.PrepareBatch"]
   WS --> DB[("state.db messages")]
-  R -->|"回执 chat"| O["bot.orchestrator<br/>workflows / edges / exits"]
-  R -->|"回执 command"| O
+  R -->|"route"| RT["router · 只读择路<br/>不是阶段，没有队列"]
+  RT -->|"回执 chat（tag）"| O["bot.orchestrator<br/>workflows：tag → 拓扑"]
+  RT -->|"回执 command（tag）"| O
 
   subgraph W1["工作流一：聊天"]
     S2["assets · handleAssets"] --> S3["agent · handleAgent"]
@@ -23,10 +24,10 @@ flowchart TB
     SC["command · handleCommand"]
   end
 
-  O -->|"chat → assets"| S2
-  O -->|"command → command"| SC
+  O -->|"chat：入口 assets"| S2
+  O -->|"command：入口 command"| SC
   S2 -->|"Tagger.TagURLs"| AS["assets.ImageTagger"]
-  S2 -->|"回执 tagged"| O
+  S2 -->|"回执 tagged（chat）"| O
   S3 --> GC["conversation.GroupMsgCache"]
   S3 -->|"被点名"| RT["speech.Router.RouteMessageNow"]
   S3 -->|"没被点名"| PA["speech.Router.TryProactiveNow"]
@@ -36,12 +37,12 @@ flowchart TB
   DEL --> OB["onebot.Client"]
   SC --> RUN["speech.Router.RunInternalCommand"]
   RUN --> POL["policy.CanUseCommand"]
-  S3 -->|"回执 replied"| O
-  SC -->|"回执 command_done"| O
-  O -->|"command_done / replied<br/>声明为终点"| END["到此为止"]
+  S3 -->|"回执 replied（chat）"| O
+  SC -->|"回执 command_done（command）"| O
+  O -->|"回执是所属工作流的终点<br/>声明为 ends"| END["到此为止"]
 ```
 
-一句话版：`im.Server` 收 → `bot.Bot` 交给编排层的前置 → 前置补名入库并回一句「这条走聊天还是走指令」→ 编排层按工作流名找到入口域：聊天工作流走 `assets` 打标签 → `agent` 生成；指令工作流走 `command` 执行。`agent` 之后的 `speech` 决定回不回、回什么，`deliver` 发出去。两条工作流的最后一个域交回「这一步完成了」，编排层把 `replied` 与 `command_done` 声明为终点，消息到此结束。
+一句话版：`im.Server` 收 → `bot.Bot` 交给编排层的前置 → 前置的 `sync` 补全入库、`router` 回一句「这条走聊天还是走指令」→ 编排层把这个名字记成消息的 **tag**，按它找到那条工作流的入口域（**topic**）：聊天走 `assets` 打标签 → `agent` 生成；指令走 `command` 执行。`agent` 之后的 `speech` 决定回不回、回什么，`deliver` 发出去。两条工作流的最后一个域交回「这一步完成了」，各自那条工作流把它声明为终点，消息到此结束。
 
 **前置只有一道，工作流有多条**。前置管「入口 + 补名 + 走哪条」，两条工作流之间没有任何连线——加一条工作流只是多一个 `workflow` 声明和它的几条 `connect`，前置不用动。
 
@@ -76,7 +77,7 @@ flowchart TB
 | `workspace.Manager.ResolveOrCreate` | `workspace/workspace.go` | `(platform, account_kind, account)` → `*Workspace`；不在开通名单就返 nil，事件被丢弃 |
 | `conversation.ChatKey` | `conversation/types.go` | `workspaceID + "\|" + chatID`，后面所有分片、缓存、落库都用它当键 |
 | `messageDedup` | `bot/handler.go` | TTL 10 分钟的内存短表，兜住「前置的缓存还看不到这条消息」这段窗口；入队失败会 `forget` 撤占位 |
-| `pipeline.Item` | `pipeline/buffer.go` | 阶段之间**唯一**搬运的东西：`ID`（`stage\|key\|消息ID`）、`Key`、`Stage`、`Body`（JSON）、`Attempts` |
+| `pipeline.Item` | `pipeline/buffer.go` | 阶段之间**唯一**搬运的东西：`ID`（`stage\|tag\|key\|消息ID`）、`Key`、`Stage`（topic）、`Tag`（工作流）、`Body`（JSON）、`Attempts` |
 | `pipeline.MemoryBuffer` | `pipeline/buffer.go` | 每分区一条 FIFO + 全局限量；满了阻塞不丢 |
 | `conversation.Inbound` | `conversation/types.go` | `Body` 里装的值：`{WorkspaceID, Event}` |
 
@@ -96,22 +97,43 @@ flowchart TB
 | `ready` / `readySet` | 就绪队列与去重索引，队首是最久没被处理的会话 |
 | `inflight` | 同一 `key` 同一时刻只允许一个协程持有——「同一个群按到达顺序」就是这么保证的 |
 | `maxBurstPerTurn` | 一个协程一次最多连吃 3 批同一会话，防止活跃群占死池子 |
-| `StageOptions.Handler` | `func(ctx, key, []Item) []FailedItem`。编排层在这里套了一层：先调域拿 `Outcome`，把其中的 `Routes` 投出去，再原样返回 `Failed` |
+| `StageOptions.Handler` | `func(ctx, key, []Item) []FailedItem`。编排层在这里套了一层 `consume`：一批里只有一种 tag 就直接交给域（现在四个域都是这条路径，零额外开销）；混了多条工作流的 tag（一个域被复用）就先按 tag 分组，各自处理、各自投递——和 MQ 消费者订阅多个 tag 一样 |
 | `Item.Attempts` | 失败重试计数，超限交给 `OnDeadLetter` |
 
-前置、域、缓冲、连线、终点、工作流都在 `bot.NewBot` 里一次装完：`orch.mountRouter(名字, handler, 配置)` 挂前置，`orch.mount(名字, handler, 配置)` 挂一个域，`orch.workflow(工作流名, 入口域)` 声明一条工作流，`orch.connect(topic, 名字)` 说清「这一类由谁接手」，`orch.exit(topic)` 说清「这一类到此为止」。域自己不知道下游是谁，也不知道自己是不是最后一站。
+前置、域、缓冲、连线、终点、工作流都在 `bot.NewBot` 里一次装完：`orch.mountRouter(名字, handler, 配置)` 挂前置，`orch.mount(名字, handler, 配置)` 挂一个域，`orch.workflow(工作流名, 入口域)` 声明一条工作流，`orch.connect(工作流名, topic, 名字)` 说清「这条工作流里这类去向由谁接手」，`orch.exit(工作流名, topic)` 说清「这条工作流里这类去向到此为止」。域自己不知道下游是谁，也不知道自己是不是最后一站。
 
-`dispatch` 对每条回执查三样：命中 `exits` 就结束；命中 `edges` 就投给下一个域；命中 `workflows` 就投给那条工作流的入口域（前置就走这一支）；三样都没有是装配错误，打 Error 丢弃。
+`dispatch` 分两级解析：`Item.Tag` 为空说明是前置交回来的——`Route.Topic` 就是工作流名，查它的入口域，并把工作流名写进下一跳的 `Tag`；`Tag` 非空说明是域交回来的——`Route.Topic` 是去向，只在这条工作流的 `next` / `ends` 里查。查不到是装配错误，打 Error 丢弃。
 
-## ④ 前置：`bot.handleIngest` + `workspace.PrepareBatch`
+这就是 RocketMQ 的 **topic + tag**：`Item.Stage` 是 topic（谁消费），`Item.Tag` 是 tag（属于哪条工作流）。tag 只在所属工作流内唯一，所以两条工作流可以各有一个 `done`，同一个域也可以被两条工作流复用。
+
+## ④ 前置：`sync` 补全 + `router` 择路
 
 **手里**：一批 `conversation.Inbound`（同一会话）。
 
-两个动作：**先把这条消息补完整并落库**，再回一句「这条消息走哪条工作流」。
+前置里是**两个东西**，不是一个：
 
-它不属于任何一条工作流：加一条工作流不用改这个文件。
+| | 做什么 | 会不会失败 | 代码 |
+| --- | --- | --- | --- |
+| `sync`（`handleSync`） | 补名、补引用、同步写 `messages` | 会：库写不进要重试 | `bot/stages.go` |
+| `router`（`route`） | 读配置与内存态，回一个工作流名 | 不会：查不到就是聊天 | `bot/router.go` |
 
-`handleIngest` 自己很薄：解码 → 按工作空间分组 → 调 `ws.PrepareBatch` → 逐条 append 回执。它不碰缓冲，也不知道下游是谁。
+两段在同一个循环里跑，中间不多一次编码：
+
+```go
+for _, synced := range ws.PrepareBatch(ctx, inbounds) {
+	out.Routes = append(out.Routes, b.route(ws, cfg, synced))   // 补全 → 择路
+}
+```
+
+**为什么 router 不是一个阶段**（没有自己的 Buffer）。三条，判据都是「它有没有独立的资源特征」：
+
+- 择路只是一次配置读取加一次前缀树匹配。补全要写库、打标签要调视觉模型、生成要调大模型——那些才值得一个池子。
+- 它和补全共享同一个内存值（`synced.Message.Content`）。拆成两个阶段就要把整个 `Synced` 编码成 JSON 再解出来，只为读一个字段。
+- 它没有失败模式。没有失败就没有重试、没有死信、没有队列。
+
+等择路本身变贵了（查库按租户取规则、走规则引擎、调模型判断意图），它才需要独立成阶段。详见 [bot/router.go 的文件头](../../bot/router.go)。
+
+两段都不属于任何一条工作流：加一条工作流，这两处都不用动。
 
 `PrepareBatch`（`workspace/sync.go`）是「补全」的全部内容：
 
@@ -129,7 +151,7 @@ flowchart TB
 
 补名收尾会调 `scheduleMentionBackfill`：成员名是异步回来的，早先写库的 `@用户(id)` 需要回填。
 
-**路由**（`workflowOf`：只读、无副作用，可以单独测）：
+**路由规则**（`workflowOf`：只读、无副作用，可以单独测）：
 
 ```go
 if isInternalCommand(...) && !policy.IsRecordOnly(...) → WorkflowCommand
@@ -273,7 +295,8 @@ else                                                     → WorkflowChat
 | 域之间谁接谁、加一个域 | `bot/handler.go` 的 `mount` / `connect`，以及各域的 `Outcome.Routes` |
 | 加一条工作流（新的入口 + 新的域组合） | `bot/handler.go` 的 `workflow` / `connect`；前置不用动 |
 | 某一类消息到此为止、或接下一个域 | `bot/handler.go` 的 `exit` ↔ `connect`，域不用改 |
-| 什么算管理指令、谁能用 | `speech/command_run.go` + `policy.CanUseCommand` |
+| 什么算管理指令、走哪条工作流 | `bot/router.go`（`route` / `workflowOf`） |
+| 指令的权限与执行 | `speech/command_run.go` + `policy.CanUseCommand` |
 | 指令本身的行为 | `speech/internal_cmd.go` 对应 handler |
 | 打标签、看图 | `assets/tagger.go`、`asset_tag_jobs` 的后台补 |
 | 什么时候回复、回什么 | `speech/dispatch.go`、`generate.go`、`judge.go` |
