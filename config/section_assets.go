@@ -74,7 +74,7 @@ func (s *assetsSection) Validate() error {
 		return positiveInt("assets.backfill_batch", *s.BackfillBatch, "一次补多少张欠条")
 	}
 	if *s.TagConcurrency <= 0 {
-		return positiveInt("assets.tag_concurrency", *s.TagConcurrency, "同一时刻最多描述几张图")
+		return positiveInt("assets.tag_concurrency", *s.TagConcurrency, "一条消息内最多同时描述几张图")
 	}
 	// 0 会让租约永不过期：进程崩在一次领取中途，那条欠条就永远停在 running 上。
 	if *s.BackfillClaimTimeoutSec <= 0 {

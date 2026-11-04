@@ -35,7 +35,7 @@ func TestIsAddressed判定各种点名写法(t *testing.T) {
 		{name: "手打昵称但多账号不启用兜底", event: groupEvent("@不是好评大师 锐评"), content: "@不是好评大师 锐评", allowNickname: false, want: false},
 		{name: "别人被 at 不算", event: groupEvent("@用户(3319D7) test", onebot.MentionSegment("3319D7")), content: "@用户(3319D7) test", allowNickname: true, want: false},
 		{name: "标准 mention 段", event: groupEvent("锐评", onebot.MentionSegment("self-openid")), content: "锐评", allowNickname: false, want: true},
-		{name: "通用的 @你 仍可识别", event: groupEvent("@你 锐评"), content: "@你 锐评", allowNickname: false, want: true},
+		{name: "@你 不算点名", event: groupEvent("@你 锐评"), content: "@你 锐评", allowNickname: false, want: false},
 		{name: "普通文本", event: groupEvent("今天天气不错"), content: "今天天气不错", allowNickname: true, want: false},
 		{name: "私聊一律算点名", event: onebot.Event{DetailType: "private", UserID: "u1"}, content: "在吗", allowNickname: false, want: true},
 	}

@@ -8,12 +8,14 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"good-review-master/config"
 	"good-review-master/conversation"
 	"good-review-master/internal/testutil"
+	"good-review-master/mcpserver"
 )
 
 // fakeNoteStore 内存版全局图库，记录调用次数供断言。
@@ -170,6 +172,47 @@ func TestTagger时间预算耗尽进入欠条(t *testing.T) {
 	}
 	if len(result.Deferred) != 1 || result.Deferred[0].URL != path {
 		t.Fatalf("欠条应记下原始地址：%+v", result.Deferred)
+	}
+}
+
+func TestTagger下载阶段共用预算(t *testing.T) {
+	fake := testutil.NewFakeLLM()
+	fake.SetStructuredReply(`{"content":"图","info_level":"low","has_text":false}`)
+	store := newFakeNoteStore()
+	cfg := &config.Config{LLMTimeout: time.Second}
+	cfg.LLMConfig.ImageNoteMaxSide = 640
+	cfg.LLMConfig.ImageNoteMaxPixels = 400000
+	cfg.LLMConfig.ImageNoteTimeoutSec = 2
+	cfg.LLMConfig.ImageNoteRetries = 2
+	cfg.Assets = config.AssetsConf{MessageBudget: 20 * time.Millisecond, TagConcurrency: 1}
+	tagger := NewImageTagger(func() *config.Config { return cfg }, fake, func() string { return "p" }, store)
+
+	// 模拟一个拖到预算到点的慢下载：第一张就会把 20ms 预算吃光
+	var downloads atomic.Int32
+	tagger.fetcher = func() mcpserver.Fetcher {
+		return mcpserver.FetcherFunc(func(ctx context.Context, _ string) ([]byte, string, error) {
+			downloads.Add(1)
+			<-ctx.Done()
+			return nil, "", ctx.Err()
+		})
+	}
+
+	result := tagger.TagURLs(context.Background(), []string{
+		"https://example.invalid/1.png", "https://example.invalid/2.png",
+	})
+	if got := downloads.Load(); got != 1 {
+		t.Fatalf("预算耗尽后不该再发起下载，实际下载 %d 次", got)
+	}
+	if result.Status != conversation.StatusDeferred {
+		t.Fatalf("预算耗尽应为 deferred，实际 %q", result.Status)
+	}
+	if len(result.Deferred) != 2 {
+		t.Fatalf("两张图都该记欠条：%+v", result.Deferred)
+	}
+	for _, d := range result.Deferred {
+		if d.URL == "" {
+			t.Fatalf("欠条应记下原始地址：%+v", d)
+		}
 	}
 }
 

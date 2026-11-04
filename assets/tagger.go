@@ -66,6 +66,9 @@ type TagResult struct {
 	Deferred   []DeferredAsset
 }
 
+// errBudgetExhausted 一条消息的资产处理预算（下载 + 描述）用完时的统一文案。
+const errBudgetExhausted = "标签时间预算耗尽"
+
 // TagURLs 给一条消息里的图片 URL 打标签。
 func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	cfg := t.cfg()
@@ -85,12 +88,37 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	datas := make([][]byte, n)
 	mimes := make([]string, n)
 
+	// 预算覆盖「下载 + 描述」整条链路。下载器每张图自带 30s 超时且不受
+	// MessageBudget 约束，计时器必须从下载前开始，「一条消息最多多久」才是真上限。
+	budgetCtx := ctx
+	cancel := func() {}
+	if budget := cfg.Assets.MessageBudget; budget > 0 {
+		budgetCtx, cancel = context.WithTimeout(ctx, budget)
+	}
+	defer cancel()
+
 	fetcher := t.fetcher()
 	for i, url := range urls {
 		asset := conversation.Asset{Index: i, Kind: "image", URL: url, Status: conversation.StatusOK}
-		data, mime, err := fetcher.FetchImage(ctx, url)
+		// 预算已耗尽：剩下的图连下载都不再尝试（一张最多还要等 30s），
+		// 直接记欠条交给后台补，让消息尽快进 Stage 3。
+		if budgetCtx.Err() != nil {
+			asset.Status = conversation.StatusDeferred
+			asset.Error = errBudgetExhausted
+			result.Assets[i] = asset
+			result.Deferred = append(result.Deferred, DeferredAsset{
+				Index: i, Kind: "image", URL: url, Error: errBudgetExhausted,
+			})
+			continue
+		}
+		data, mime, err := fetcher.FetchImage(budgetCtx, url)
 		if err != nil {
+			// 预算到点导致的失败属于「没排上」，记 deferred 等后台补；
+			// 其余（404、不是图片、超限）是真失败。
 			asset.Status = conversation.StatusFailed
+			if budgetCtx.Err() != nil {
+				asset.Status = conversation.StatusDeferred
+			}
 			asset.Error = err.Error()
 			result.Assets[i] = asset
 			result.Deferred = append(result.Deferred, DeferredAsset{
@@ -142,13 +170,9 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 		return result
 	}
 
-	budgetCtx := ctx
-	cancel := func() {}
-	if budget := cfg.Assets.MessageBudget; budget > 0 {
-		budgetCtx, cancel = context.WithTimeout(ctx, budget)
-	}
-	defer cancel()
-
+	// 信号量按「本次调用（即一条消息）」创建：它限制的是一条消息里的多张图
+	// 同时描述几张，不是跨消息的全局上限。全局出站峰值 = Stage 2 的
+	// asset_concurrency × 本值；要真正全局限流得把信号量提到 ImageTagger 上。
 	limit := cfg.Assets.TagConcurrency
 	if limit <= 0 {
 		limit = 1
@@ -166,9 +190,9 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 				mu.Lock()
 				for _, i := range indexes {
 					result.Assets[i].Status = conversation.StatusDeferred
-					result.Assets[i].Error = "标签时间预算耗尽"
+					result.Assets[i].Error = errBudgetExhausted
 					result.Deferred = append(result.Deferred, DeferredAsset{
-						Index: i, Kind: "image", URL: urls[i], Error: "标签时间预算耗尽",
+						Index: i, Kind: "image", URL: urls[i], Error: errBudgetExhausted,
 					})
 				}
 				mu.Unlock()

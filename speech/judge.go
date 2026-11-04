@@ -12,7 +12,7 @@ import (
 // 只判断"有没有明确对象"，是分发前的第一道门。
 
 // IsAddressed 判断一条消息是不是冲机器人来的：私聊、标准 mention 段、
-// 实现端 @ 标记，或手打的「@昵称」/「@你」都算。
+// 实现端 @ 标记，或手打的「@昵称」都算。
 //
 // allowNickname 控制昵称前缀是否作数：多账号且昵称重名时，@昵称 分不清是哪个号，
 // 调用方要传 false（工作空间里只有一个号、或昵称唯一时才传 true）。
@@ -22,10 +22,9 @@ func IsAddressed(event onebot.Event, content string, cfg *config.Config, allowNi
 	if event.IsPrivate() || event.MentionsBot() || event.AdapterAtMe() {
 		return true
 	}
-	if allowNickname && cfg.BotNickname != "" && strings.HasPrefix(content, "@"+cfg.BotNickname) {
-		return true
-	}
-	return strings.HasPrefix(content, "@你")
+	// 「@你」不作数：实现端不会把 @ 替换成这个字面量，它出现在正文里
+	// 只可能是聊天内容本身。
+	return allowNickname && cfg.BotNickname != "" && strings.HasPrefix(content, "@"+cfg.BotNickname)
 }
 
 // stripCQPrefix 去除消息开头的 @ 标记，让后面的文本能命中关键字。
