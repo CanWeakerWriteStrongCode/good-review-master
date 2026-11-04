@@ -104,7 +104,7 @@ sequenceDiagram
 
 再加一道超时：单次判定超过 `proactive_judge_timeout_sec` 一律按"不回"处理。`proactive_judge_images` 控制判定时能不能附图片（0 = 纯图片消息不判）。
 
-三重闸之外，`bot.handleAgent` 还做了一层：只有 B3 没有积压时才判，且一批只看最后一条。这是为了刷屏时不重复烧裁判的钱。
+三重闸之外，`bot.handleAgent` 还做了一层：只有 `agent` 节点没有积压时才判，且一批只看最后一条。这是为了刷屏时不重复烧裁判的钱。
 
 ## 工具轮
 

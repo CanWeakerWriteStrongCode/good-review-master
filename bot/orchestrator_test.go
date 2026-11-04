@@ -8,28 +8,28 @@ import (
 	"good-review-master/pipeline"
 )
 
-func testStageConfig() pipeline.StageConfig {
-	return pipeline.StageConfig{Batch: 1, Concurrency: 1}
+func testConsumerConfig() pipeline.ConsumerConfig {
+	return pipeline.ConsumerConfig{Batch: 1, Concurrency: 1}
 }
 
-// assertTopicsCovered 断言某条工作流认识这些回执：每一类要么连到某个域、
+// assertEventsCovered 断言某条工作流认识这些事件：每一个要么连到某个域、
 // 要么显式声明为终点。两样都没有的话，运行期会被当成装配错误丢弃。
-// 加了一条回执却没接上时，这里会先报错。
-func assertTopicsCovered(t *testing.T, o *orchestrator, workflowName string, topics ...string) {
+// 加了一个事件却没接上时，这里会先报错。
+func assertEventsCovered(t *testing.T, o *orchestrator, workflowName string, events ...string) {
 	t.Helper()
 	wf, ok := o.workflows[workflowName]
 	if !ok {
 		t.Fatalf("工作流 %q 没有声明", workflowName)
 	}
-	for _, topic := range topics {
-		if _, linked := wf.next[topic]; !linked && !wf.ends[topic] {
-			t.Fatalf("工作流 %q 的回执 %q 既没连线、也没声明为终点，走到这里会被丢弃", workflowName, topic)
+	for _, event := range events {
+		if _, linked := wf.next[event]; !linked && !wf.ends[event] {
+			t.Fatalf("工作流 %q 的事件 %q 既没连线、也没声明为终点，走到这里会被丢弃", workflowName, event)
 		}
 	}
 }
 
 // Test编排层把回执投给下一个域 验证"域回消息、编排层转发"这条闭环：
-// 域 A 只回一个 topic，消息最终落到 topic 连到的域 B，且 Item.ID 记的是目标节点。
+// 域 A 只回一个事件，消息最终落到该事件连到的域 B，且 Item.ID 记的是目标节点。
 func Test编排层把回执投给下一个域(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -37,19 +37,19 @@ func Test编排层把回执投给下一个域(t *testing.T) {
 	delivered := make(chan string, 8)
 	o := newOrchestrator(nil)
 	o.mount("a", func(_ context.Context, key string, _ []pipeline.Item) Outcome {
-		return Outcome{Routes: []Route{{Topic: "next", Key: key, MsgID: "m1", Payload: struct{}{}}}}
-	}, testStageConfig, 8, 8)
+		return Outcome{Signals: []Signal{{Event: "next", Key: key, MsgID: "m1", Payload: struct{}{}}}}
+	}, testConsumerConfig, 8, 8)
 	o.mount("b", func(_ context.Context, _ string, items []pipeline.Item) Outcome {
 		delivered <- items[0].ID
 		return Outcome{}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 	o.workflow("w", "a")
 	o.connect("w", "next", "b")
 
 	o.run(ctx)
 	defer func() {
 		o.closeBuffers()
-		o.closeStages()
+		o.closeConsumers()
 		o.wait()
 	}()
 
@@ -59,7 +59,7 @@ func Test编排层把回执投给下一个域(t *testing.T) {
 	select {
 	case id := <-delivered:
 		if id != "b|w|k1|m1" {
-			t.Fatalf("投递到的条目 ID = %q，want b|w|k1|m1（stage 是目标节点，w 是工作流 tag）", id)
+			t.Fatalf("投递到的条目 ID = %q，want b|w|k1|m1（node 是目标节点，w 是工作流 tag）", id)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("回执没有被投到下游域")
@@ -77,18 +77,18 @@ func Test编排层没连线的去向不投递(t *testing.T) {
 	reached := make(chan struct{}, 1)
 	o := newOrchestrator(func(pipeline.Item, error) { dead++ })
 	o.mount("a", func(_ context.Context, key string, _ []pipeline.Item) Outcome {
-		return Outcome{Routes: []Route{{Topic: "没有这条线", Key: key, MsgID: "m1", Payload: struct{}{}}}}
-	}, testStageConfig, 8, 8)
+		return Outcome{Signals: []Signal{{Event: "没有这条线", Key: key, MsgID: "m1", Payload: struct{}{}}}}
+	}, testConsumerConfig, 8, 8)
 	o.mount("b", func(_ context.Context, _ string, _ []pipeline.Item) Outcome {
 		reached <- struct{}{}
 		return Outcome{}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 	o.workflow("w", "a")
 
 	o.run(ctx)
 	defer func() {
 		o.closeBuffers()
-		o.closeStages()
+		o.closeConsumers()
 		o.wait()
 	}()
 
@@ -111,13 +111,13 @@ func Test编排层投递到已关闭的缓冲不报警(t *testing.T) {
 	dead := 0
 	o := newOrchestrator(func(pipeline.Item, error) { dead++ })
 	o.mount("b", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
-		testStageConfig, 4, 4)
+		testConsumerConfig, 4, 4)
 	o.workflow("w", "b")
 	o.connect("w", "next", "b")
 	o.closeBuffers()
 
-	o.dispatch(context.Background(), "w", []Route{
-		{Topic: "next", Key: "k", MsgID: "m", Payload: struct{}{}},
+	o.dispatch(context.Background(), "w", []Signal{
+		{Event: "next", Key: "k", MsgID: "m", Payload: struct{}{}},
 	})
 	if dead != 0 {
 		t.Fatalf("关停期投递失败不该报警，实际 %d 条", dead)
@@ -134,7 +134,7 @@ func Test编排层连线指向未挂载的域会panic(t *testing.T) {
 	}()
 	o := newOrchestrator(nil)
 	o.mount("a", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
-		testStageConfig, 4, 4)
+		testConsumerConfig, 4, 4)
 	o.workflow("w", "a")
 	o.connect("w", "next", "nope")
 }
@@ -150,19 +150,19 @@ func Test编排层声明为终点的去向不投递(t *testing.T) {
 	reached := make(chan struct{}, 1)
 	o := newOrchestrator(func(pipeline.Item, error) { dead++ })
 	o.mount("a", func(_ context.Context, key string, _ []pipeline.Item) Outcome {
-		return Outcome{Routes: []Route{{Topic: "done", Key: key, MsgID: "m1", Payload: struct{}{}}}}
-	}, testStageConfig, 8, 8)
+		return Outcome{Signals: []Signal{{Event: "done", Key: key, MsgID: "m1", Payload: struct{}{}}}}
+	}, testConsumerConfig, 8, 8)
 	o.mount("b", func(_ context.Context, _ string, _ []pipeline.Item) Outcome {
 		reached <- struct{}{}
 		return Outcome{}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 	o.workflow("w", "a")
 	o.exit("w", "done")
 
 	o.run(ctx)
 	defer func() {
 		o.closeBuffers()
-		o.closeStages()
+		o.closeConsumers()
 		o.wait()
 	}()
 
@@ -191,7 +191,7 @@ func Test编排层同一个去向既连线又称终点会panic(t *testing.T) {
 			}()
 			o := newOrchestrator(nil)
 			o.mount("b", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
-				testStageConfig, 4, 4)
+				testConsumerConfig, 4, 4)
 			o.workflow("w", "b")
 			if order == "先连线后终点" {
 				o.connect("w", "next", "b")
@@ -216,30 +216,30 @@ func Test前置把消息路由到不同工作流(t *testing.T) {
 
 	o := newOrchestrator(nil)
 	// 前置：按 key 决定走哪条（真实实现里看的是“是不是管理指令”）。
-	o.mountRouter(pipeline.NodeSync, func(_ context.Context, key string, items []pipeline.Item) Outcome {
+	o.mountRouter(pipeline.NodeSync, func(_ context.Context, key string, items []pipeline.Item) RouterOutcome {
 		workflow := WorkflowChat
 		if key == "cmd" {
 			workflow = WorkflowCommand
 		}
-		return Outcome{Routes: []Route{{
-			Topic: workflow, Key: key, MsgID: items[0].ID, Payload: struct{}{},
+		return RouterOutcome{Picks: []Pick{{
+			Workflow: workflow, Key: key, MsgID: items[0].ID, Payload: struct{}{},
 		}}}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 	o.mount("chat_entry", func(_ context.Context, key string, _ []pipeline.Item) Outcome {
 		chat <- key
 		return Outcome{}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 	o.mount("cmd_entry", func(_ context.Context, key string, _ []pipeline.Item) Outcome {
 		command <- key
 		return Outcome{}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 	o.workflow(WorkflowChat, "chat_entry")
 	o.workflow(WorkflowCommand, "cmd_entry")
 
 	o.run(ctx)
 	defer func() {
 		o.closeBuffers()
-		o.closeStages()
+		o.closeConsumers()
 		o.wait()
 	}()
 
@@ -291,19 +291,19 @@ func Test两条工作流各自解析同名去向(t *testing.T) {
 	// 两条工作流的入口都只回一个同名去向 "done"。
 	enter := func(name string) DomainHandler {
 		return func(_ context.Context, key string, _ []pipeline.Item) Outcome {
-			return Outcome{Routes: []Route{{Topic: "done", Key: key, MsgID: name, Payload: struct{}{}}}}
+			return Outcome{Signals: []Signal{{Event: "done", Key: key, MsgID: name, Payload: struct{}{}}}}
 		}
 	}
-	o.mount("chat_entry", enter("chat"), testStageConfig, 8, 8)
-	o.mount("cmd_entry", enter("command"), testStageConfig, 8, 8)
+	o.mount("chat_entry", enter("chat"), testConsumerConfig, 8, 8)
+	o.mount("cmd_entry", enter("command"), testConsumerConfig, 8, 8)
 	o.mount("chat_next", func(_ context.Context, _ string, items []pipeline.Item) Outcome {
 		got <- "chat:" + items[0].Tag
 		return Outcome{}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 	o.mount("cmd_next", func(_ context.Context, _ string, items []pipeline.Item) Outcome {
 		got <- "command:" + items[0].Tag
 		return Outcome{}
-	}, testStageConfig, 8, 8)
+	}, testConsumerConfig, 8, 8)
 
 	o.workflow(WorkflowChat, "chat_entry")
 	o.connect(WorkflowChat, "done", "chat_next")
@@ -313,7 +313,7 @@ func Test两条工作流各自解析同名去向(t *testing.T) {
 	o.run(ctx)
 	defer func() {
 		o.closeBuffers()
-		o.closeStages()
+		o.closeConsumers()
 		o.wait()
 	}()
 
@@ -353,8 +353,8 @@ func Test同一个工作流里同一个去向往两处连会panic(t *testing.T) 
 	}()
 	o := newOrchestrator(nil)
 	handler := func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} }
-	o.mount("a", handler, testStageConfig, 4, 4)
-	o.mount("b", handler, testStageConfig, 4, 4)
+	o.mount("a", handler, testConsumerConfig, 4, 4)
+	o.mount("b", handler, testConsumerConfig, 4, 4)
 	o.workflow("w", "a")
 	o.connect("w", "done", "a")
 	o.connect("w", "done", "b")
@@ -370,13 +370,13 @@ func Test一批里混两条工作流时按tag分开处理(t *testing.T) {
 	o := newOrchestrator(nil)
 	shared := func(_ context.Context, key string, items []pipeline.Item) Outcome {
 		calls = append(calls, items[0].Tag)
-		return Outcome{Routes: []Route{{Topic: "done", Key: key, MsgID: "m", Payload: struct{}{}}}}
+		return Outcome{Signals: []Signal{{Event: "done", Key: key, MsgID: "m", Payload: struct{}{}}}}
 	}
-	o.mount("shared", shared, testStageConfig, 8, 8)
+	o.mount("shared", shared, testConsumerConfig, 8, 8)
 	o.mount("w1_next", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
-		testStageConfig, 8, 8)
+		testConsumerConfig, 8, 8)
 	o.mount("w2_next", func(context.Context, string, []pipeline.Item) Outcome { return Outcome{} },
-		testStageConfig, 8, 8)
+		testConsumerConfig, 8, 8)
 	o.workflow("w1", "shared")
 	o.connect("w1", "done", "w1_next")
 	o.workflow("w2", "shared")
@@ -400,9 +400,9 @@ func Test一批里混两条工作流时按tag分开处理(t *testing.T) {
 }
 
 // testItem 造一条带 tag 的条目，模拟从前置投下来的消息。
-func testItem(t *testing.T, stage, tag, key, id string) pipeline.Item {
+func testItem(t *testing.T, node, tag, key, id string) pipeline.Item {
 	t.Helper()
-	it, err := pipeline.NewItem(stage, tag, key, id, struct{}{})
+	it, err := pipeline.NewItem(node, tag, key, id, struct{}{})
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)
 	}
@@ -414,9 +414,9 @@ func testItem(t *testing.T, stage, tag, key, id string) pipeline.Item {
 func Test前置的积压也数得清(t *testing.T) {
 	ctx := context.Background()
 	o := newOrchestrator(nil)
-	o.mountRouter(pipeline.NodeSync, func(context.Context, string, []pipeline.Item) Outcome {
-		return Outcome{}
-	}, testStageConfig, 8, 8)
+	o.mountRouter(pipeline.NodeSync, func(context.Context, string, []pipeline.Item) RouterOutcome {
+		return RouterOutcome{}
+	}, testConsumerConfig, 8, 8)
 
 	if err := o.admit(ctx, "k1", "m1", struct{}{}); err != nil {
 		t.Fatalf("admit: %v", err)

@@ -71,7 +71,7 @@ type PipelineConf struct {
 	AgentLinger      time.Duration
 	AgentConcurrency int
 	AgentRetries     int
-	// 管理指令阶段：不占打标签与 Agent 的并发槽。Go 代码里 Retries 固定传 0，
+	// 管理指令域：不占打标签与 Agent 的并发槽。Go 代码里 Retries 固定传 0，
 	// 指令副作用不幂等（#添加人格 重试一次就是两个人格）。
 	CommandBatch       int
 	CommandLinger      time.Duration

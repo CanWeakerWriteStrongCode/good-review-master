@@ -71,7 +71,7 @@ Go 侧统一通过 `onebot.Event` 的访问方法读，不直接按 JSON 路径�
 | 现象 | 含义 |
 | --- | --- |
 | 插件报 404 | Go 不接管这个账号（未开通且不在名单、或重复消息）。**不是错误**，插件应让平台自己兜底 |
-| 插件报 503 | 入站队列满，等 2 秒仍进不去。下游堵了，看 `pipeline_stage_backlog` |
+| 插件报 503 | 入站队列满，等 2 秒仍进不去。下游堵了，看 `pipeline_node_backlog` |
 | 插件报 400 | 事件 JSON 坏、超 1 MB，或 `X-OneBot-Version` 不是 12 |
 | 事件收到了但没有回复 | 群不在白名单（`im_events_total{result=ignored}`），或没 @ 且主动插话没通过裁判 |
 | 补名全是 openid | `get_group_member_info` 不支持或被限流；看日志里该动作的失败原因 |

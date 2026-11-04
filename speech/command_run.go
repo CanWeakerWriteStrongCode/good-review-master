@@ -12,12 +12,12 @@ import (
 
 // 内部指令（Category == "internal"）的"判"与"做"。
 //
-// 它们跑在独立的消息阶段里（bot 包的 Stage Command），与聊天数据平面分开：
+// 它们跑在独立的工作流里（bot 包的 command 域），与聊天数据平面分开：
 // 指令不占打标签与 Agent 的并发槽，也不进群聊缓存。
 // 这里只回答"是不是指令"和"执行一条指令"，不碰流水线本身。
 
 // MatchInternalCommand 只回答"这条消息是不是内部指令"，不执行、不改状态。
-// Stage 1 用它决定把消息送去哪个阶段；必须保持无副作用。
+// 前置用它决定把消息送去哪条工作流；必须保持无副作用。
 func (r *Router) MatchInternalCommand(event onebot.Event, content string, allowNickname bool) (string, bool) {
 	route, _, ok := r.matchInternal(event, content, allowNickname)
 	if !ok {
@@ -29,8 +29,8 @@ func (r *Router) MatchInternalCommand(event onebot.Event, content string, allowN
 // RunInternalCommand 执行一条内部指令，返回 false 表示"现在匹配不上了"。
 //
 // 这是内部指令唯一能产生副作用的入口：点名判定与权限判定都收在这里，
-// Stage Command、debug trigger、以后的面板都必须经过它。
-// 返回 false 时调用方直接丢弃即可——消息正文在 Stage 1 已经入库。
+// command 域、debug trigger、以后的面板都必须经过它。
+// 返回 false 时调用方直接丢弃即可——消息正文在前置已经入库。
 func (r *Router) RunInternalCommand(ctx context.Context, event onebot.Event, groupID, content string, allowNickname bool) bool {
 	route, text, ok := r.matchInternal(event, content, allowNickname)
 	if !ok {

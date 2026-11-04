@@ -75,7 +75,7 @@ func TestIsRecordOnly(t *testing.T) {
 	if IsRecordOnly(nil, "qq_official_bot_1904xxxx") {
 		t.Fatal("nil 配置不应命中任何账号")
 	}
-	// 通配符不参与只记录判定：配置校验阶段就拒绝，这里确认不会被误当成"全部"
+	// 通配符不参与只记录判定：配置校验就拒绝，这里确认不会被误当成"全部"
 	wildcard := &config.Config{RecordOnlyAccounts: []string{"*"}}
 	if IsRecordOnly(wildcard, "qq_official_bot_1904xxxx") {
 		t.Fatal("\"*\" 不应让所有账号都变成只记录")

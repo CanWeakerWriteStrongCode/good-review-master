@@ -53,18 +53,18 @@ function accountLabel(selfID: string, nickname: string): string {
 
 /**
  * 报警分类翻成人话。
- * kind 是写库时定的分类（window_too_small、dead_letter_<stage>），
+ * kind 是写库时定的分类（window_too_small、dead_letter_<node>），
  * 直接摆在页面上没人看得懂。监控页和报警页共用这一份，两边措辞不会跑偏。
  */
 export function alertKindLabel(kind: string): string {
   if (kind === 'window_too_small') return tt('alerts.kind.windowTooSmall')
   if (kind.startsWith('dead_letter_')) {
-    return tt('alerts.kind.deadLetter', { stage: kind.slice('dead_letter_'.length) })
+    return tt('alerts.kind.deadLetter', { node: kind.slice('dead_letter_'.length) })
   }
   return kind
 }
 
-/** 报警严重度：warn = 丢一条回复，error = 某个阶段彻底失败 */
+/** 报警严重度：warn = 丢一条回复，error = 某个节点彻底失败 */
 export function alertSeverity(kind: string): 'warn' | 'error' {
   return kind === 'window_too_small' ? 'warn' : 'error'
 }

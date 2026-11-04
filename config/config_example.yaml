@@ -187,27 +187,27 @@ llm:
   # 熔断后的冷却秒数（不写默认 30）
   breaker_cooldown_sec: 30
 
-# ===== 三段流水线（B1 → Stage1 → B2 → Stage2 → B3 → Stage3） =====
+# ===== 各节点的流水线参数（前置 sync → 聊天：assets → agent；指令：command） =====
 # 旋钮规则：不写 = 用默认值；显式写 0 按下面的注释生效；负数启动失败。
 # 其中大部分参数可以在运行时通过 state.db 的 settings 表覆盖（键为 "pipeline"，
 # 值为同样字段名的 JSON 对象），库里的覆盖优先于本文件。批量/并发/容量不允许运行时改 0。
 pipeline:
-  # Stage 1（同步/补全）：一次取几条、凑批最多等多久、同时几个会话在跑、失败重试次数
+  # sync（前置：补全入库）：一次取几条、凑批最多等多久、同时几个会话在跑、失败重试次数
   sync_batch: 20
   sync_linger_ms: 20              # 0 = 不等，来一条处理一条
   sync_concurrency: 8              # 纯库操作，但 state.db 只开 1 个连接，再高只是排队
   sync_retries: 3                 # 0 = 不重试，直接进问题件
-  # Stage 2（资产打标签）：一批消息一起打标签，便于统一限流
+  # assets（图片打标签）：一批消息一起打标签，便于统一限流
   asset_batch: 4
   asset_linger_ms: 20             # 0 = 不等
   asset_concurrency: 3             # 同时几条消息在打标签；出站请求还要乘 tag_concurrency
   asset_retries: 3                # 0 = 不重试
-  # Stage 3（Agent）：当前逐条执行，批量只用于出队效率
+  # agent（生成回复）：当前逐条执行，批量只用于出队效率
   agent_batch: 1
   agent_linger_ms: 0              # 0 = 不等
   agent_concurrency: 3             # 同时几条消息在生成回复；对着 llama-server 的 -np 走
   agent_retries: 3                # 0 = 不重试
-  # Stage Command（管理指令）：独立于打标签与 Agent，慢指令不再堵入库。
+  # command（管理指令）：独立于打标签与生成，慢指令不再堵入库。
   # 没有 command_retries：指令副作用不幂等，代码里固定 0。
   command_batch: 1
   command_linger_ms: 0
@@ -221,7 +221,7 @@ pipeline:
 # ===== 资产（图片描述与后台补标签） =====
 # 同样支持运行时用 settings 表的 "assets" 键覆盖；值为同名字段 JSON。
 assets:
-  # Stage 2 超时/容量满时把欠条写入 asset_tag_jobs，这个开关控制后台是否去补
+  # assets 超时/容量满时把欠条写入 asset_tag_jobs，这个开关控制后台是否去补
   backfill_enabled: true
   backfill_interval_sec: 60       # 0 = 关闭扫描（等同开关关）
   backfill_batch: 20              # 一次补多少张（0 非法）
@@ -231,7 +231,7 @@ assets:
   backfill_claim_timeout_sec: 600
   job_retention_days: 30          # 已完成/已消失台账保留天数；0 = 永久保留
   # 一条消息内「下载 + 描述」共用的总预算（秒）；0 = 不限制
-  # 到点后剩下的图不再下载，直接记欠条交给后台补，消息立刻往 Stage 3 走。
+  # 到点后剩下的图不再下载，直接记欠条交给后台补，消息立刻往 agent 走。
   message_budget_sec: 30
   # 一条消息内部最多同时描述几张图；0 非法。
   # 注意作用域是「单条消息」而不是全局：信号量在每次打标签时新建，

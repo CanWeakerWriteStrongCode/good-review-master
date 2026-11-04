@@ -1,6 +1,6 @@
 package state
 
-// asset_tag_jobs 表：Stage 2 没来得及打完标签的资产欠条。
+// asset_tag_jobs 表：assets 没来得及打完标签的资产欠条。
 //
 // 多个进程会同时补同一张表，所以"扫出来"和"接下来干"是两步：先按 status + updated_at
 // 选出候选，再用一条条件 UPDATE 把某条从 pending/failed 改成 running——只有真改动了 1 行

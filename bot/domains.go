@@ -21,12 +21,12 @@ import (
 // handleSync 是前置的补全段：同一会话的一批消息统一补名、组装并同步入库。
 //
 // 它只回答「这条消息现在长什么样」，不回答「它该去哪」——后者是 router 的事，
-// 在下面那行 b.route 里（见 router.go 的文件头：为什么它是函数不是阶段）。
+// 在下面那行 b.route 里（见 router.go 的文件头：为什么它是函数不是节点）。
 // 分开的理由很实际：这一段会失败、要重试；那一件不会。
 //
 // 它不属于任何一条工作流：加一条工作流不用动它。
-func (b *Bot) handleSync(ctx context.Context, _ string, items []pipeline.Item) Outcome {
-	var out Outcome
+func (b *Bot) handleSync(ctx context.Context, _ string, items []pipeline.Item) RouterOutcome {
+	var out RouterOutcome
 	byWorkspace := make(map[string][]conversation.Inbound)
 	for _, item := range items {
 		in, err := pipeline.DecodeItem[conversation.Inbound](item)
@@ -45,7 +45,7 @@ func (b *Bot) handleSync(ctx context.Context, _ string, items []pipeline.Item) O
 		}
 		cfg := ws.Snapshot()()
 		for _, synced := range ws.PrepareBatch(ctx, inbounds) {
-			out.Routes = append(out.Routes, b.route(ws, cfg, synced))
+			out.Picks = append(out.Picks, b.route(ws, cfg, synced))
 		}
 	}
 	return out
@@ -65,8 +65,8 @@ func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item
 		}
 		// 如实汇报"这一条经手完了"，不管下面走了哪个分支。之后还有没有下一站
 		// 不在这里决定：现在 command_done 被声明为终点，要接审计域时改链即可。
-		out.Routes = append(out.Routes, Route{
-			Topic:   TopicCommandDone,
+		out.Signals = append(out.Signals, Signal{
+			Event:   EventCommandDone,
 			Key:     conversation.ChatKey(synced.WorkspaceID, synced.ChatID),
 			MsgID:   synced.Message.MessageID,
 			Payload: synced,
@@ -114,8 +114,8 @@ func (b *Bot) handleAssets(ctx context.Context, _ string, items []pipeline.Item)
 			}
 		}
 		// 回执交给编排层：它知道“打完标签”该由谁接手。
-		out.Routes = append(out.Routes, Route{
-			Topic:   TopicTagged,
+		out.Signals = append(out.Signals, Signal{
+			Event:   EventTagged,
 			Key:     conversation.ChatKey(synced.WorkspaceID, synced.ChatID),
 			MsgID:   synced.Message.MessageID,
 			Payload: synced,
@@ -153,7 +153,7 @@ func (b *Bot) persistDeferred(synced conversation.Synced, result assets.TagResul
 
 // handleAgent 是生成域：提交缓存、冻结快照、同步执行一次路由/主动接话。
 //
-// 每条经手的消息都交一条 TopicReplied 回执，包括"判定不该回"的那些——
+// 每条经手的消息都交一条 EventReplied 事件，包括"判定不该回"的那些——
 // 域只汇报这一条处理完了；之后还有没有事，由链的拓扑决定。
 func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item) Outcome {
 	var out Outcome
@@ -170,10 +170,10 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 			out.Failed = append(out.Failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
 		}
-		// 后面每个分支都是终结分支（回、不回、放弃），所以先把回执记上。
+		// 后面每个分支都是终结分支（回、不回、放弃），所以先把事件记上。
 		// 真正投递发生在 handler 返回之后，不影响执行顺序。
-		out.Routes = append(out.Routes, Route{
-			Topic:   TopicReplied,
+		out.Signals = append(out.Signals, Signal{
+			Event:   EventReplied,
 			Key:     key,
 			MsgID:   synced.Message.MessageID,
 			Payload: synced,

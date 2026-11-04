@@ -27,7 +27,7 @@ type pipelineSection struct {
 	AgentConcurrency *int `yaml:"agent_concurrency"`
 	AgentRetries     *int `yaml:"agent_retries"`
 
-	// 管理指令阶段。没有 command_retries：指令副作用不幂等
+	// 管理指令域。没有 command_retries：指令副作用不幂等
 	// （#添加人格 重试一次就是两个人格），代码里固定传 0，不开放配置。
 	CommandBatch       *int `yaml:"command_batch"`
 	CommandLingerMs    *int `yaml:"command_linger_ms"`
@@ -52,7 +52,7 @@ const (
 	defaultCommandBatch       = 1
 	defaultCommandLingerMs    = 0
 	defaultCommandConcurrency = 2
-	defaultStageRetries       = 3
+	defaultRetries            = 3
 	defaultPerChatCapacity    = 500
 	defaultGlobalCapacity     = 5000
 	defaultDrainTimeoutSec    = 10
@@ -74,15 +74,15 @@ func (s *pipelineSection) SetDefaults() {
 	set(&s.SyncBatch, defaultSyncBatch)
 	set(&s.SyncLingerMs, defaultSyncLingerMs)
 	set(&s.SyncConcurrency, defaultSyncConcurrency)
-	set(&s.SyncRetries, defaultStageRetries)
+	set(&s.SyncRetries, defaultRetries)
 	set(&s.AssetBatch, defaultAssetBatch)
 	set(&s.AssetLingerMs, defaultAssetLingerMs)
 	set(&s.AssetConcurrency, defaultAssetConcurrency)
-	set(&s.AssetRetries, defaultStageRetries)
+	set(&s.AssetRetries, defaultRetries)
 	set(&s.AgentBatch, defaultAgentBatch)
 	set(&s.AgentLingerMs, defaultAgentLingerMs)
 	set(&s.AgentConcurrency, defaultAgentConcurrency)
-	set(&s.AgentRetries, defaultStageRetries)
+	set(&s.AgentRetries, defaultRetries)
 	set(&s.CommandBatch, defaultCommandBatch)
 	set(&s.CommandLingerMs, defaultCommandLingerMs)
 	set(&s.CommandConcurrency, defaultCommandConcurrency)

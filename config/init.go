@@ -16,7 +16,7 @@ const secretFileMode = 0o600
 // 返回 true 表示 config.yaml 是本次新建的，调用方应提示用户配置后重新启动。
 //
 // 这是**唯一**允许创建文件的入口，刻意不放进 Load：
-// 阶段 3 的 informer 会反复调 Load，那里必须无副作用。
+// 热重载的 informer 会反复调 Load，那里必须无副作用。
 func InitDefaultFiles() bool {
 	configCreated := false
 

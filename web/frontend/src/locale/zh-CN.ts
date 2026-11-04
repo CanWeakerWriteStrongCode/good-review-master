@@ -122,7 +122,7 @@ export default {
     },
     empty: {
       title: '暂无报警',
-      hint: '窗口太小、阶段重试超限这类异常会记在这里',
+      hint: '窗口太小、节点重试超限这类异常会记在这里',
     },
     action: {
       detail: '看现场',
@@ -132,7 +132,7 @@ export default {
     // kind 是写库时定的分类码，值本身不翻译，只有展示这层翻
     kind: {
       windowTooSmall: '窗口太小，放弃回复',
-      deadLetter: '{stage} 阶段重试超限，已隔离',
+      deadLetter: '{node} 节点重试超限，已隔离',
     },
   },
 

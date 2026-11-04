@@ -9,48 +9,67 @@ import (
 	"good-review-master/pipeline"
 )
 
-// 回执标签：节点回答“接下来属于哪一类”，编排层回答“这一类由谁接手”。
+// 回执分两种，来源不同，说的也是两件事：
 //
-// 标签分两种，都放在 Route.Topic 里：
-//   - 工作流名（Workflow*）：只有前置会用。它是“这条消息进哪条工作流”，
-//     dispatch 把它翻译成那条工作流的入口域，同时把它记成消息的 tag。
-//   - 去向（Topic*）：工作流内部用。消息还能往下走还是到此为止，
-//     看这条工作流有没有把它声明为终点（exit）。
+//   - Pick：前置交回的选择。它只说「这条消息进哪条工作流」（Workflow*），
+//     编排层把它翻译成那条工作流的入口域，同时把它记成消息的 tag。
+//   - Signal：域交回的事件。它只说「这一步发生了什么」（Event*），
+//     往哪送由编排层在消息所属的那条工作流里查。
 //
-// 去向不必全局唯一：它只在所属的那条工作流里查，所以两条工作流各有一个 “done”
+// 两件事拆成两个类型，编排层就不必靠「tag 是不是空」去猜一条回执说的是什么。
+//
+// 事件名不必全局唯一：它只在所属的那条工作流里查，所以两条工作流各有一个 “done”
 // 互不干扰——和 MQ 一样，tag 只在 topic 内唯一。
 const (
 	WorkflowChat    = "chat"    // 聊天：打标签 → 生成
 	WorkflowCommand = "command" // 管理指令：只走控制平面
 
-	TopicTagged      = "tagged"       // 打完标签的会话：进入生成
-	TopicCommandDone = "command_done" // 管理指令已执行
-	TopicReplied     = "replied"      // 回复已发出（含不回、放弃）
+	EventTagged      = "tagged"       // 打完标签的会话：进入生成
+	EventCommandDone = "command_done" // 管理指令已执行
+	EventReplied     = "replied"      // 回复已发出（含不回、放弃）
 )
 
-// Route 是一条回执：节点处理完一条消息后，告诉编排层下一站的类别与载荷。
-type Route struct {
-	Topic   string
+// Pick 是前置交回的一条选择：这条消息进哪条工作流。
+type Pick struct {
+	Workflow string
+	Key      string
+	MsgID    string
+	Payload  any
+}
+
+// Signal 是一条事件：域处理完一批消息后，如实汇报这一步发生了什么。
+// 它不含去向——去向是工作流的属性，不归域说。
+type Signal struct {
+	Event   string
 	Key     string
 	MsgID   string
 	Payload any
 }
 
-// Outcome 是一批消息的处理结果：哪些要重试、哪些要交回编排层继续转发。
-type Outcome struct {
+// RouterOutcome 是前置处理一批的结果。
+type RouterOutcome struct {
 	Failed []pipeline.FailedItem
-	Routes []Route
+	Picks  []Pick
 }
 
-// DomainHandler 是一个节点（前置或业务域）。它不持有下游的任何引用，也不碰缓冲，
+// Outcome 是一个域处理一批的结果：哪些要重试、哪些作为事件交回编排层。
+type Outcome struct {
+	Failed  []pipeline.FailedItem
+	Signals []Signal
+}
+
+// RouterHandler 是前置：所有消息共用，不属于任何工作流。
+type RouterHandler func(ctx context.Context, key string, items []pipeline.Item) RouterOutcome
+
+// DomainHandler 是一个业务域。它不持有下游的任何引用，也不碰缓冲，
 // 只把结果交回编排层。
 type DomainHandler func(ctx context.Context, key string, items []pipeline.Item) Outcome
 
 // node 是一个节点在编排层里的挂载点：缓冲 + 消费者。
 type node struct {
-	name   string
-	buffer pipeline.Buffer
-	stage  *pipeline.Stage
+	name     string
+	buffer   pipeline.Buffer
+	consumer *pipeline.Consumer
 }
 
 // workflow 是一条工作流：从入口域开始，之后按去向走。
@@ -65,7 +84,7 @@ type workflow struct {
 
 // orchestrator 是编排层本身：一个实例，前面一个前置，后面几条工作流。
 //
-// 它只做四件事：把事件放进前置、把前置/域交回的 Route 翻译成下一站、
+// 它只做四件事：把事件放进前置、把前置/域交回的回执翻译成下一站、
 // 管理各节点的起停。它不知道补全/打标签/生成各自在干什么——那些都是
 // workflows 里的一行。
 //
@@ -98,23 +117,45 @@ func newOrchestrator(onDeadLetter func(item pipeline.Item, err error)) *orchestr
 }
 
 // attach 建一个节点（缓冲 + 消费者）。前置和业务域用的是同一套东西，
-// 区别只在 dispatch 怎么翻译它们交回来的 Route。
-func (o *orchestrator) attach(name string, handler DomainHandler,
-	config func() pipeline.StageConfig, perChat, global int) *node {
+// 区别只在挂上来的批量处理函数是哪一个。
+func (o *orchestrator) attach(name string, handler pipeline.BatchHandler,
+	config func() pipeline.ConsumerConfig, perChat, global int) *node {
 	n := &node{name: name, buffer: pipeline.NewMemoryBuffer(perChat, global)}
-	n.stage = pipeline.NewStage(pipeline.StageOptions{
-		Name:   name,
-		Buffer: n.buffer,
-		Config: config,
-		Handler: func(ctx context.Context, key string, items []pipeline.Item) []pipeline.FailedItem {
-			return o.consume(ctx, key, items, handler)
-		},
+	n.consumer = pipeline.NewConsumer(pipeline.ConsumerOptions{
+		Name:         name,
+		Buffer:       n.buffer,
+		Config:       config,
+		Handler:      handler,
 		OnDeadLetter: o.onDeadLetter,
 	})
 	return n
 }
 
-// consume 按 tag 把一批消息分组，各自交给 handler，再按各自的 tag 翻译去向。
+// domainBatch 把一个域包成消费者要的批量处理函数：先按 tag 分组，再按分组投递。
+func (o *orchestrator) domainBatch(handler DomainHandler) pipeline.BatchHandler {
+	return func(ctx context.Context, key string, items []pipeline.Item) []pipeline.FailedItem {
+		return o.consume(ctx, key, items, handler)
+	}
+}
+
+// routerBatch 把前置包成消费者要的批量处理函数。
+//
+// 前置不分组：进前置的消息还没有 tag，一批里本来就只有一种“没有”。
+// 它交回的选择直接投给对应工作流的入口域，工作流名从此成为消息的 tag。
+func (o *orchestrator) routerBatch(handler RouterHandler) pipeline.BatchHandler {
+	return func(ctx context.Context, key string, items []pipeline.Item) []pipeline.FailedItem {
+		out := handler(ctx, key, items)
+		for _, pick := range out.Picks {
+			o.send(ctx, hop{
+				node: o.enter(pick.Workflow), tag: pick.Workflow, event: pick.Workflow,
+				key: pick.Key, msgID: pick.MsgID, payload: pick.Payload,
+			})
+		}
+		return out.Failed
+	}
+}
+
+// consume 按 tag 把一批消息分组，各自交给 handler，再按各自的 tag 投递事件。
 //
 // 一个域只服务一条工作流时（现在四个域都是）这是零成本：只有一种 tag，
 // 快路径只扫一遍就走到原处。一个域被多条工作流复用时，一批里会出现两种以上的
@@ -137,7 +178,7 @@ func (o *orchestrator) consume(ctx context.Context, key string,
 	}
 	if same {
 		out := handler(ctx, key, items)
-		o.dispatch(ctx, first, out.Routes)
+		o.dispatch(ctx, first, out.Signals)
 		return out.Failed
 	}
 
@@ -154,32 +195,32 @@ func (o *orchestrator) consume(ctx context.Context, key string,
 	var failed []pipeline.FailedItem
 	for _, tag := range order {
 		out := handler(ctx, key, groups[tag])
-		o.dispatch(ctx, tag, out.Routes)
+		o.dispatch(ctx, tag, out.Signals)
 		failed = append(failed, out.Failed...)
 	}
 	return failed
 }
 
-// mount 挂一个业务域。传进来的 handler 不碰缓冲：Stage 调它、拿到 Outcome 之后，
+// mount 挂一个业务域。传进来的 handler 不碰缓冲：Consumer 调它、拿到 Outcome 之后，
 // 由这里负责投递——域因此不需要、也无法知道下游是谁。
 func (o *orchestrator) mount(name string, handler DomainHandler,
-	config func() pipeline.StageConfig, perChat, global int) {
+	config func() pipeline.ConsumerConfig, perChat, global int) {
 	if _, ok := o.nodes[name]; ok {
 		panic(fmt.Sprintf("bot: 域 %q 重复挂载", name))
 	}
-	o.nodes[name] = o.attach(name, handler, config, perChat, global)
+	o.nodes[name] = o.attach(name, o.domainBatch(handler), config, perChat, global)
 }
 
 // mountRouter 挂前置：所有消息共用的入口 + 补名。只能有一个。
 //
 // 前置不放进 nodes：它不是任何一条工作流的一部分，加工作流不该动它，
 // 它也不该出现在工作流的拓扑里。
-func (o *orchestrator) mountRouter(name string, handler DomainHandler,
-	config func() pipeline.StageConfig, perChat, global int) {
+func (o *orchestrator) mountRouter(name string, handler RouterHandler,
+	config func() pipeline.ConsumerConfig, perChat, global int) {
 	if o.router != nil {
 		panic("bot: 前置只能有一个")
 	}
-	o.router = o.attach(name, handler, config, perChat, global)
+	o.router = o.attach(name, o.routerBatch(handler), config, perChat, global)
 }
 
 // workflow 声明一条工作流：从入口域开始，之后按 connect 连的去向走。
@@ -202,67 +243,64 @@ func (o *orchestrator) workflow(name, entry string) {
 	o.workflows[name] = &workflow{entry: entry, next: map[string]string{}, ends: map[string]bool{}}
 }
 
-// connect 声明「工作流 X 的这类去向由哪个域接手」。连线指向未挂载的域是装配错误，
+// connect 声明「工作流 X 的这类事件由哪个域接手」。连线指向未挂载的域是装配错误，
 // 构造期就 panic，别等到线上某条消息走到这里才发现。
 //
-// 同一个去向在同一工作流里重复连到不同域也会 panic：那是两条路径抢同一个 tag，
+// 同一个事件在同一工作流里重复连到不同域也会 panic：那是两条路径抢同一个事件名，
 // 靠后写覆盖先写会让装配看起来成功、运行时分流。
-func (o *orchestrator) connect(workflowName, topic, nodeName string) {
+func (o *orchestrator) connect(workflowName, event, nodeName string) {
 	wf, ok := o.workflows[workflowName]
 	if !ok {
-		panic(fmt.Sprintf("bot: 工作流 %q 还没声明，不能连线（去向=%s）", workflowName, topic))
+		panic(fmt.Sprintf("bot: 工作流 %q 还没声明，不能连线（事件=%s）", workflowName, event))
 	}
-	if wf.ends[topic] {
-		panic(fmt.Sprintf("bot: 工作流 %q 的去向 %q 已声明为终点，不能再连线", workflowName, topic))
+	if wf.ends[event] {
+		panic(fmt.Sprintf("bot: 工作流 %q 的事件 %q 已声明为终点，不能再连线", workflowName, event))
 	}
-	if prev, ok := wf.next[topic]; ok && prev != nodeName {
-		panic(fmt.Sprintf("bot: 工作流 %q 的去向 %q 已连到 %q，不能再连到 %q",
-			workflowName, topic, prev, nodeName))
+	if prev, ok := wf.next[event]; ok && prev != nodeName {
+		panic(fmt.Sprintf("bot: 工作流 %q 的事件 %q 已连到 %q，不能再连到 %q",
+			workflowName, event, prev, nodeName))
 	}
 	if _, ok := o.nodes[nodeName]; !ok {
-		panic(fmt.Sprintf("bot: 连线指向未挂载的域 %q（工作流=%s 去向=%s）", nodeName, workflowName, topic))
+		panic(fmt.Sprintf("bot: 连线指向未挂载的域 %q（工作流=%s 事件=%s）", nodeName, workflowName, event))
 	}
-	wf.next[topic] = nodeName
+	wf.next[event] = nodeName
 }
 
-// exit 声明「工作流 X 的这类去向之后没有下一站」。
+// exit 声明「工作流 X 的这类事件之后没有下一站」。
 //
 // 终点必须显式写，不能靠"没连线"推断：漏一条连线是装配错误，要看得见；
 // 而"这条链到此为止"是设计。两者一旦混同，漏连线的后果就从报错变成静默少走一步。
-func (o *orchestrator) exit(workflowName, topic string) {
+func (o *orchestrator) exit(workflowName, event string) {
 	wf, ok := o.workflows[workflowName]
 	if !ok {
-		panic(fmt.Sprintf("bot: 工作流 %q 还没声明，不能声明终点（去向=%s）", workflowName, topic))
+		panic(fmt.Sprintf("bot: 工作流 %q 还没声明，不能声明终点（事件=%s）", workflowName, event))
 	}
-	if node, ok := wf.next[topic]; ok {
-		panic(fmt.Sprintf("bot: 工作流 %q 的去向 %q 已连线到 %q，不能再声明为终点",
-			workflowName, topic, node))
+	if node, ok := wf.next[event]; ok {
+		panic(fmt.Sprintf("bot: 工作流 %q 的事件 %q 已连线到 %q，不能再声明为终点",
+			workflowName, event, node))
 	}
-	wf.ends[topic] = true
+	wf.ends[event] = true
 }
 
-// dispatch 把节点交回来的回执分派出去。tag 是「当前消息属于哪条工作流」，
+// dispatch 把一批域交回的事件投出去。tag 是「当前消息属于哪条工作流」，
 // 前置投递时打上，之后每一跳都带着走。
 //
-// 两类回执走两条路，各调一个名字说明用途的函数：**前置交回的是工作流名**（enter），
-// **域交回的是去向**（advance）。tag 为空就是前者——全文件只在这里用空值区分层级。
+// 每一跳都是三问：这个事件是不是终点（isEnd）→ 不是的话下个域是谁（advance）→ 投给它。
+// 两件事分开判：「明确到此为止」是设计，「查不到去向」是装配错误（send 会记日志丢弃）。
 //
 // 投递失败不重试本批：走到这一步说明节点的副作用已经发生了（入库、打标签、发出回复），
 // 重跑一遍等于重复执行。所以记死信让这条消息停在这一跳，而不是把它塞回重试队列。
 // 关停期间缓冲会被关掉，那种情况只记日志不报警——那是预期内的排空结果，
 // 报警的话每次正常重启都会刷一堆假死信。
-func (o *orchestrator) dispatch(ctx context.Context, tag string, routes []Route) {
-	for _, route := range routes {
-		if tag == "" {
-			// 前置选了工作流：进它的入口域，工作流名从此成为消息的 tag。
-			o.send(ctx, o.enter(route.Topic), route.Topic, route)
+func (o *orchestrator) dispatch(ctx context.Context, tag string, signals []Signal) {
+	for _, signal := range signals {
+		if o.isEnd(tag, signal.Event) {
 			continue
 		}
-		// 工作流里的域报了去向：声明为终点就结束，连了线就交给下一个域。
-		if o.isEnd(tag, route.Topic) {
-			continue
-		}
-		o.send(ctx, o.advance(tag, route.Topic), tag, route)
+		o.send(ctx, hop{
+			node: o.advance(tag, signal.Event), tag: tag, event: signal.Event,
+			key: signal.Key, msgID: signal.MsgID, payload: signal.Payload,
+		})
 	}
 }
 
@@ -275,56 +313,63 @@ func (o *orchestrator) enter(workflowName string) string {
 	return wf.entry
 }
 
-// advance 工作流里的域报了哪类去向：返回下一个域。
+// advance 工作流里的域报了哪类事件：返回下一个域。
 //
 // 没连线返回空。终点不在这里判——「明确到此为止」与「漏了连线」是两件事，
 // 前者走 isEnd，后者要作为装配错误叫出来。
-func (o *orchestrator) advance(tag, topic string) string {
+func (o *orchestrator) advance(tag, event string) string {
 	wf, ok := o.workflows[tag]
 	if !ok {
 		return ""
 	}
-	return wf.next[topic]
+	return wf.next[event]
 }
 
-// isEnd 判断这条回执是不是某条工作流声明过的终点。
-func (o *orchestrator) isEnd(tag, topic string) bool {
-	if tag == "" {
-		return false // 前置回的是工作流名，不是任何一条链的终点
-	}
+// isEnd 判断这个事件是不是某条工作流声明过的终点。
+func (o *orchestrator) isEnd(tag, event string) bool {
 	wf, ok := o.workflows[tag]
-	return ok && wf.ends[topic]
+	return ok && wf.ends[event]
 }
 
-// send 把一条回执投给指定节点。
+// hop 是一条要投递的消息：去哪、带什么 tag、被哪个事件触发、带着什么。
+type hop struct {
+	node    string // 目标节点；空表示没查到去哪
+	tag     string // 所属工作流
+	event   string // 触发这一跳的事件名（前置这一跳是工作流名）
+	key     string
+	msgID   string
+	payload any
+}
+
+// send 把一条消息投给指定节点。
 //
-// name 为空说明没查着去哪：前置回了不存在的工作流名，或域回了本工作流没连线的去向。
-// 两种都是装配错误，记日志丢弃。
-func (o *orchestrator) send(ctx context.Context, name, tag string, route Route) {
-	if name == "" {
+// node 为空说明没查着去哪：前置回了不存在的工作流名，或域回了本工作流没连线的
+// 事件名。两种都是装配错误，记日志丢弃。
+func (o *orchestrator) send(ctx context.Context, h hop) {
+	if h.node == "" {
 		logutil.Error("编排层不知道这条回执去哪，消息已丢弃",
-			"tag", tag, "topic", route.Topic, "key", route.Key, "msgID", route.MsgID)
+			"tag", h.tag, "event", h.event, "key", h.key, "msgID", h.msgID)
 		return
 	}
-	item, err := pipeline.NewItem(name, tag, route.Key, route.MsgID, route.Payload)
+	item, err := pipeline.NewItem(h.node, h.tag, h.key, h.msgID, h.payload)
 	if err != nil {
 		logutil.Error("编排层编码下一跳载荷失败，消息已丢弃",
-			"tag", tag, "topic", route.Topic, "node", name, "err", err)
+			"tag", h.tag, "event", h.event, "node", h.node, "err", err)
 		o.deadLetter(item, err)
 		return
 	}
-	if err := o.nodes[name].buffer.Put(ctx, item); err != nil {
+	if err := o.nodes[h.node].buffer.Put(ctx, item); err != nil {
 		if errors.Is(err, pipeline.ErrClosed) {
 			logutil.Warn("编排层投递时缓冲已关闭，消息停在这一跳",
-				"topic", route.Topic, "node", name, "item", item.ID)
+				"event", h.event, "node", h.node, "item", item.ID)
 			return
 		}
 		logutil.Error("编排层投递失败，消息停在这一跳",
-			"topic", route.Topic, "node", name, "item", item.ID, "err", err)
+			"event", h.event, "node", h.node, "item", item.ID, "err", err)
 		o.deadLetter(item, err)
 		return
 	}
-	o.nodes[name].stage.Submit(route.Key)
+	o.nodes[h.node].consumer.Submit(h.key)
 }
 
 func (o *orchestrator) deadLetter(item pipeline.Item, err error) {
@@ -365,7 +410,7 @@ func (o *orchestrator) put(ctx context.Context, n *node, tag, key, msgID string,
 	if err := n.buffer.Put(ctx, item); err != nil {
 		return err
 	}
-	n.stage.Submit(key)
+	n.consumer.Submit(key)
 	return nil
 }
 
@@ -386,7 +431,7 @@ func (o *orchestrator) lookup(name string) *node {
 // backlog 返回某个节点当前的积压条数。域用它判断"这一批之后还有没有活"，
 // 不需要也不该去摸别人的队列。
 //
-// 断言不会失败：Stage 构造期就要求 Buffer 实现 Peeker（否则 panic）。
+// 断言不会失败：Consumer 构造期就要求 Buffer 实现 Peeker（否则 panic）。
 // 这里只依赖"数得清"这一件事，不把 Len 塞回 Buffer。
 func (o *orchestrator) backlog(name, key string) int {
 	n := o.lookup(name)
@@ -415,27 +460,27 @@ func (o *orchestrator) allNodes() []*node {
 
 func (o *orchestrator) run(ctx context.Context) {
 	for _, n := range o.allNodes() {
-		n.stage.Run(ctx)
+		n.consumer.Run(ctx)
 	}
 }
 
 func (o *orchestrator) closeBuffers() {
 	for _, n := range o.allNodes() {
 		if err := n.buffer.Close(); err != nil {
-			logutil.Warn("关闭阶段缓冲失败", "node", n.name, "err", err)
+			logutil.Warn("关闭节点缓冲失败", "node", n.name, "err", err)
 		}
 	}
 }
 
-func (o *orchestrator) closeStages() {
+func (o *orchestrator) closeConsumers() {
 	for _, n := range o.allNodes() {
-		n.stage.Close()
+		n.consumer.Close()
 	}
 }
 
 func (o *orchestrator) wait() {
 	for _, n := range o.allNodes() {
-		n.stage.Wait()
+		n.consumer.Wait()
 	}
 }
 
@@ -452,7 +497,7 @@ func (o *orchestrator) pending() int {
 func (o *orchestrator) active() int {
 	total := 0
 	for _, n := range o.allNodes() {
-		total += n.stage.Active()
+		total += n.consumer.Active()
 	}
 	return total
 }

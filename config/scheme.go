@@ -6,7 +6,7 @@ package config
 // 改造前加一个配置项要在 configFile 里加字段、在 LoadConfig 中段加默认值、在返回字面量里搬一次，
 // 三处都要记得改，漏一处就是静默失效。
 //
-// newSections 是**构造函数**而不是包级共享实例，这一点是被阶段 3 的 informer 倒逼的：
+// newSections 是**构造函数**而不是包级共享实例，这一点是被热重载的 informer 倒逼的：
 // informer 会反复调 Load（文件一变就调，还有 resync 兜底），域实例每次都必须是新的，
 // 否则 Unmarshal/SetDefaults 会在同一批对象上反复叠加。
 type sections struct {

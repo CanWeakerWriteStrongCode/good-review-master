@@ -121,7 +121,7 @@ export default {
     },
     empty: {
       title: 'No alerts',
-      hint: 'Dropped replies and stage retries land here',
+      hint: 'Dropped replies and node retries land here',
     },
     action: {
       detail: 'Details',
@@ -131,7 +131,7 @@ export default {
     // kind is a stored classification code; only the display layer is translated
     kind: {
       windowTooSmall: 'Context window too small, reply dropped',
-      deadLetter: '{stage} stage retries exhausted, quarantined',
+      deadLetter: '{node} node retries exhausted, quarantined',
     },
   },
 

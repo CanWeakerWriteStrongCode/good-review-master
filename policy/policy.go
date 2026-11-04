@@ -55,7 +55,7 @@ func AllowsAllAccounts(cfg *config.Config) bool {
 // 这类账号照常入库、打图片标签、写进群聊缓存，只是不触发任何回复；
 // 被 @ 或私聊时回一句固定话术。主备双号时给备份号配。
 //
-// 不支持 "*"：全部静默等于没有机器人，配置校验阶段就拒绝了。
+// 不支持 "*"：全部静默等于没有机器人，配置校验就拒绝了。
 func IsRecordOnly(cfg *config.Config, channelID string) bool {
 	return cfg != nil && contains(cfg.RecordOnlyAccounts, channelID)
 }

@@ -21,7 +21,7 @@ const (
 	// schemaVersion 当前表结构版本，写在 SQLite 的 PRAGMA user_version 里。
 	//
 	// 改表结构时把它 +1；旧库不做升级，换个文件重新建。
-	schemaVersion = 18
+	schemaVersion = 19
 )
 
 // ensureFile 先以 0600 建出文件再交给驱动：消息原文与昵称属于隐私数据。
@@ -211,7 +211,7 @@ func migrate(db *gorm.DB, path string) error {
 			updated_at INTEGER NOT NULL
 		)`,
 		// processed_items 记“这条消息已经处理完”，item_id 就是 pipeline.Item.ID
-		// （stage|key|消息ID）。消息可能被重投：进程重启、入站重推、将来接 MQ 后的
+		// （node|key|消息ID）。消息可能被重投：进程重启、入站重推、将来接 MQ 后的
 		// 至少一次投递。域处理前查一次，就能把重投变成幂等。
 		//
 		// 只记“成功之后”，不记“开始处理”：崩溃时宁可重做一次（代价是重复调用），
@@ -220,7 +220,7 @@ func migrate(db *gorm.DB, path string) error {
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			item_id      TEXT NOT NULL,
 			workspace_id TEXT NOT NULL DEFAULT '',
-			stage        TEXT NOT NULL DEFAULT '',
+			node        TEXT NOT NULL DEFAULT '',
 			created_at   INTEGER NOT NULL,
 			UNIQUE (item_id)
 		)`,

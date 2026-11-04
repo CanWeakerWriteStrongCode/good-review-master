@@ -24,7 +24,7 @@ type Item struct {
 //
 // 这五个是所有传输都做得到的：内存队列能做，MQ 也能做。
 // “看一眼队列有多长”“不阻塞地取”是调度需要的能力，在 Peeker 里——
-// Stage 要求两者都有，拆成两个接口只是把“传输”和“怎么派活”分开说清楚。
+// Consumer 要求两者都有，拆成两个接口只是把“传输”和“怎么派活”分开说清楚。
 //
 // 内存实现的 Ack 是空操作（Take 即出队）；接 MQ 后 Ack 对应提交位点。
 type Buffer interface {
@@ -40,13 +40,13 @@ type Buffer interface {
 
 // Peeker 是调度需要的能力：按分区数积压、非阻塞取数。
 //
-// Stage 的取数模型是“拉 + 回头看一眼”：派活前确认这个会话真有积压（next）、
+// Consumer 的取数模型是“拉 + 回头看一眼”：派活前确认这个会话真有积压（next）、
 // 处理完看还有没有剩下的（release）、取数先探一条再等 linger 补齐（takeBatch）。
 // 三处都要看得见队列；少一样，“处理完还有剩”就发现不了，消息会滞留在队列里。
 //
 // 换 MQ 时这不是做不到，而是语义变了：Peeker 回答的是“本地预取队列里有多少”，
 // 不是 broker 全量。适配层要么维护本地预取队列并实现它，要么按 MQ 自己的
-// 消费循环另写一套调度（见 NewStage 的注释）。
+// 消费循环另写一套调度（见 NewConsumer 的注释）。
 type Peeker interface {
 	// TakeReady 非阻塞取数：没有数据时返回空切片。
 	TakeReady(key string, max int) ([]Item, error)
@@ -96,7 +96,7 @@ func NewMemoryBuffer(perKey, global int) *MemoryBuffer {
 // Put 入队；容量满时阻塞到腾出空间、ctx 取消或缓冲关闭。
 func (b *MemoryBuffer) Put(ctx context.Context, item Item) error {
 	if item.Key == "" {
-		item.Key = SerialKey
+		item.Key = FallbackKey
 	}
 	for {
 		b.mu.Lock()
@@ -129,7 +129,7 @@ func (b *MemoryBuffer) Put(ctx context.Context, item Item) error {
 // 取出的项即出队；Ack 在内存实现里是空操作。
 func (b *MemoryBuffer) Take(ctx context.Context, key string, max int) ([]Item, error) {
 	if key == "" {
-		key = SerialKey
+		key = FallbackKey
 	}
 	if max <= 0 {
 		max = 1
@@ -170,7 +170,7 @@ func (b *MemoryBuffer) Take(ctx context.Context, key string, max int) ([]Item, e
 // TakeReady 非阻塞取数；队列为空或已关闭时返回空切片。
 func (b *MemoryBuffer) TakeReady(key string, max int) ([]Item, error) {
 	if key == "" {
-		key = SerialKey
+		key = FallbackKey
 	}
 	if max <= 0 {
 		max = 1
@@ -210,7 +210,7 @@ func (b *MemoryBuffer) Close() error {
 // Len 返回某个分区当前的项数（测试与指标用）。
 func (b *MemoryBuffer) Len(key string) int {
 	if key == "" {
-		key = SerialKey
+		key = FallbackKey
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()

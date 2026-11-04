@@ -104,7 +104,7 @@ func (r *Router) Generate(ctx context.Context, p replyParams) (*Reply, error) {
 			userMsg += "\n" + block
 		}
 	}
-	// 主动插话的候选消息图片由裁判阶段下载好，随本次请求直接附上；
+	// 主动插话的候选消息图片由裁判下载好，随本次请求直接附上；
 	// 必须明确告诉模型"图已经给你了"，否则它只会看到聊天记录里的"[图片]"占位。
 	if len(p.images) > 0 {
 		userMsg += "\n【图片】最后一条消息附带图片，已随本次请求提供，请结合图片内容回答。"

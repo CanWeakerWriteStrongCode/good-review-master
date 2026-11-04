@@ -24,7 +24,7 @@ func (r *Router) RouteMessage(ctx context.Context, content string, event onebot.
 	r.routeMessage(ctx, content, event, groupID, nil, false)
 }
 
-// RouteMessageNow 是 Stage 3 的同步入口：在当前 goroutine 里完成选窗/生成/发送，
+// RouteMessageNow 是 agent 的同步入口：在当前 goroutine 里完成选窗/生成/发送，
 // 并只使用调用方冻结的窗口。内部指令仍走原 handler（少数内部指令自带异步）。
 func (r *Router) RouteMessageNow(ctx context.Context, content string, event onebot.Event, groupID string, snapshot []conversation.Message) {
 	r.routeMessage(ctx, content, event, groupID, snapshot, true)
@@ -72,7 +72,7 @@ func (r *Router) routeMessage(ctx context.Context, content string, event onebot.
 
 	// 管理指令（Category == internal）统一交给 RunInternalCommand：
 	// 权限判定、参数解析、handler 调用只有那一个入口，#帮助 与私聊的例外也在里面。
-	// 阶段二把指令前移到独立阶段后，正常消息链路已经到不了这里；
+	// 指令前移到 command 域后，正常消息链路已经到不了这里；
 	// 面板与调试触发仍从这条路径进来，两边行为必须一致，所以不再各写一份。
 	if route.Category == "internal" {
 		r.RunInternalCommand(ctx, event, groupID, content, true)
@@ -119,7 +119,7 @@ func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Eve
 	r.chatReview(ctx, event, groupID, systemPrompt, "", r.nameOf(groupID, event.UserID), text)
 }
 
-// replyDefaultNow 是 replyDefault 的同步版本，供 Stage 3 使用。
+// replyDefaultNow 是 replyDefault 的同步版本，供 agent 使用。
 func (r *Router) replyDefaultNow(ctx context.Context, text string, event onebot.Event, groupID, systemPrompt string, snapshot []conversation.Message) {
 	if b, ok := r.getGroupPersona(groupID); ok {
 		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)

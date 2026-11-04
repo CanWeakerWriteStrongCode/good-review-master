@@ -121,7 +121,7 @@ func Test消息走完三段流水线(t *testing.T) {
 	}
 }
 
-func Test图片消息在Stage2生成描述并入库(t *testing.T) {
+func Test图片消息在assets生成描述并入库(t *testing.T) {
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "a.png")
 	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
@@ -213,7 +213,7 @@ func Test图片消息在Stage2生成描述并入库(t *testing.T) {
 }
 
 // Test只记录账号不回复但照常入缓存 验证 record_only_accounts：
-// 消息照常走到 Stage 3 进缓存，但大模型一次都不会被调用。
+// 消息照常走到 agent 进缓存，但大模型一次都不会被调用。
 func Test只记录账号不回复但照常入缓存(t *testing.T) {
 	dir := t.TempDir()
 	system := filepath.Join(dir, "prompt_system.yaml")
@@ -268,7 +268,7 @@ func Test只记录账号不回复但照常入缓存(t *testing.T) {
 	if !ok {
 		t.Fatal("工作空间未开通")
 	}
-	// 缓存能出现，说明 Stage 3 已经处理过这条消息了；再等一小会儿确认它没继续往下调模型。
+	// 缓存能出现，说明 agent 已经处理过这条消息了；再等一小会儿确认它没继续往下调模型。
 	deadline := time.Now().Add(3 * time.Second)
 	var msgs []conversation.Message
 	for time.Now().Before(deadline) {
@@ -287,9 +287,9 @@ func Test只记录账号不回复但照常入缓存(t *testing.T) {
 	}
 }
 
-// Test管理指令走独立阶段 内部指令不该进 Stage 2/3：不调大模型、不进群聊缓存。
-// 走旧路径时 #帮助 会先被 gc.Add 再回复，所以“缓存里没有它”就是分流生效的证据。
-func Test管理指令走独立阶段(t *testing.T) {
+// Test管理指令走独立工作流 内部指令不该进 assets/agent：不调大模型、不进群聊缓存。
+// 走错路径时 #帮助 会先被 gc.Add 再回复，所以“缓存里没有它”就是分流生效的证据。
+func Test管理指令走独立工作流(t *testing.T) {
 	dir := t.TempDir()
 	system := filepath.Join(dir, "prompt_system.yaml")
 	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
@@ -339,14 +339,14 @@ func Test管理指令走独立阶段(t *testing.T) {
 		t.Fatalf("AcceptEvent = %v, %v", accepted, err)
 	}
 
-	// 给 Stage 1/Command 足够时间跑完；若仍走旧路径，这会儿已经进缓存了。
+	// 给前置与 command 域足够时间跑完；分流失效的话这会儿已经进缓存了。
 	time.Sleep(500 * time.Millisecond)
 	ws, ok := mgr.ByID("qq_official_bot_1906")
 	if !ok {
 		t.Fatal("工作空间未开通")
 	}
 	// 机器人自己的回复会进缓存（recordSelfReply），但入站的那条指令本体不该进：
-	// 它没走 Stage 3，也就没有 gc.Add。
+	// 它没走 agent，也就没有 gc.Add。
 	msgs := ws.Cache.GetGroupCache("g1", 100).GetAll()
 	replied := false
 	for _, msg := range msgs {
@@ -364,21 +364,21 @@ func Test管理指令走独立阶段(t *testing.T) {
 		t.Fatalf("管理指令不应调用大模型，实际 %d 次", len(calls))
 	}
 
-	// 拓扑要覆盖全部回执：每条工作流各自认识自己的去向（tagged / replied、
+	// 拓扑要覆盖全部事件：每条工作流各自认识自己的事件（tagged / replied、
 	// command_done）。终点必须是显式声明——不能靠"没连线"推断，那样漏一条线
 	// 就会变成静默少走一步。
-	assertTopicsCovered(t, b.orch, WorkflowChat, TopicTagged, TopicReplied)
-	assertTopicsCovered(t, b.orch, WorkflowCommand, TopicCommandDone)
+	assertEventsCovered(t, b.orch, WorkflowChat, EventTagged, EventReplied)
+	assertEventsCovered(t, b.orch, WorkflowCommand, EventCommandDone)
 	if b.orch.router == nil {
 		t.Fatal("应当挂了一个前置")
 	}
 	if len(b.orch.workflows) != 2 {
 		t.Fatalf("应当有两条工作流，实际 %d 条", len(b.orch.workflows))
 	}
-	if !b.orch.workflows[WorkflowChat].ends[TopicReplied] {
+	if !b.orch.workflows[WorkflowChat].ends[EventReplied] {
 		t.Fatal("replied 应当是聊天工作流的终点")
 	}
-	if !b.orch.workflows[WorkflowCommand].ends[TopicCommandDone] {
+	if !b.orch.workflows[WorkflowCommand].ends[EventCommandDone] {
 		t.Fatal("command_done 应该是指令工作流的终点")
 	}
 }

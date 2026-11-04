@@ -7,7 +7,7 @@
 - 聊天工作流（数据平面）：打图标签 → 生成回复。
 - 指令工作流（控制平面）：管理指令执行完就结束，不占大模型并发槽、不进群聊缓存。
 
-**域不知道下游是谁**。域处理完只交回一组回执（`Topic` + 载荷），由编排层在**所属工作流**的 `next` 里查到下一个域再投；域的代码里搜不到任何 `Buffer`。
+**域不知道下游是谁**。域处理完只交回一组事件（`Signal`：`Event` + 载荷），由编排层在**所属工作流**的 `next` 里查到下一个域再投；域的代码里搜不到任何 `Buffer`。
 
 **域也不知道自己是不是最后一站**。终止写在工作流上（`orch.exit`），不写在域里。域的返回值里没有「到此结束」这种表达——它只如实说「这一步发生了什么」，收不收、往哪送，是那条工作流的 `next` / `ends` 的事。
 
@@ -25,12 +25,12 @@
 
 | 队列 | 谁放 | 谁取 | 载荷 | 消息的 tag |
 | --- | --- | --- | --- | --- |
-| `sync`（前置） | `orch.admit`（`bot.AcceptEvent` 调） | `handleSync` | `conversation.Inbound` | 无（还没定） |
+| `sync`（前置） | `orch.admit`（`bot.AcceptEvent` 调） | `handleSync` | `conversation.Inbound` | 无（还没有） |
 | `assets` | 前置回执 `chat` → 聊天工作流入口 | `handleAssets` | `conversation.Synced` | `chat` |
-| `agent` | 编排层收到 `TopicTagged` 回执 | `handleAgent` | `conversation.Synced`（多了 `Assets` / `ImageNotes`） | `chat` |
+| `agent` | 编排层收到 `EventTagged` 回执 | `handleAgent` | `conversation.Synced`（多了 `Assets` / `ImageNotes`） | `chat` |
 | `command` | 前置回执 `command` → 指令工作流入口 | `handleCommand` | `conversation.Synced`（管理指令，只走这一个域） | `command` |
 
-`Item` 字段：`ID`（`node|tag|key|消息ID`，天然幂等键）、`Key`（分区键，现在是 `workspaceID|chatID`）、`Node`（**要去**的那个节点，接 MQ 时就是 topic）、`Tag`（**所属工作流**，接 MQ 时就是 tag；前置阶段为空）、`Body`（JSON）、`Attempts`。载荷类型定义在 `conversation` 里，`pipeline` 不定义——否则底层包为了用值对象会反过来 import 编排层。
+`Item` 字段：`ID`（`node|tag|key|消息ID`，天然幂等键）、`Key`（分区键，现在是 `workspaceID|chatID`）、`Node`（**要去**的那个节点，接 MQ 时就是 topic）、`Tag`（**所属工作流**，接 MQ 时就是 tag；进前置时还没有，`admit` 传空）、`Body`（JSON）、`Attempts`。载荷类型定义在 `conversation` 里，`pipeline` 不定义——否则底层包为了用值对象会反过来 import 编排层。
 
 `Node` 与 `Tag` 就是 RocketMQ 的 topic 与 tag：tag 只在所属工作流内唯一，每条工作流可以各有一个 `done`，同一个域也可以被多条工作流复用。
 
@@ -39,9 +39,9 @@
 | 节点 | 入口 | 做什么 | 交回什么 | 失败去哪 |
 | --- | --- | --- | --- | --- |
 | `sync` 前置：补全 | `handleSync`，再交 `router.route` 择路 | 按工作空间分组 → `PrepareBatch` 补成员名、补被引用消息 → 写 `messages` | 工作流名：`WorkflowCommand`（命中管理指令）或 `WorkflowChat` | 补全会重试 `sync_retries` 次，超限进 alerts；择路不会失败 |
-| `assets` 图片标签 | `handleAssets` | 查图库有没有这条图的描述，没有才调视觉模型 → 写 `image_notes`；没打完的写 `asset_tag_jobs` 欠条 | `TopicTagged` | 欠条留给后台补，不阻塞消息 |
-| `agent` 生成回复 | `handleAgent` | 进群聊缓存 → 学身份 → 判断该不该回 → 交 `speech` | `TopicReplied`（聊天工作流的终点） | 生成的失败由 `speech` 自己兜 |
-| `command` 管理指令 | `handleCommand` | 交 `speech.RunInternalCommand`：再判一次匹配 → 判权限 → 执行 handler | `TopicCommandDone`（指令工作流的终点） | 不重试（`Retries` 固定 0，指令副作用不幂等），失败只记日志 |
+| `assets` 图片标签 | `handleAssets` | 查图库有没有这条图的描述，没有才调视觉模型 → 写 `image_notes`；没打完的写 `asset_tag_jobs` 欠条 | `EventTagged` | 欠条留给后台补，不阻塞消息 |
+| `agent` 生成回复 | `handleAgent` | 进群聊缓存 → 学身份 → 判断该不该回 → 交 `speech` | `EventReplied`（聊天工作流的终点） | 生成的失败由 `speech` 自己兜 |
+| `command` 管理指令 | `handleCommand` | 交 `speech.RunInternalCommand`：再判一次匹配 → 判权限 → 执行 handler | `EventCommandDone`（指令工作流的终点） | 不重试（`Retries` 固定 0，指令副作用不幂等），失败只记日志 |
 
 **字段的含义**：`Item.Node` 记的是目标节点，不是造出它的节点。前置造出「进聊天工作流」那条 item 时，`Node` 已经是 `assets`，不是 `sync`。幂等键与告警分类（`dead_letter_<node>`）都按它算。
 
@@ -85,7 +85,7 @@ flowchart TB
 1. **协程不绑定会话**。池里的协程从就绪队列挑一个 key 处理一批，交还后再挑下一个，所以协程数等于 `*_concurrency`，跟有多少个群无关；空闲的群只是队里的一项。
 2. **同一个 key 同一时刻只有一个协程持有**（`inflight`），这就是"同一个群的消息按到达顺序处理"的保证；不同 key 并行。
 3. **一个协程一次最多连续吃 3 批**同一会话（`maxBurstPerTurn`），吃完让位，防止活跃的群把池子占死。
-4. **参数是现读的**（`StageConfig`）。`settings` 表里改了批量/并发/重试，下一批就生效，不用重启。
+4. **参数是现读的**（`ConsumerConfig`）。`settings` 表里改了批量/并发/重试，下一批就生效，不用重启。
 
 ## 参数
 
@@ -108,15 +108,15 @@ flowchart TB
 sequenceDiagram
   participant A as app
   participant B as bot.Run
-  participant W as 前置 + 三个域（四个 Stage）
-  B->>B: 起 worker（用独立 ctx，不受应用 ctx 影响）
+  participant W as 前置 + 三个域（四个 Consumer）
+  B->>B: 起 Consumer（用独立 ctx，不受应用 ctx 影响）
   A->>B: ctx 取消
   B->>W: drain(DrainTimeout)：等 pending 和 active 都归零
   B->>W: closeBuffers + Close + Wait
   B-->>A: 退出，app 接着关库
 ```
 
-排空失败只记一条 WARN，不阻塞退出。消息正文在前置阶段就已经同步入库了，最后几条没跑完最多是"没有回复"，不会"消息丢了"。
+排空失败只记一条 WARN，不阻塞退出。消息正文在前置就已经同步入库了，最后几条没跑完最多是"没有回复"，不会"消息丢了"。
 
 ## 失败怎么办
 
@@ -140,8 +140,8 @@ sequenceDiagram
 | --- | --- |
 | `pipeline/contracts.go` | `Item`、`NewItem`、`DecodeItem`，节点名常量（`Node*`） |
 | `pipeline/buffer.go` | `Buffer`（放/取/确认/关/量）与 `Peeker`（数积压/非阻塞取）为什么拆开、`MemoryBuffer` 的阻塞与关闭语义 |
-| `pipeline/worker.go` | `Stage` 的池、ready 队列、inflight、`maxBurstPerTurn`、重试与死信；`BatchHandler` 的批边界契约 |
+| `pipeline/consumer.go` | `Consumer` 的池、ready 队列、inflight、`maxBurstPerTurn`、重试与死信；`BatchHandler` 的批边界契约 |
 | `bot/ingest.go` | `Run`（起停、排空）、`AcceptEvent`（归属、去重、入前置） |
-| `bot/stages.go` | `handleSync`（补全）/ `handleAssets` / `handleAgent` / `handleCommand` |
-| `bot/router.go` | `route` / `workflowOf`：补全之后择路。为什么它是函数不是阶段，文件头写清了 |
+| `bot/domains.go` | `handleSync`（补全）/ `handleAssets` / `handleAgent` / `handleCommand` |
+| `bot/router.go` | `route` / `workflowOf`：补全之后择路。为什么它是函数不是节点，文件头写清了 |
 | `conversation/types.go` | `Inbound`、`Synced` 的字段与谁填什么 |

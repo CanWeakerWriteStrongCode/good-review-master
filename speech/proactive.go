@@ -20,7 +20,7 @@ import (
 // 主动插话：没有被 @ 时，先让一个轻量"裁判"调用判断要不要接话，
 // 判定为要才走与普通 @ 相同的生成链路。设计上的四个关键点：
 //
-//  1. 两阶段：裁判只输出 {reply, reason}，不带人格、不带 MCP 工具；
+//  1. 两步：裁判只输出 {reply, reason}，不带人格、不带 MCP 工具；
 //     绝大多数消息止步于此，成本远低于每次都跑完整锐评。
 //  2. 默认沉默：解析失败、超时、报错一律按"不回"处理（fail closed）。
 //  3. 每 (工作空间, 群) 串行：Router 本来就是每工作空间一个，所以这里的
@@ -55,7 +55,7 @@ var proactiveVerdictSchema = json.RawMessage(`{
 }`)
 
 // judgeVerdict 裁判结论。Reply 用指针：区分"模型明确说 false"和"字段缺失"。
-// Focus 决定生成阶段按哪种口径组织回复；缺失或无法识别时按整体上下文处理。
+// Focus 决定生成时按哪种口径组织回复；缺失或无法识别时按整体上下文处理。
 // LongForm 表示这条需要查资料/正式知识型长篇解答，生成后跳过排版（不强制 ≤N 句）。
 type judgeVerdict struct {
 	Reply    *bool  `json:"reply"`
@@ -223,8 +223,8 @@ func (r *Router) TryProactive(ctx context.Context, event onebot.Event, groupID, 
 	r.tryProactive(ctx, event, groupID, content, nil, false)
 }
 
-// TryProactiveNow 是 Stage 3 的同步入口：提交后在当前 goroutine 里处理完 latest-wins
-// 队列再返回，保证同一会话的 Agent 任务严格串行（全局并发由阶段 worker 控制）。
+// TryProactiveNow 是 agent 的同步入口：提交后在当前 goroutine 里处理完 latest-wins
+// 队列再返回，保证同一会话的 Agent 任务严格串行（全局并发由节点池控制）。
 func (r *Router) TryProactiveNow(ctx context.Context, event onebot.Event, groupID, content string, snapshot []conversation.Message) {
 	r.tryProactive(ctx, event, groupID, content, snapshot, true)
 }
@@ -305,7 +305,7 @@ func (r *Router) runProactive(ctx context.Context, groupID string) {
 
 // handleProactive 对一个候选消息执行"选窗 → 裁判 → 必要时生成并发送"。
 func (r *Router) handleProactive(ctx context.Context, cand *proactiveCandidate, groupID string, cfg *config.Config) {
-	// 图片只下载一次：裁判看它决定要不要回，生成阶段也直接复用这份像素，
+	// 图片只下载一次：裁判看它决定要不要回，生成时也直接复用这份像素，
 	// 否则生成只能看到聊天记录里的“[图片]”，会出现“裁判看懂了新闻、回复却在聊构图”的割裂。
 	images := r.judgeImages(ctx, cand.event, cfg)
 
@@ -378,7 +378,7 @@ func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, g
 }
 
 // judgeProactive 问裁判"这条要不要回"。任何失败都由调用方按"不回"处理。
-// images 是已经下载好的候选图片（handleProactive 只下载一次，生成阶段复用）。
+// images 是已经下载好的候选图片（handleProactive 只下载一次，生成时复用）。
 // window 是调用方在裁判之前选好的窗口——裁判看到的聊天记录和随后生成用的完全一致。
 // mention=true 表示这条本身 @ 了机器人（或私聊）：reply 结论一律忽略，只取 long_form/focus。
 func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proactiveCandidate, cfg *config.Config, images []llm.Image, window []conversation.Message, mention bool) (judgeVerdict, error) {

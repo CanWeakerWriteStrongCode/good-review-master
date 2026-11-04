@@ -104,7 +104,7 @@ sequenceDiagram
 
 域与域之间没有箭头：每一步都是「编排层投给域 → 域交回结果 → 编排层再投下一跳」。
 图中 `B->>X` 与 `X-->>B` 就是这条往返，具体查表在 `bot/orchestrator.go` 的
-`enter`（前置交回工作流名）与 `advance`（域交回去向）。
+`enter`（前置交回工作流名）与 `advance`（域交回事件）。
 
 这是鸟瞰图。想跟着代码走一遍（每段进哪个类型、那个类型靠什么结构干活），看
 [message-flow.md](message-flow.md)；每个节点的具体行为见 [domains/pipeline.md](../domains/pipeline.md)。

@@ -62,7 +62,7 @@ func (r *Router) runChatWithTools(ctx context.Context, systemPrompt, userMsg str
 	seenImages := make(map[string]bool)
 
 	// 主动插话时裁判已经下载过的图直接随首条 user 消息喂进来：
-	// 否则生成阶段只能看到"[图片]"占位（或再走一次 view_image），
+	// 否则生成时只能看到"[图片]"占位（或再走一次 view_image），
 	// 会出现"裁判看懂了新闻、回复却在说图拍得不错"的割裂。这些图同样计入查看上限。
 	userMessage := llm.Message{Role: llm.RoleUser, Content: userMsg}
 	for _, img := range images {

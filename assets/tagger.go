@@ -1,7 +1,7 @@
-// Package assets 是 Stage 2：给消息里的图片/视频/文件打标签。
+// Package assets 是打标签域（assets）：给消息里的图片/视频/文件打标签。
 //
 // 打标签会下载、解码、调视觉模型，慢且会失败；所以这里的策略是
-// “能做就做，做不完先欠着”：成功写进全局图库，没做完的返回给 Stage 2 落欠条，
+// “能做就做，做不完先欠着”：成功写进全局图库，没做完的返回给 assets 落欠条，
 // 后台 worker 再补。消息本身永远不会因为标签失败而被丢掉。
 package assets
 
@@ -101,7 +101,7 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	for i, url := range urls {
 		asset := conversation.Asset{Index: i, Kind: "image", URL: url, Status: conversation.StatusOK}
 		// 预算已耗尽：剩下的图连下载都不再尝试（一张最多还要等 30s），
-		// 直接记欠条交给后台补，让消息尽快进 Stage 3。
+		// 直接记欠条交给后台补，让消息尽快进 agent。
 		if budgetCtx.Err() != nil {
 			asset.Status = conversation.StatusDeferred
 			asset.Error = errBudgetExhausted
@@ -171,7 +171,7 @@ func (t *ImageTagger) TagURLs(ctx context.Context, urls []string) TagResult {
 	}
 
 	// 信号量按「本次调用（即一条消息）」创建：它限制的是一条消息里的多张图
-	// 同时描述几张，不是跨消息的全局上限。全局出站峰值 = Stage 2 的
+	// 同时描述几张，不是跨消息的全局上限。全局出站峰值 = assets 的
 	// asset_concurrency × 本值；要真正全局限流得把信号量提到 ImageTagger 上。
 	limit := cfg.Assets.TagConcurrency
 	if limit <= 0 {

@@ -9,7 +9,7 @@ import (
 
 // AlertDetail 面板上的一条报警。
 //
-// Kind 是写库时定的分类（window_too_small、dead_letter_<stage>），
+// Kind 是写库时定的分类（window_too_small、dead_letter_<node>），
 // Detail 是当时的完整现场 JSON（可能几 KB），页面默认折叠，点开才看。
 type AlertDetail struct {
 	ID            int64  `json:"id"`

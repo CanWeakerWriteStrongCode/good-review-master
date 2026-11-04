@@ -25,7 +25,7 @@ type ProcessedItem struct {
 	ID          int64  `gorm:"column:id;primaryKey;autoIncrement"`
 	ItemID      string `gorm:"column:item_id"`
 	WorkspaceID string `gorm:"column:workspace_id"`
-	Stage       string `gorm:"column:stage"`
+	Node        string `gorm:"column:node"`
 	CreatedAt   int64  `gorm:"column:created_at"`
 }
 
@@ -51,14 +51,14 @@ func (s *Scope) Processed(itemID string) bool {
 //
 // 用 DoNothing 而不是 UPDATE 后 INSERT：这里只关心「这一行在不在」，
 // 没有要更新的列，冲突时不该消耗一次写。
-func (s *Scope) MarkProcessed(itemID, stage string) {
+func (s *Scope) MarkProcessed(itemID, node string) {
 	if s == nil || s.store == nil || itemID == "" || s.store.closed.Load() {
 		return
 	}
 	row := ProcessedItem{
 		ItemID:      itemID,
 		WorkspaceID: s.workspaceID,
-		Stage:       stage,
+		Node:        node,
 		CreatedAt:   time.Now().Unix(),
 	}
 	res := s.store.db.Clauses(clause.OnConflict{

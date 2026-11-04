@@ -34,7 +34,7 @@ func TestDeadLetter报警带上账号(t *testing.T) {
 	}
 	t.Cleanup(mgr.Close)
 
-	// 真实链路里的 key 就是这个拼法（bot/ingest.go、bot/stages.go）。
+	// 真实链路里的 key 就是这个拼法（bot/ingest.go、bot/domains.go）。
 	key := conversation.ChatKey("qq_official_bot_1906", "g1")
 	item, err := pipeline.NewItem(pipeline.NodeSync, "", key, "m1",
 		conversation.Inbound{WorkspaceID: "qq_official_bot_1906"})

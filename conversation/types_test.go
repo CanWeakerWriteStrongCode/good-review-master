@@ -22,7 +22,7 @@ func TestInbound可序列化(t *testing.T) {
 			QQAtMe:      true,
 		},
 	}
-	item, err := pipeline.NewItem(pipeline.NodeSync, "", pipeline.SerialKey, "m1", in)
+	item, err := pipeline.NewItem(pipeline.NodeSync, "", pipeline.FallbackKey, "m1", in)
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestSynced带图片描述过缓冲(t *testing.T) {
 		},
 		AssetStatus: StatusOK,
 	}
-	item, err := pipeline.NewItem(pipeline.NodeAssets, "", pipeline.SerialKey, "m1", synced)
+	item, err := pipeline.NewItem(pipeline.NodeAssets, "", pipeline.FallbackKey, "m1", synced)
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)
 	}

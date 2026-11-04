@@ -46,16 +46,17 @@ QQ official bot ←→ AstrBot sidecar (OneBot 12 IM gateway) ←→ Go Bot ←�
 
 ```
 IM ingress POST /im/event/{account} → provision/load workspace {platform}_{account}
-  → queue (bot/ingest.go)
-  → Dedup via O(1) message_id set
-  → History comes from the shared state.db, filtered by workspace_id (no platform history action)
-  → ProcessMessage (bot/handler.go)
-     → Whitelist check
-     → Truncate to max length
-     → Store in ring buffer (zero-copy write)
-     → @bot detection (mention.user_id == self.user_id + nickname fallback)
-     → Prefix trie match → matched: dispatch to that command's handler (with its persona)
-     → No match: fall back to a plain LLM reply (no persona)
+  → bot.AcceptEvent: dedup (O(1) message_id set) → put into the router's pipeline buffer
+  → router domain · sync (bot/domains.go → workspace.PrepareBatch)
+     → whitelist (policy.AllowsStream) → truncate by rune → batch name resolution → synchronous insert (RowID)
+     → routing (bot/router.go): internal command → command workflow, everything else → chat workflow
+  → chat · assets (bot/domains.go → assets.Tagger)
+     → downsample → ImageID → look up the image library / describe → unfinished ones become backfill jobs
+  → chat · agent (bot/domains.go → speech)
+     → freeze window snapshot → addressed: RouteMessageNow (command or window+generate → format → send)
+                            → not addressed: proactive judge (TryProactiveNow)
+  → command · command (bot/domains.go → speech.RunInternalCommand)
+     → match again → check permission → run handler
 ```
 
 ## Quick Start
@@ -157,7 +158,7 @@ Drop the exe in an empty directory and run it. On first launch, if `config.yaml`
 | `runtime.web_port` | Web panel port (<=0 to disable) | `8080` |
 | `runtime.web_username` | Web panel login username | `admin` |
 | `runtime.web_password` | Web panel login password (required; lives in `secret.yaml`) | `"123456"` |
-| `pipeline.*` | Three-stage pipeline batching/linger/concurrency/retries/capacity/idle/drain; see `config/config_example.yaml` | defaults |
+| `pipeline.*` | Per-node pipeline batching/linger/concurrency/retries/capacity/idle/drain; see `config/config_example.yaml` | defaults |
 | `assets.*` | Background backfill, per-message description budget, deferred originals and job retention; see `config/config_example.yaml` | defaults |
 
 Most `pipeline` / `assets` values can be overridden at runtime via the `settings` table in `state.db` (keys `pipeline` / `assets`, JSON with the same field names). Database values win over `config.yaml` and take effect within about 30 seconds.
@@ -342,8 +343,27 @@ good-review-master/
 │   ├── embed.go              # //go:embed template embedding
 │   ├── init.go               # Auto-create config files on first run
 │   └── prompt.go             # Prompt config loading + hot-reload + CRUD
-├── cache/
-│   └── cache.go              # Per-group ring buffer (zero-copy writes, O(1) dedup)
+├── conversation/             # Session domain: value objects + per-group ring buffer + anchors + windowing
+│   ├── types.go              # Inbound / Synced / ImageID / ImageNote (travel between nodes)
+│   ├── asset.go              # Asset value objects carried by a message (assets → agent)
+│   ├── cache.go              # Ring buffer (zero-copy writes, O(1) dedup) + window choice + anchors
+│   ├── token.go              # Heuristic token estimate (CJK 1/char, ASCII 1/4 chars)
+│   └── bench_test.go         # BenchmarkAdd: allocs/op must be 0
+├── assets/                   # Assets domain: image description (vision model) + library + backfill
+│   ├── tagger.go             # Downsample → ImageID → library lookup → describe
+│   ├── image.go              # Global image library reads/writes
+│   └── jobs.go               # Background backfill worker
+├── policy/                   # Policy domain: group whitelist / account enablement / record-only (pure functions)
+│   └── policy.go
+├── state/                    # Storage: shared SQLite archive, one file per table group
+│   ├── state.go              # Scope facade + shared types
+│   ├── schema.go             # Table creation + version gate
+│   └── messages.go / anchors.go / directory.go / persona.go / images.go / jobs.go / ops.go
+├── kv/                       # In-process KV (Ristretto: member names, group names)
+├── pipeline/                 # Orchestration: node buffers + consumers + retries/dead letters
+│   ├── buffer.go             # Per-chat partitioned buffer (bounded, blocks when full)
+│   ├── consumer.go           # Goroutine pool + ready queue + batch/linger + per-chat serialization
+│   └── contracts.go          # Item{ID, Key, Node, Tag, Body, Attempts}
 ├── llm/
 │   └── llm.go                # LLM client (go-openai SDK, connection pooling, typed)
 ├── async/
@@ -352,19 +372,33 @@ good-review-master/
 │   └── logger.go             # Logging (zap + lumberjack, 20MB rotation, 30-day retention)
 ├── onebot/
 │   ├── client.go             # OneBot action client (resty, points at the AstrBot bridge)
-│   ├── cqimage.go            # CQ-code parsing (image extraction, rich-segment placeholders, truncation)
+│   ├── message.go            # Message segment model + CQ-code parse/render
 │   └── types.go              # API data types
 ├── im/
-│   └── server.go             # AstrBot event ingress (auth, decode, enqueue)
-├── bot/
-│   ├── ingest.go             # Event consumer + startup history backfill (context-aware)
-│   └── handler.go            # Message processing: whitelist → @detection → routing
-├── router/                   # Command system: prefix-trie matching + dispatch (was cmd/, package renamed)
-│   ├── command.go            # Router + prefix trie matching + unmatched fallback + safe goroutine
-│   ├── internal_cmd.go       # Internal commands (add/delete keyword, add/delete rule, help)
-│   ├── chat_review.go        # Async chat_review handler (cache window + message assembly)
-│   ├── chat_window.go        # Cache window decision: extend vs reset (pure function, unit-tested)
-│   └── persona_render.go     # Persona rendering (5 dims → tail of user message)
+│   └── server.go             # AstrBot event ingress (auth, decode, admit)
+├── bot/                      # Orchestration layer: one router + two workflows
+│   ├── ingest.go             # Entry & lifecycle: AcceptEvent, Run, drain (graceful exit)
+│   ├── orchestrator.go       # Orchestrator: mount nodes, connect workflows, declare ends, deliver
+│   ├── router.go             # Router selection: which workflow after sync
+│   ├── domains.go            # Four domains: sync / assets / agent / command
+│   └── handler.go            # Wiring: mount nodes, declare workflows, connect (NewBot)
+├── workspace/                # Account domain: identity, provisioning, recovery, nicknames, directory
+│   ├── workspace.go          # Runtime of one workspace (conversation.Store + speech.Router + state.Scope)
+│   ├── sync.go               # PrepareBatch: name resolution + insert (router sync)
+│   └── ledger.go / settings.go
+├── speech/                   # Speech domain: who speaks, whether to reply, generation, formatting, sending
+│   ├── router.go             # Router assembly & lifecycle (Set* injection, Go/Wait, group persona)
+│   ├── dispatch.go           # Thin entry: dispatch on command match, otherwise reply directly
+│   ├── command.go            # Command table: prefix trie + atomic whole-table swap
+│   ├── judge.go              # IsAddressed / stripCQPrefix / trimLeadingMentionToken
+│   ├── prompt.go             # System prompt assembly
+│   ├── generate.go           # Window → user message → model call → *Reply
+│   ├── reply_format.go       # Split long replies into at most N messages
+│   ├── deliver.go            # Reply + Sink + Deliver + send ledger
+│   ├── proactive.go          # Proactive interjection: judge + per-group serial worker + triple throttling
+│   ├── mcp_loop.go           # Multi-round tool calling
+│   ├── chat_window.go        # Cache window decision: extend vs reset (pure function, exhaustively tested)
+│   └── persona_render.go     # Persona rendering (5 dims → tail of system prompt)
 └── web/
     ├── server/                # Gin web management panel backend
     │   ├── server.go          # Gin engine, API routes, SPA fallback, graceful shutdown
@@ -380,20 +414,30 @@ good-review-master/
 
 ```
 main → app, config, apppath, logutil, version
-app → config, llm, onebot, router, bot, web/server, mcpclient, mcpserver, logutil, internal/testutil
-bot → config, cache, onebot, router
-router → config, cache, llm, onebot, async
-web/server → config, logutil, onebot, cache, version
+app → bot, config, config/store, im, llm, logutil, mcpclient, mcpserver, onebot, speech, telemetry, web/server, workspace
+bot → assets, config, conversation, logutil, onebot, pipeline, policy, speech, state, telemetry, workspace
+workspace → assets, config, conversation, llm, logutil, onebot, policy, speech, state, telemetry
+web/server → config, conversation, logutil, onebot, policy, telemetry, version, workspace
+speech → async, config, conversation, llm, logutil, mcpserver, onebot, telemetry
+assets → config, conversation, llm, logutil, mcpserver, state
+state → conversation, kv, logutil
+conversation → onebot
+policy → config
+im → logutil, onebot, telemetry
 async → logutil, pool
 pool → (no internal deps: stdlib sync only)
-onebot → (no internal deps)
-cache → (no internal deps)
-llm → (no internal deps)
+onebot → logutil
+kv → (no internal deps: ristretto only)
+llm → logutil, telemetry
 config → apppath, logutil
+config/store → logutil, telemetry
 logutil → apppath
+telemetry → (no internal deps: prometheus / otel only)
 apppath → (no internal deps)
 version → (no internal deps)
 ```
+
+Layering: `conversation`, `assets`, `speech`, `workspace`, `policy` sit in the middle and **must not import `pipeline`, `bot`, `app` or `web/server`**. See [`docs/architecture/domains.md`](docs/architecture/domains.md) for the layers and per-package rules.
 
 `app` is the composition root and only `main` imports it; when a component needs another component, inject it in `app` rather than importing across packages.
 

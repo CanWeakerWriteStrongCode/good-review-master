@@ -19,7 +19,7 @@ type Sources struct {
 // 最后把域类型转成业务侧读的 Config。
 //
 // **要求：无副作用、幂等。**
-// 这条不是洁癖，是被阶段 3 的 informer 倒逼的：informer 会在文件变化时反复调 Load，
+// 这条不是洁癖，是被热重载的 informer 倒逼的：informer 会在文件变化时反复调 Load，
 // 还有 resync 兜底。所以这里绝不能有"顺手建个文件""顺手写回默认值"这类动作——
 // InitDefaultFiles（建模板）只能留在首跑路径上（cmd/good-review → app）。
 func Load(sources Sources) (*Config, error) {

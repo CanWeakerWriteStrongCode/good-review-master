@@ -21,21 +21,19 @@
 
 | 指标 | 说明 | 怎么读 |
 | --- | --- | --- |
-| `pipeline_stage_backlog{stage}` | 各阶段队列里没被取走的消息数 | 持续抬升 = 这个阶段跟不上 |
-| `pipeline_stage_batch_duration_seconds{stage}` | 处理一批的耗时 | `stage="agent"` 的分位数抬升说明模型变慢，不是消息变多 |
+| `pipeline_node_backlog{node}` | 各节点队列里没被取走的消息数 | 持续抬升 = 这个节点跟不上 |
+| `pipeline_node_batch_duration_seconds{node}` | 处理一批的耗时 | `node="agent"` 的分位数抬升说明模型变慢，不是消息变多 |
 | `im_events_total{result}` | 入站事件按去向计数 | `accepted` 与 `ignored` 差值大 = 桥接层推了不该推的；`queue_full` 涨 = 下游堵了 |
 
 ### 2. 流水线
 
 | 指标 | 说明 |
 | --- | --- |
-| `pipeline_stage_ready{stage}` | 等着派活的会话数。比 backlog 更能说明排队：积压 100 条可能只来自 1 个群 |
-| `pipeline_stage_active{stage}` | 正在处理的会话数，上限就是该阶段并发 |
-| `pipeline_stage_workers{stage}` | 池里的协程数；与 `active` 的差就是睡着的协程 |
+| `pipeline_node_ready{node}` | 等着派活的会话数。比 backlog 更能说明排队：积压 100 条可能只来自 1 个群 |
+| `pipeline_node_active{node}` | 正在处理的会话数，上限就是该节点并发 |
+| `pipeline_node_workers{node}` | 池里的协程数；与 `active` 的差就是睡着的协程 |
 
-这几个 `pipeline_stage_*` 的 label 叫 `stage`（历史名字），值是 `Item.Node`——`sync` / `assets` / `agent` / `command`。按它分组就是按节点分组，四个节点都在，包含前置 `sync`。
-
-死信告警的分类 `dead_letter_<node>` 用的是同一个值。
+`node` 的值就是 `Item.Node`：`sync` / `assets` / `agent` / `command`，四个节点都在，包含前置 `sync`。死信告警的分类 `dead_letter_<node>` 用的是同一个值。
 
 ### 3. 大模型
 
@@ -89,7 +87,7 @@ docker run --rm -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
 
 ```bash
 # 指标端点起来了吗
-curl -s http://127.0.0.1:9100/metrics | Select-String "pipeline_stage_backlog"
+curl -s http://127.0.0.1:9100/metrics | Select-String "pipeline_node_backlog"
 
 # 面板和探针
 curl -s http://127.0.0.1:17090/healthz
@@ -99,7 +97,7 @@ curl -s -o NUL -w "%{http_code}" http://127.0.0.1:17090/readyz
 curl -s http://127.0.0.1:9100/metrics | Select-String "im_events_total"
 ```
 
-三个都要有数：`im_events_total{result="accepted"}` 在涨说明事件进来了；`pipeline_stage_backlog` 有值说明在排队；`llm_requests_total` 在涨说明真的调了模型。缺哪一环就从那一环往回查。
+三个都要有数：`im_events_total{result="accepted"}` 在涨说明事件进来了；`pipeline_node_backlog` 有值说明在排队；`llm_requests_total` 在涨说明真的调了模型。缺哪一环就从那一环往回查。
 
 ## 限速与熔断怎么看
 

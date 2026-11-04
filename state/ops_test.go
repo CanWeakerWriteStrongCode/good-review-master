@@ -14,8 +14,8 @@ func TestLoadAlerts按时间倒序(t *testing.T) {
 	defer st.Close()
 
 	st.SaveAlert(Alert{WorkspaceID: "ws-a", Kind: "window_too_small", Detail: `{"a":1}`, CreatedAt: 100})
-	st.SaveAlert(Alert{WorkspaceID: "ws-b", Kind: "dead_letter_stage3", Detail: `{"b":2}`, CreatedAt: 300})
-	st.SaveAlert(Alert{WorkspaceID: "ws-a", Kind: "dead_letter_stage1", Detail: `{}`, CreatedAt: 200})
+	st.SaveAlert(Alert{WorkspaceID: "ws-b", Kind: "dead_letter_agent", Detail: `{"b":2}`, CreatedAt: 300})
+	st.SaveAlert(Alert{WorkspaceID: "ws-a", Kind: "dead_letter_sync", Detail: `{}`, CreatedAt: 200})
 
 	list, total, err := st.LoadAlerts(2)
 	if err != nil {
@@ -27,8 +27,8 @@ func TestLoadAlerts按时间倒序(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("list = %+v", list)
 	}
-	if list[0].Kind != "dead_letter_stage3" || list[0].CreatedAt != 300 || list[0].WorkspaceID != "ws-b" {
-		t.Fatalf("第一条 = %+v，want 最新的 stage3", list[0])
+	if list[0].Kind != "dead_letter_agent" || list[0].CreatedAt != 300 || list[0].WorkspaceID != "ws-b" {
+		t.Fatalf("第一条 = %+v，want 最新的 dead_letter_agent", list[0])
 	}
 	if list[1].CreatedAt != 200 {
 		t.Fatalf("第二条 = %+v", list[1])

@@ -96,7 +96,7 @@ sequenceDiagram
 | 事件缺 `account_kind` 且没有可匹配的已有工作空间 | 拒绝接管（`ErrAccountKindRequired`），回 404 |
 | 平台名或账号不合规 | 拒绝，记 WARN |
 | 不在开通名单 | 返回 nil，回 404，平台自己兜底 |
-| 工作空间已不存在（Stage 里按 ID 找） | 整批跳过，记 DEBUG |
+| 工作空间已不存在（消费者里按 ID 找） | 整批跳过，记 DEBUG |
 | 关闭时还有异步写没落盘 | `Wait()` 等它们退完，再 `Close()` 关库 |
 
 ## 相关决策
@@ -108,7 +108,7 @@ sequenceDiagram
 | 文件 | 看什么 |
 | --- | --- |
 | `workspace/workspace.go` | `Manager`、`Workspace`、`ResolveOrCreate`、`WorkspaceID`、账号类型枚举 |
-| `workspace/sync.go` | `PrepareBatch`（Stage 1 的补名与入库） |
+| `workspace/sync.go` | `PrepareBatch`（前置 `sync` 的补名与入库） |
 | `workspace/mention.go` | 成员名与被引用消息的补全 |
 | `workspace/settings.go` | 每工作空间的运行时参数覆盖 |
 | `workspace/ledger.go` | 发送台账的读写在什么时机发生 |

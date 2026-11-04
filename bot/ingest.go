@@ -38,7 +38,7 @@ func (b *Bot) Run(ctx context.Context) {
 	logutil.Info("消息处理开始排空", "超时", b.cfg().Pipeline.DrainTimeout)
 	b.drain(b.cfg().Pipeline.DrainTimeout)
 	b.closeBuffers()
-	b.orch.closeStages()
+	b.orch.closeConsumers()
 	b.orch.wait()
 	logutil.Info("消息分发循环已退出")
 }

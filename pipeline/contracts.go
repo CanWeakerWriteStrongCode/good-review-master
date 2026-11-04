@@ -14,15 +14,16 @@ import (
 	"sync/atomic"
 )
 
-// SerialKey 是空分区键的兜底：调用方没给 key 时归到这一条 FIFO。
+// FallbackKey 是空分区键的兜底：调用方没给 key 时归到这一条 FIFO。
 // 正常情况下 Key 是 workspaceID + "|" + chatID（conversation.ChatKey）。
-const SerialKey = "serial"
+const FallbackKey = "serial"
 
 // 节点名。Item.Node 记的永远是消息将要去的那个节点，而不是造出它的那个节点——
 // 幂等键与告警分类都按它算。
 //
 // 本包不知道有几个节点、它们怎么接：那是编排层的事（`bot` 的 workflows）。
-// NodeSync 现在指前置（入口 + 补名），值沿用旧名是为了面板指标和 dead_letter_sync 不用改。
+// NodeSync 是前置（入口 + 补名）。值是短名，同时用作三处标识：MQ 的 topic、
+// 指标的 node 标签、死信分类 dead_letter_<node> 的后缀。
 //
 // 接 MQ 时这两级的对应关系：Node 是 topic（谁消费），Item.Tag 是 tag（哪条工作流）。
 const (
@@ -34,8 +35,6 @@ const (
 
 // 节点载荷类型（conversation.Inbound / conversation.Synced）不在这里定义：
 // 它们属于会话域，本包只管"怎么把载荷搬过去"。
-// 早先 InboundEvent / SyncedMessage / EnrichedMessage 放在这里，
-// 导致 workspace 和 assets 为了用值对象反过来 import 编排层。
 
 var itemSeq atomic.Uint64
 

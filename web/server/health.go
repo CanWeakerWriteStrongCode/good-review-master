@@ -23,7 +23,7 @@ import (
 //     而不是"不该被调用"；把降级当不可用会让机器人被无谓地反复摘流量。
 //   - 这里是无鉴权端点，每次探测都外呼一次 AstrBot 桥接（客户端超时 10s、重试 2 次）
 //     等于给了一个免鉴权的放大接口。
-// 真要观测这些，用 /api/status（已鉴权）或阶段 5 的 Prometheus 指标。
+// 真要观测这些，用 /api/status（已鉴权）或 Prometheus 指标。
 
 // handleHealthz 存活探针：能返回就说明进程在跑。
 func (s *Server) handleHealthz() gin.HandlerFunc {

@@ -22,7 +22,7 @@ type Section interface {
 	Name() string
 	// Unmarshal 从整份文档里取自己那一段解码。整段缺失不算错误，缺省值交给 SetDefaults
 	Unmarshal(document *yaml.Node) error
-	// SetDefaults 填默认值。**必须幂等**：阶段 3 的 informer 会反复调 Load
+	// SetDefaults 填默认值。**必须幂等**：热重载的 informer 会反复调 Load
 	SetDefaults()
 	// Validate 只校验本域自身。校验错误是给"改 YAML 的人"看的，
 	// 措辞要指明是哪一段、当前值是什么、应该写成什么样——

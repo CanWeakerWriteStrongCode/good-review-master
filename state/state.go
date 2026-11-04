@@ -15,7 +15,7 @@
 //	anchors.go    anchors（上次发出去的窗口首尾，前缀缓存的命门）
 //	directory.go  members / groups / 两张 *_info_history
 //	persona.go    workspace_profile（群人格在 groups.persona_keyword 列上）
-//	jobs.go       asset_tag_jobs（Stage 2 的补标签欠条）
+//	jobs.go       asset_tag_jobs（assets 的补标签欠条）
 //	ops.go        send_ledger / alerts / settings / 工作空间列表
 //	processed.go  processed_items（消息处理台账，把重投变幂等）
 //

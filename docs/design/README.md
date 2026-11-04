@@ -38,6 +38,8 @@
 
 这也决定了链接方向：活性文档只链 `../design/` 这个目录，不链里面的单篇；要删就整篇删，不会留死链。
 
+已经删过两篇：管理指令前移、四处结构债的清理。两篇都是待办与实施顺序，兑现在代码里，没有必要再答一遍「为什么不是另一种做法」。
+
 ## 命名
 
 `<主题>-<YYYY-MM>.md`。月份是写的月份，不是计划落地的月份，方便一眼看出哪些已经过期。
@@ -48,8 +50,4 @@
 | --- | --- | --- | --- |
 | [cache-cost-2026-11.md](cache-cost-2026-11.md) | 缓存窗口「扩展」与「重置」的成本测算 | Implemented | [ADR-0006](../adr/0006-token-cost-cache-window.md) |
 | [mq-readiness-2026-11.md](mq-readiness-2026-11.md) | 上 MQ 之前必须补什么、什么时候才真该换 | Accepted（本期不做） | [ADR-0005](../adr/0005-orchestration-layer.md) 的「后果」 |
-| [orchestrator-workflow-2026-11.md](orchestrator-workflow-2026-11.md) | 域回消息、编排层转发的改造方案 | Implemented | [ADR-0005](../adr/0005-orchestration-layer.md)、[message-flow](../architecture/message-flow.md)、[domains/pipeline](../domains/pipeline.md) |
-| [command-permission-2026-11.md](command-permission-2026-11.md) | 管理指令加权限、前移成独立域 | Implemented | [ADR-0005](../adr/0005-orchestration-layer.md)、[domains/speech](../domains/speech.md) |
-| [structure-self-evidence-2026-11.md](structure-self-evidence-2026-11.md) | 四处「结构说不清」的清理：包注释过期、`forward` 双义、`Stage` 一词两义、`backlog` 静默 | Implemented | 本文（一次性清理，不改架构） |
-
-`command-permission-2026-11.md` 主要是待办与实施顺序，已经全部兑现，是这几篇里唯一现成可删的。
+| [orchestrator-workflow-2026-11.md](orchestrator-workflow-2026-11.md) | 域回消息、编排层转发的改造方案：`Pick` / `Signal`、`enter` / `advance`、五条边界条件 | Implemented | [ADR-0005](../adr/0005-orchestration-layer.md)、[message-flow](../architecture/message-flow.md)、[domains/pipeline](../domains/pipeline.md) |

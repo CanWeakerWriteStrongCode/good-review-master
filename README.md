@@ -158,7 +158,7 @@ AstrBot 只负责平台接入：收到消息后由桥接插件转成 OneBot 12 �
 | `runtime.web_port`          | Web 管理面板端口（<=0 禁用）              | `8080`                     |
 | `runtime.web_username`      | Web 面板登录用户名                     | `admin`                    |
 | `runtime.web_password`      | Web 面板登录密码（必填；写在 `secret.yaml`） | `"123456"`                 |
-| `pipeline.*`                | 三段流水线的批量/凑批/并发/重试/容量/空闲回收/排空；详见 `config/config_example.yaml` | 默认即可 |
+| `pipeline.*`                | 各节点的批量/凑批/并发/重试/容量/空闲回收/排空；详见 `config/config_example.yaml` | 默认即可 |
 | `assets.*`                  | 后台补标签、消息描述预算、原图副本与台账保留；详见 `config/config_example.yaml` | 默认即可 |
 
 `pipeline` 与 `assets` 的大部分参数可以在运行时通过 `state.db` 的 `settings` 表覆盖（键为 `pipeline` / `assets`，值为同名字段 JSON），库里的值优先于 `config.yaml`，约 30 秒生效。
@@ -266,8 +266,8 @@ good-review-master/
 │   ├── init.go               # 首次运行自动创建配置文件
 │   └── prompt.go             # 提示词配置加载+热重载+增删改
 ├── conversation/             # 会话域：消息值对象 + 每群环形缓冲 + 锚点 + 选窗
-│   ├── types.go              # Inbound / Synced / ImageID / ImageNote（跨 Stage 1→3）
-│   ├── asset.go              # 消息里带的资产值对象（跟随消息走过 Stage 2→3）
+│   ├── types.go              # Inbound / Synced / ImageID / ImageNote（随消息在节点间走）
+│   ├── asset.go              # 消息里带的资产值对象（assets → agent）
 │   ├── cache.go              # 环形缓冲（零拷贝写入，O(1) 去重）+ 窗口选择 + 锚点
 │   ├── token.go              # token 启发式估算（CJK 每字 1，ASCII 每 4 字符 1）
 │   └── bench_test.go         # BenchmarkAdd：allocs/op 必须是 0
@@ -282,10 +282,10 @@ good-review-master/
 │   ├── schema.go             # 建表 + 版本迁移
 │   └── messages.go / anchors.go / directory.go / persona.go / images.go / jobs.go / ops.go
 ├── kv/                       # 进程内 KV（Ristretto：成员名、群名）
-├── pipeline/                 # 编排：三段缓冲 + 协程池 + 重试/死信
+├── pipeline/                 # 编排：节点缓冲 + 消费者 + 重试/死信
 │   ├── buffer.go             # 每会话分区缓冲（有界，满则回 503）
-│   ├── worker.go             # 协程池 + 就绪队列 + 批量/linger + 每会话串行
-│   └── contracts.go          # Item{ID, Key, Stage, Body, Attempts}
+│   ├── consumer.go           # 协程池 + 就绪队列 + 批量/linger + 每会话串行
+│   └── contracts.go          # Item{ID, Key, Node, Tag, Body, Attempts}
 ├── llm/
 │   └── llm.go                # 大模型客户端（go-openai SDK，连接池，类型安全）
 ├── async/
@@ -298,13 +298,15 @@ good-review-master/
 │   └── types.go              # API 数据类型定义
 ├── im/
 │   └── server.go             # AstrBot 事件入口（鉴权、解码、入队）
-├── bot/                      # 事件消费 + 三段流水线的三个 stage
-│   ├── ingest.go             # 事件消费循环 + 启动历史回填（context 支持优雅退出）
-│   ├── stages.go             # Stage 1 准备批次 → Stage 2 打标签 → Stage 3 发言
-│   └── handler.go            # 消息处理入口：白名单 → 去重 → 入队
+├── bot/                      # 编排层：一个前置 + 两条工作流
+│   ├── ingest.go             # 入口与起停：AcceptEvent、Run、排空（优雅退出）
+│   ├── orchestrator.go       # 编排层：挂节点、连工作流、声明终点、投递下一跳
+│   ├── router.go             # 前置择路：补全之后回一句「走哪条工作流」
+│   ├── domains.go            # 四个域：补全 / 打标签 / 生成 / 管理指令
+│   └── handler.go            # 装配：挂节点、声明工作流、连线（NewBot）
 ├── workspace/                # 账号域：身份、开通、恢复、昵称、成员目录
 │   ├── workspace.go          # 一个工作空间的运行时（conversation.Store + speech.Router + state.Scope）
-│   ├── sync.go               # PrepareBatch：补名 + 入库（Stage 1）
+│   ├── sync.go               # PrepareBatch：补名 + 入库（前置 sync）
 │   └── ledger.go / settings.go
 ├── speech/                   # 发言域：谁在说话、要不要回、怎么生成、怎么排版、怎么发
 │   ├── router.go             # Router 装配与生命周期（Set* 注入、Go/Wait、群人格）
@@ -365,14 +367,17 @@ version → (无内部依赖)
 
 ```
 IM ingress POST /im/event/{account} → 按 {platform}_{account} 开通/加载工作空间
-  → bot.AcceptEvent：去重（O(1) message_id 集合）→ 写 pipeline 分区缓冲（每会话一条队列）
-  → Stage 1（bot/stages.go → workspace.PrepareBatch）
+  → bot.AcceptEvent：去重（O(1) message_id 集合）→ 写前置的 pipeline 分区缓冲
+  → 前置 sync（bot/domains.go → workspace.PrepareBatch）
      → 白名单（policy.AllowsStream）→ 按 rune 截断 → 批量补名 → 同步入库拿 RowID
-  → Stage 2（bot/stages.go → assets.Tagger）
+     → 择路（bot/router.go）：管理指令 → command 工作流，其余 → chat 工作流
+  → chat · assets（bot/domains.go → assets.Tagger）
      → 图片降采样 → ImageID → 查全局图库 / 写描述 → 没打完的记欠条等后台补
-  → Stage 3（bot/stages.go → speech）
-     → 冻结窗口快照 → 点名：RouteMessage（命中指令则分发，否则选窗生成 → 排版 → 发送）
-                    → 未点名：主动接话裁判（TryProactive）
+  → chat · agent（bot/domains.go → speech）
+     → 冻结窗口快照 → 点名：RouteMessageNow（命中指令则分发，否则选窗生成 → 排版 → 发送）
+                    → 未点名：主动接话裁判（TryProactiveNow）
+  → command · command（bot/domains.go → speech.RunInternalCommand）
+     → 再判一次匹配 → 判权限 → 执行 handler
 ```
 
 ## ➕ 扩展新指令

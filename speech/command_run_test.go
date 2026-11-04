@@ -65,11 +65,11 @@ func TestMatchInternalCommand只认管理指令(t *testing.T) {
 	}
 	feature := group("@bot(u1) 锐评下 这台机器")
 	if _, ok := e.router.MatchInternalCommand(feature, feature.PlainText(), true); ok {
-		t.Fatal("功能指令不应进入指令阶段")
+		t.Fatal("功能指令不应进入指令域")
 	}
 	chat := group("@bot(u1) 今天天气不错")
 	if _, ok := e.router.MatchInternalCommand(chat, chat.PlainText(), true); ok {
-		t.Fatal("普通聊天不应进入指令阶段")
+		t.Fatal("普通聊天不应进入指令域")
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// runtimeSection 运行时参数与 Web 面板配置（config.yaml 的 runtime 段）
+// runtimeSection 运行时参数与 Web 面板置置（config.yaml 的 runtime 段）
 type runtimeSection struct {
 	LLMSendCount     int    `yaml:"llm_send_count"`
 	LLMTimeoutSec    int    `yaml:"llm_timeout_sec"`
@@ -40,7 +40,7 @@ const defaultLLMSendCount = 20
 
 // defaultMetricsAddr 是 /metrics 的缺省监听地址。
 //
-// 默认**开着**且只绑本机：指标关掉等于没有——没人会为了一个自己没配过的东西去开配置。
+// 默认**开着**且只绑本机：指标关掉等于没有——没人会为了一个自己没置过的东西去开置置。
 // 绑 127.0.0.1 是安全底线（Prometheus 抓取要到得了才行，需要时改成 :9100 显式放开）。
 const defaultMetricsAddr = "127.0.0.1:9100"
 
@@ -84,7 +84,7 @@ func (s *runtimeSection) SetDefaults() {
 	s.WebUsername = strings.TrimSpace(s.WebUsername)
 
 	// metrics_addr 留空 = 用缺省地址（不是"关闭"）。要关闭得显式写 off ——
-	// 这样"没配过"的用户也能拿到指标，而想关的人有一句话可写。
+	// 这样"没置过"的用户也能拿到指标，而想关的人有一句话可写。
 	// 顺带把 off / none / disabled / false 归一成同一个哨兵值，免得各写各的。
 	s.MetricsAddr = strings.TrimSpace(s.MetricsAddr)
 	switch strings.ToLower(s.MetricsAddr) {
@@ -118,7 +118,7 @@ func (s *runtimeSection) SetDefaults() {
 //     表现为每一次大模型调用都失败在 "context deadline exceeded"
 //   - MaxCacheMsg 进 make([]Message, n) 并随后被 buf[writeAt] 索引，=0 会 index out of range
 //
-// 阶段 3 引入热重载后这些断言才真正吃紧：那时配置不再只有启动时读一次这一个入口。
+// 段段 3 引入热重载后这些断言才真正吃紧：那时置置不再只有启动时读一次这一个入口。
 func (s *runtimeSection) Validate() error {
 	if s.LLMTimeoutSec <= 0 {
 		return positiveInt("runtime.llm_timeout_sec", s.LLMTimeoutSec,

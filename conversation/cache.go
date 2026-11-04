@@ -30,8 +30,8 @@ type Message struct {
 	// ImageIDs 与 Images 一一对齐：图片内容标识（sha256 + 字节大小），持久化在 messages.image_ids。
 	ImageIDs []ImageID `json:"image_ids,omitempty"`
 	// ImageNotes 与 Images 一一对齐：全局图库里的描述。
-	// 内存里由 Stage 2 填、从库里读时按 ImageIDs 回填（hydrateImageNotes），
-	// 之所以要能过 JSON，是因为它跟着流水线载荷一起走 Stage 2 → Stage 3。
+	// 内存里由 assets 填、从库里读时按 ImageIDs 回填（hydrateImageNotes），
+	// 之所以要能过 JSON，是因为它跟着流水线载荷一起走 assets → agent。
 	ImageNotes []ImageNote `json:"image_notes,omitempty"`
 	ReplyToID  string      `json:"quote_id,omitempty"` // 本条引用的消息 message_id；空=没有引用
 	RefIdx     string      `json:"ref_idx,omitempty"`  // 平台侧引用索引（QQ 官方 REFIDX），用于反查被引消息

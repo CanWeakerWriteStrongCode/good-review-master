@@ -14,21 +14,21 @@ import (
 	"good-review-master/telemetry"
 )
 
-func stageConfig(batch, concurrency, retries int) func() StageConfig {
-	return func() StageConfig {
-		return StageConfig{Batch: batch, Concurrency: concurrency, Retries: retries}
+func nodeConfig(batch, concurrency, retries int) func() ConsumerConfig {
+	return func() ConsumerConfig {
+		return ConsumerConfig{Batch: batch, Concurrency: concurrency, Retries: retries}
 	}
 }
 
-func TestStage同会话串行与跨会话并行(t *testing.T) {
+func TestConsumer同会话串行与跨会话并行(t *testing.T) {
 	buf := NewMemoryBuffer(100, 100)
 	var mu sync.Mutex
 	order := map[string][]string{}
 	var active, maxActive atomic.Int32
-	stage := NewStage(StageOptions{
+	consumer := NewConsumer(ConsumerOptions{
 		Name:   "test",
 		Buffer: buf,
-		Config: stageConfig(4, 2, 0),
+		Config: nodeConfig(4, 2, 0),
 		Handler: func(ctx context.Context, key string, items []Item) []FailedItem {
 			now := active.Add(1)
 			for {
@@ -49,7 +49,7 @@ func TestStage同会话串行与跨会话并行(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stage.Run(ctx)
+	consumer.Run(ctx)
 
 	for _, key := range []string{"a", "b"} {
 		for i := 0; i < 4; i++ {
@@ -57,7 +57,7 @@ func TestStage同会话串行与跨会话并行(t *testing.T) {
 			if err := buf.Put(ctx, item); err != nil {
 				t.Fatal(err)
 			}
-			stage.Submit(key)
+			consumer.Submit(key)
 		}
 	}
 
@@ -89,14 +89,14 @@ func TestStage同会话串行与跨会话并行(t *testing.T) {
 	}
 }
 
-func TestStage批量取数与重试死信(t *testing.T) {
+func TestConsumer批量取数与重试死信(t *testing.T) {
 	buf := NewMemoryBuffer(100, 100)
 	var attempts atomic.Int32
 	var dead []string
-	stage := NewStage(StageOptions{
+	consumer := NewConsumer(ConsumerOptions{
 		Name:   "test",
 		Buffer: buf,
-		Config: stageConfig(3, 1, 1),
+		Config: nodeConfig(3, 1, 1),
 		Handler: func(ctx context.Context, key string, items []Item) []FailedItem {
 			var failed []FailedItem
 			for _, item := range items {
@@ -111,7 +111,7 @@ func TestStage批量取数与重试死信(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stage.Run(ctx)
+	consumer.Run(ctx)
 
 	for _, id := range []string{"good1", "good2", "bad"} {
 		item := mustItem(t, NodeSync, "k", id, struct{}{})
@@ -119,7 +119,7 @@ func TestStage批量取数与重试死信(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stage.Submit("k")
+	consumer.Submit("k")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && len(dead) == 0 {
@@ -137,15 +137,15 @@ func TestStage批量取数与重试死信(t *testing.T) {
 	}
 }
 
-// 名额只有 1 个时，已经闲下来的会话不该继续占着名额。
-// 老实现里 worker 会挂着等数据直到 IdleTTL，这里 b、c 要等到超时才被处理。
-func TestStage空闲会话不占名额(t *testing.T) {
+// 名额只有 1 个时，已经闲下来的会话不该继续占着名额：
+// 否则 b、c 要等 a 的数据到了才轮得到。
+func TestConsumer空闲会话不占名额(t *testing.T) {
 	buf := NewMemoryBuffer(10, 100)
 	handled := make(chan string, 10)
-	stage := NewStage(StageOptions{
+	consumer := NewConsumer(ConsumerOptions{
 		Name:   "test",
 		Buffer: buf,
-		Config: stageConfig(1, 1, 0),
+		Config: nodeConfig(1, 1, 0),
 		Handler: func(ctx context.Context, key string, items []Item) []FailedItem {
 			for _, item := range items {
 				handled <- item.ID
@@ -155,14 +155,14 @@ func TestStage空闲会话不占名额(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stage.Run(ctx)
+	consumer.Run(ctx)
 
 	put := func(key, id string) {
 		item := mustItem(t, NodeSync, key, id, struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}
-		stage.Submit(key)
+		consumer.Submit(key)
 	}
 
 	// a 先干完活然后闲着，此时它不该占着唯一的名额。
@@ -193,22 +193,22 @@ func TestStage空闲会话不占名额(t *testing.T) {
 }
 
 // 并发数改了池子跟着变，不用重启进程。
-func TestStage并发数热调整(t *testing.T) {
+func TestConsumer并发数热调整(t *testing.T) {
 	buf := NewMemoryBuffer(10, 100)
 	var limit atomic.Int32
 	limit.Store(1)
-	stage := NewStage(StageOptions{
+	consumer := NewConsumer(ConsumerOptions{
 		Name:   "test",
 		Buffer: buf,
-		Config: func() StageConfig {
-			return StageConfig{Batch: 1, Concurrency: int(limit.Load())}
+		Config: func() ConsumerConfig {
+			return ConsumerConfig{Batch: 1, Concurrency: int(limit.Load())}
 		},
 		Handler: func(context.Context, string, []Item) []FailedItem { return nil },
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stage.Run(ctx)
-	if got := stage.Workers(); got != 1 {
+	consumer.Run(ctx)
+	if got := consumer.Workers(); got != 1 {
 		t.Fatalf("初始协程数 = %d", got)
 	}
 
@@ -216,32 +216,32 @@ func TestStage并发数热调整(t *testing.T) {
 	if err := buf.Put(ctx, mustItem(t, NodeSync, "k", "1", struct{}{})); err != nil {
 		t.Fatal(err)
 	}
-	stage.Submit("k")
-	if got := stage.Workers(); got != 4 {
+	consumer.Submit("k")
+	if got := consumer.Workers(); got != 4 {
 		t.Fatalf("调大后协程数 = %d", got)
 	}
 
 	limit.Store(2)
-	stage.Submit("k")
+	consumer.Submit("k")
 	deadline := time.Now().Add(time.Second)
-	for stage.Workers() != 2 && time.Now().Before(deadline) {
+	for consumer.Workers() != 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := stage.Workers(); got != 2 {
+	if got := consumer.Workers(); got != 2 {
 		t.Fatalf("调小后协程数 = %d", got)
 	}
 }
 
 // 指标要真的跟着状态走：池子大小、排队会话数、正在处理的会话数、耗时直方图。
 // 标签写错不会报错，只会多一条永远为 0 的时间线，所以这里把名字固定死。
-func TestStage指标跟着状态走(t *testing.T) {
-	const stageName = "metricstest"
+func TestConsumer指标跟着状态走(t *testing.T) {
+	const nodeName = "metricstest"
 	buf := NewMemoryBuffer(10, 10)
 	handled := make(chan struct{}, 1)
-	stage := NewStage(StageOptions{
-		Name:   stageName,
+	consumer := NewConsumer(ConsumerOptions{
+		Name:   nodeName,
 		Buffer: buf,
-		Config: stageConfig(1, 2, 0),
+		Config: nodeConfig(1, 2, 0),
 		Handler: func(context.Context, string, []Item) []FailedItem {
 			handled <- struct{}{}
 			return nil
@@ -249,19 +249,19 @@ func TestStage指标跟着状态走(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stage.Run(ctx)
+	consumer.Run(ctx)
 
 	gauge := func(g *prometheus.GaugeVec) float64 {
-		return testutil.ToFloat64(g.WithLabelValues(stageName))
+		return testutil.ToFloat64(g.WithLabelValues(nodeName))
 	}
-	if got := gauge(telemetry.PipelineStageWorkers); got != 2 {
+	if got := gauge(telemetry.PipelineNodeWorkers); got != 2 {
 		t.Fatalf("workers = %v, want 2", got)
 	}
 
 	if err := buf.Put(ctx, mustItem(t, NodeSync, "k", "1", struct{}{})); err != nil {
 		t.Fatal(err)
 	}
-	stage.Submit("k")
+	consumer.Submit("k")
 	select {
 	case <-handled:
 	case <-time.After(time.Second):
@@ -271,35 +271,35 @@ func TestStage指标跟着状态走(t *testing.T) {
 	// 交还之后：正在处理、排队、积压都应该归零。
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if gauge(telemetry.PipelineStageActive) == 0 &&
-			gauge(telemetry.PipelineStageReady) == 0 &&
-			gauge(telemetry.PipelineStageBacklog) == 0 {
+		if gauge(telemetry.PipelineNodeActive) == 0 &&
+			gauge(telemetry.PipelineNodeReady) == 0 &&
+			gauge(telemetry.PipelineNodeBacklog) == 0 {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := gauge(telemetry.PipelineStageActive); got != 0 {
+	if got := gauge(telemetry.PipelineNodeActive); got != 0 {
 		t.Fatalf("active = %v, want 0", got)
 	}
-	if got := gauge(telemetry.PipelineStageReady); got != 0 {
+	if got := gauge(telemetry.PipelineNodeReady); got != 0 {
 		t.Fatalf("ready = %v, want 0", got)
 	}
-	if got := gauge(telemetry.PipelineStageBacklog); got != 0 {
+	if got := gauge(telemetry.PipelineNodeBacklog); got != 0 {
 		t.Fatalf("backlog = %v, want 0", got)
 	}
-	if n := testutil.CollectAndCount(telemetry.PipelineStageBatchDurationSeconds); n == 0 {
+	if n := testutil.CollectAndCount(telemetry.PipelineNodeBatchDurationSeconds); n == 0 {
 		t.Fatal("批次耗时直方图没有记录")
 	}
 }
 
 // 池里有多个协程，但同一个会话同时只能有一个在处理。
-func TestStage同一会话不并发(t *testing.T) {
+func TestConsumer同一会话不并发(t *testing.T) {
 	buf := NewMemoryBuffer(100, 100)
 	var running, overlapped atomic.Int32
-	stage := NewStage(StageOptions{
+	consumer := NewConsumer(ConsumerOptions{
 		Name:   "test",
 		Buffer: buf,
-		Config: stageConfig(1, 3, 0),
+		Config: nodeConfig(1, 3, 0),
 		Handler: func(ctx context.Context, key string, items []Item) []FailedItem {
 			if running.Add(1) > 1 {
 				overlapped.Store(1)
@@ -311,14 +311,14 @@ func TestStage同一会话不并发(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stage.Run(ctx)
+	consumer.Run(ctx)
 
 	for i := 0; i < 20; i++ {
 		item := mustItem(t, NodeSync, "same", string(rune('a'+i)), struct{}{})
 		if err := buf.Put(ctx, item); err != nil {
 			t.Fatal(err)
 		}
-		stage.Submit("same")
+		consumer.Submit("same")
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -342,14 +342,14 @@ func (opaqueBuffer) Ack(context.Context, []Item) error                 { return 
 func (opaqueBuffer) Close() error                                      { return nil }
 func (opaqueBuffer) Total() int                                        { return 0 }
 
-// Test看不见队列的缓冲不能直接套Stage 把“为什么不能套”钉在测试里：
-// Stage 靠 Peeker 发现“处理完还有没有剩下的”，少了它消息会滞留在队列里。
+// Test看不见队列的缓冲不能直接套Consumer 把“为什么不能套”钉在测试里：
+// Consumer 靠 Peeker 发现“处理完还有没有剩下的”，少了它消息会滞留在队列里。
 // 与其静默少处理，不如构造期就报出来。
-func Test看不见队列的缓冲不能直接套Stage(t *testing.T) {
+func Test看不见队列的缓冲不能直接套Consumer(t *testing.T) {
 	defer func() {
 		if recover() == nil {
-			t.Fatal("Buffer 不实现 Peeker 时 NewStage 应当 panic")
+			t.Fatal("Buffer 不实现 Peeker 时 NewConsumer 应当 panic")
 		}
 	}()
-	NewStage(StageOptions{Name: "opaque", Buffer: opaqueBuffer{}})
+	NewConsumer(ConsumerOptions{Name: "opaque", Buffer: opaqueBuffer{}})
 }

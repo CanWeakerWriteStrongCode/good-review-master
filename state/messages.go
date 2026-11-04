@@ -104,7 +104,7 @@ func (s *Scope) SaveMessage(msg conversation.Message) int64 {
 	return id
 }
 
-// UpdateMessageImages 在 Stage 2 把图片内容标识补写到已入库的消息上。
+// UpdateMessageImages 在 assets 把图片内容标识补写到已入库的消息上。
 func (s *Scope) UpdateMessageImages(groupID, messageID string, ids []conversation.ImageID) error {
 	if s == nil || s.store == nil || messageID == "" || s.store.closed.Load() {
 		return nil

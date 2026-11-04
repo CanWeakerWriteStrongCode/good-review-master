@@ -237,44 +237,44 @@ var (
 		Help: "因队列满被拒绝的提交次数",
 	})
 
-	// ---------------- 三段流水线 ----------------
+	// ---------------- 流水线各节点 ----------------
 
-	// PipelineStageBacklog 各阶段缓冲区里还没被取走的消息条数。
-	// 它是"进来的比处理掉的快"的直接证据；持续抬升说明这个阶段跟不上。
-	PipelineStageBacklog = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pipeline_stage_backlog",
-		Help: "各阶段缓冲区里待处理的消息条数，按 stage(sync/assets/agent) 分组",
-	}, []string{"stage"})
+	// PipelineNodeBacklog 各节点缓冲区里还没被取走的消息条数。
+	// 它是"进来的比处理掉的快"的直接证据；持续抬升说明这个节点跟不上。
+	PipelineNodeBacklog = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pipeline_node_backlog",
+		Help: "各节点缓冲区里待处理的消息条数，按 node(sync/assets/agent/command) 分组",
+	}, []string{"node"})
 
-	// PipelineStageReady 等着被派活的会话数。
+	// PipelineNodeReady 等着被派活的会话数。
 	// 它比 backlog 更能说明排队：积压 100 条可能只来自 1 个群，
 	// 而 ready 是 20 意味着 20 个群在等池子里的坑位。
-	PipelineStageReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pipeline_stage_ready",
-		Help: "等待被处理的会话数（就绪队列长度），按 stage 分组",
-	}, []string{"stage"})
+	PipelineNodeReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pipeline_node_ready",
+		Help: "等待被处理的会话数（就绪队列长度），按 node 分组",
+	}, []string{"node"})
 
-	// PipelineStageActive 正在处理批次的会话数，上限就是该阶段的并发配置。
-	PipelineStageActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pipeline_stage_active",
-		Help: "正在处理批次的会话数，按 stage 分组",
-	}, []string{"stage"})
+	// PipelineNodeActive 正在处理批次的会话数，上限就是该节点的并发配置。
+	PipelineNodeActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pipeline_node_active",
+		Help: "正在处理批次的会话数，按 node 分组",
+	}, []string{"node"})
 
-	// PipelineStageWorkers 该阶段池里的协程数。
+	// PipelineNodeWorkers 该节点池里的协程数。
 	// 与 active 的差值就是池子里在睡着的协程数。
-	PipelineStageWorkers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pipeline_stage_workers",
-		Help: "该阶段协程池的协程数，按 stage 分组",
-	}, []string{"stage"})
+	PipelineNodeWorkers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "pipeline_node_workers",
+		Help: "该节点协程池的协程数，按 node 分组",
+	}, []string{"node"})
 
-	// PipelineStageBatchDurationSeconds 处理一批的耗时。
-	// Stage 3 的一批是一条消息的完整生成 + 排版 + 分条发送，几十秒是正常的；
+	// PipelineNodeBatchDurationSeconds 处理一批的耗时。
+	// agent 的一批是一条消息的完整生成 + 排版 + 分条发送，几十秒是正常的；
 	// 分位数突然抬升说明模型变慢或下游限流，而不是消息变多了。
-	PipelineStageBatchDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "pipeline_stage_batch_duration_seconds",
-		Help:    "处理一批的耗时（秒），按 stage 分组",
+	PipelineNodeBatchDurationSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "pipeline_node_batch_duration_seconds",
+		Help:    "处理一批的耗时（秒），按 node 分组",
 		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120},
-	}, []string{"stage"})
+	}, []string{"node"})
 
 	// ---------------- 配置重载 ----------------
 
@@ -335,11 +335,11 @@ func allCollectors() []prometheus.Collector {
 		PoolQueueLen,
 		PoolSubmitRejectedTotal,
 
-		PipelineStageBacklog,
-		PipelineStageReady,
-		PipelineStageActive,
-		PipelineStageWorkers,
-		PipelineStageBatchDurationSeconds,
+		PipelineNodeBacklog,
+		PipelineNodeReady,
+		PipelineNodeActive,
+		PipelineNodeWorkers,
+		PipelineNodeBatchDurationSeconds,
 
 		ConfigReloadTotal,
 		ConfigReloadErrorsTotal,

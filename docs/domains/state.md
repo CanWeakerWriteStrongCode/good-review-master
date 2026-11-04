@@ -17,15 +17,15 @@
 
 | 表 | 存什么 | 主要写入方 |
 | --- | --- | --- |
-| `messages` | 所有入站消息，也是给模型看的行号来源 | Stage 1 |
+| `messages` | 所有入站消息，也是给模型看的行号来源 | 前置 `sync` |
 | `anchors` | 选窗锚点：上次发送的窗口起点 | `speech` 生成之后 |
-| `members` | 成员显示名、群昵称 | Stage 1 补名 |
+| `members` | 成员显示名、群昵称 | 前置 `sync` 补名 |
 | `member_info_history` | 成员资料变更 | 补名时发现不一致 |
 | `groups` | 群档案与预计算统计 | 触发器 |
 | `group_info_history` | 群资料变更 | 同步群信息时 |
 | `workspace_profile` | 每个工作空间的画像（自我 ID、昵称等） | 开通与学身份 |
-| `image_notes` | 图片描述图库，按内容哈希索引 | Stage 2 |
-| `asset_tag_jobs` | 没打完的图片标签欠条 | Stage 2 / 后台补 |
+| `image_notes` | 图片描述图库，按内容哈希索引 | `assets` |
+| `asset_tag_jobs` | 没打完的图片标签欠条 | `assets` / 后台补 |
 | `send_ledger` | 发送台账（动作 ID → 结果） | `deliver` |
 | `alerts` | 异常现场：窗口太小、重试超限等 | `bot` / `speech` |
 | `settings` | 运行时参数覆盖（键为 `pipeline` / `assets`） | 面板改参数 |
@@ -51,9 +51,9 @@
 
 `state/schema.go` 的 `migrate`：
 
-1. 读 `PRAGMA user_version`，等于当前的 `schemaVersion`（18）就直接返回。
+1. 读 `PRAGMA user_version`，等于当前的 `schemaVersion`（19）就直接返回。
 2. 如果版本号大于 0，或者库里已经有 `messages` 表，**报错并要求删文件重来**。
-3. 只有全新空库才往下建：13 条 `CREATE TABLE`（带 `AUTOINCREMENT`）、11 条索引、2 个触发器，最后写 `user_version = 18`。
+3. 只有全新空库才往下建：13 条 `CREATE TABLE`（带 `AUTOINCREMENT`）、11 条索引、2 个触发器，最后写 `user_version = 19`。
 
 第 2 步那个 `tableExists` 判断不是为了好看：`CREATE TABLE IF NOT EXISTS` 遇到"有表但没有版本号"的野生库会一声不响地跳过，结果是一个缺列却自称最新版的库。宁可报错。
 

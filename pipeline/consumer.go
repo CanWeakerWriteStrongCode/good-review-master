@@ -9,9 +9,9 @@ import (
 	"good-review-master/telemetry"
 )
 
-// StageConfig 是某个阶段当前生效的一批参数。取数前现读，
+// ConsumerConfig 是某个节点当前生效的一批参数。取数前现读，
 // 这样 settings 表里改批量/并发/重试后不需要重启。
-type StageConfig struct {
+type ConsumerConfig struct {
 	Batch       int
 	Linger      time.Duration
 	Concurrency int
@@ -38,26 +38,26 @@ type FailedItem struct {
 	Err  error
 }
 
-// StageOptions 构造一个阶段消费者。
-type StageOptions struct {
+// ConsumerOptions 构造一个节点的消费者。
+type ConsumerOptions struct {
 	Name         string
 	Buffer       Buffer
-	Config       func() StageConfig
+	Config       func() ConsumerConfig
 	Handler      BatchHandler
 	OnDeadLetter func(item Item, err error)
 }
 
-// Stage 是“固定协程池 + 每会话串行”的阶段消费者。
+// Consumer 是“固定协程池 + 每会话串行”的节点消费者。
 //
 // 池里的协程不绑定任何会话：它从就绪队列里挑一个 key 处理一批，交还之后再挑下一个。
 // 所以协程数等于 Concurrency，与有多少个账号群无关；空闲的会话只是就绪队列里的一项，
 // 一个协程也不占。
 //
 // 同一个 key 同一时刻只会有一个协程持有（inflight 标记），因此“同一个账号在同一个群里
-// 按到达顺序串行处理”这条不变；不同 key 之间并行。不同阶段各有一个 Stage，
-// 名额互不挤占，但一条消息仍然要依次走完三个阶段。
-type Stage struct {
-	opts   StageOptions
+// 按到达顺序串行处理”这条不变；不同 key 之间并行。每个节点各有一个 Consumer，
+// 名额互不挤占，但一条消息仍然要依次走完它所在工作流的那几个节点。
+type Consumer struct {
+	opts   ConsumerOptions
 	peeker Peeker // 构造期就断言好，取数路径不必每批再断言
 
 	mu       sync.Mutex
@@ -71,9 +71,9 @@ type Stage struct {
 	closed   bool
 }
 
-// NewStage 构造一个阶段消费者。
+// NewConsumer 构造一个节点的消费者。
 //
-// Buffer 必须实现 Peeker：Stage 的调度模型是「拉 + 回头看一眼」——
+// Buffer 必须实现 Peeker：Consumer 的调度模型是「拉 + 回头看一眼」——
 // 派活前要确认这个会话真有积压（next）、处理完要看还有没有剩下的（release）、
 // 取数要先非阻塞探一条再补齐（takeBatch）。少了“看得见队列”这个能力，
 // “处理完还有剩”就无法发现，消息会静静留在队列里没人取。
@@ -81,31 +81,31 @@ type Stage struct {
 // MQ 的推送模型不是做不到，而是它的 Peeker 语义变成“本地预取队列里有多少”，
 // 不是 broker 全量。真要接 MQ，要么给消费端维护本地预取队列并实现 Peeker，
 // 要么按 MQ 自己的消费循环另写一套调度——不要假装它是内存队列。
-func NewStage(opts StageOptions) *Stage {
+func NewConsumer(opts ConsumerOptions) *Consumer {
 	if opts.Buffer == nil {
-		panic("pipeline: Stage 需要一个 Buffer")
+		panic("pipeline: Consumer 需要一个 Buffer")
 	}
 	peeker, ok := opts.Buffer.(Peeker)
 	if !ok {
-		panic("pipeline: Stage 的 Buffer 必须实现 Peeker（要能按分区数积压、非阻塞取数），" +
+		panic("pipeline: Consumer 的 Buffer 必须实现 Peeker（要能按分区数积压、非阻塞取数），" +
 			"否则“处理完还有没有剩下的”发现不了，消息会滞留在队列里")
 	}
-	s := &Stage{
+	w := &Consumer{
 		opts:     opts,
 		peeker:   peeker,
 		ctx:      context.Background(),
 		readySet: make(map[string]bool),
 		inflight: make(map[string]bool),
 	}
-	s.cond = sync.NewCond(&s.mu)
-	return s
+	w.cond = sync.NewCond(&w.mu)
+	return w
 }
 
-func (s *Stage) Config() StageConfig {
-	if s.opts.Config == nil {
-		return StageConfig{Batch: 1, Concurrency: 1}
+func (w *Consumer) Config() ConsumerConfig {
+	if w.opts.Config == nil {
+		return ConsumerConfig{Batch: 1, Concurrency: 1}
 	}
-	cfg := s.opts.Config()
+	cfg := w.opts.Config()
 	if cfg.Batch <= 0 {
 		cfg.Batch = 1
 	}
@@ -119,137 +119,137 @@ func (s *Stage) Config() StageConfig {
 }
 
 // Run 按当时的并发数把池拉起来。之后并发数变化会在 Submit/交还时自动扩缩。
-func (s *Stage) Run(ctx context.Context) {
-	cfg := s.Config()
-	s.mu.Lock()
-	s.ctx = ctx
-	s.resizeLocked(cfg.Concurrency)
-	s.mu.Unlock()
-	s.observe()
+func (w *Consumer) Run(ctx context.Context) {
+	cfg := w.Config()
+	w.mu.Lock()
+	w.ctx = ctx
+	w.resizeLocked(cfg.Concurrency)
+	w.mu.Unlock()
+	w.observe()
 }
 
-// Submit 告诉阶段“这个分区有数据了”。它只登记到就绪队列，不启动任何协程；
+// Submit 告诉消费者“这个分区有数据了”。它只登记到就绪队列，不启动任何协程；
 // 池里哪个协程空出来，谁就去取。Put 之后必须调用，重复调用是幂等的。
-func (s *Stage) Submit(key string) {
+func (w *Consumer) Submit(key string) {
 	if key == "" {
 		return
 	}
-	cfg := s.Config()
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	cfg := w.Config()
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
 		return
 	}
-	s.resizeLocked(cfg.Concurrency)
-	if s.inflight[key] {
+	w.resizeLocked(cfg.Concurrency)
+	if w.inflight[key] {
 		// 这个会话正在被处理。处理完那一批协程会自己回头看积压，
 		// 在途期间到达的消息不会漏。
-		s.mu.Unlock()
-		s.observe()
+		w.mu.Unlock()
+		w.observe()
 		return
 	}
-	s.markReadyLocked(key)
-	s.cond.Signal()
-	s.mu.Unlock()
-	s.observe()
+	w.markReadyLocked(key)
+	w.cond.Signal()
+	w.mu.Unlock()
+	w.observe()
 }
 
-func (s *Stage) markReadyLocked(key string) {
-	if s.readySet[key] {
+func (w *Consumer) markReadyLocked(key string) {
+	if w.readySet[key] {
 		return
 	}
-	s.readySet[key] = true
-	s.ready = append(s.ready, key)
+	w.readySet[key] = true
+	w.ready = append(w.ready, key)
 }
 
 // resizeLocked 把协程数调整到 target。少就补，多就广播一次让超编的协程在 next 里自行退场。
-func (s *Stage) resizeLocked(target int) {
+func (w *Consumer) resizeLocked(target int) {
 	if target < 1 {
 		target = 1
 	}
-	for s.workers < target {
-		s.workers++
-		s.wg.Add(1)
-		go s.worker()
+	for w.workers < target {
+		w.workers++
+		w.wg.Add(1)
+		go w.worker()
 	}
-	if s.workers > target {
-		s.cond.Broadcast()
+	if w.workers > target {
+		w.cond.Broadcast()
 	}
 }
 
 // next 阻塞到拿到一个有数据的分区，返回时该 key 已标记为处理中。
-// 第二个返回值 false 表示这个协程该退场了（阶段关闭或并发被调小）；
+// 第二个返回值 false 表示这个协程该退场了（消费者关闭或并发被调小）；
 // 计数在这里扣，保证判断和减数在同一把锁里，不会几个协程一起退光了。
-func (s *Stage) next() (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (w *Consumer) next() (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	for {
-		if s.closed || s.ctx.Err() != nil {
-			s.workers--
+		if w.closed || w.ctx.Err() != nil {
+			w.workers--
 			return "", false
 		}
-		if s.workers-1 >= s.Config().Concurrency {
-			s.workers--
+		if w.workers-1 >= w.Config().Concurrency {
+			w.workers--
 			return "", false
 		}
-		for len(s.ready) > 0 {
-			key := s.ready[0]
-			s.ready = s.ready[1:]
-			if !s.readySet[key] {
+		for len(w.ready) > 0 {
+			key := w.ready[0]
+			w.ready = w.ready[1:]
+			if !w.readySet[key] {
 				continue
 			}
-			delete(s.readySet, key)
-			if s.inflight[key] {
+			delete(w.readySet, key)
+			if w.inflight[key] {
 				continue
 			}
 			// 队列已经被处理完的分区不必再派活，新数据到达会重新 Submit。
-			if s.peeker.Len(key) == 0 {
+			if w.peeker.Len(key) == 0 {
 				continue
 			}
-			s.inflight[key] = true
+			w.inflight[key] = true
 			return key, true
 		}
-		s.cond.Wait()
+		w.cond.Wait()
 	}
 }
 
-func (s *Stage) worker() {
-	defer s.wg.Done()
+func (w *Consumer) worker() {
+	defer w.wg.Done()
 	for {
-		key, ok := s.next()
+		key, ok := w.next()
 		if !ok {
 			return
 		}
 		// 先刷一次，让 active 在批次开始的瞬间就 +1，
-		// 不然 Stage 3 跑 40 秒的那段时间里指标还停在旧值。
-		s.observe()
-		s.drain(key)
-		s.release(key)
+		// 不然 agent 跑 40 秒的那段时间里指标还停在旧值。
+		w.observe()
+		w.drain(key)
+		w.release(key)
 	}
 }
 
 // drain 连续处理同一个会话的积压，最多 maxBurstPerTurn 批就让位。
 // 让位的目的是公平：活多的会话不会一直在池子里转，别的会话能插进来。
-func (s *Stage) drain(key string) {
-	ctx := s.context()
+func (w *Consumer) drain(key string) {
+	ctx := w.context()
 	for burst := 0; burst < maxBurstPerTurn && ctx.Err() == nil; burst++ {
-		cfg := s.Config()
-		items := s.takeBatch(ctx, key, cfg)
+		cfg := w.Config()
+		items := w.takeBatch(ctx, key, cfg)
 		if len(items) == 0 {
 			return
 		}
 		start := time.Now()
-		s.process(ctx, key, items, cfg.Retries)
-		telemetry.PipelineStageBatchDurationSeconds.WithLabelValues(s.opts.Name).
+		w.process(ctx, key, items, cfg.Retries)
+		telemetry.PipelineNodeBatchDurationSeconds.WithLabelValues(w.opts.Name).
 			Observe(time.Since(start).Seconds())
-		s.observe()
+		w.observe()
 	}
 }
 
 // takeBatch 从分区取一批。有活才会被派过来，所以这里是非阻塞取：
 // 队列空就返回 nil，不去等（等数据是就绪队列的事，不该占着协程）。
-func (s *Stage) takeBatch(ctx context.Context, key string, cfg StageConfig) []Item {
-	items, err := s.peeker.TakeReady(key, 1)
+func (w *Consumer) takeBatch(ctx context.Context, key string, cfg ConsumerConfig) []Item {
+	items, err := w.peeker.TakeReady(key, 1)
 	if err != nil || len(items) == 0 {
 		return nil
 	}
@@ -262,7 +262,7 @@ func (s *Stage) takeBatch(ctx context.Context, key string, cfg StageConfig) []It
 		}
 	}
 	if remaining := cfg.Batch - len(items); remaining > 0 {
-		if more, err := s.peeker.TakeReady(key, remaining); err == nil {
+		if more, err := w.peeker.TakeReady(key, remaining); err == nil {
 			items = append(items, more...)
 		}
 	}
@@ -271,48 +271,48 @@ func (s *Stage) takeBatch(ctx context.Context, key string, cfg StageConfig) []It
 
 // release 交还分区：还有积压就重新挂回就绪队列（排到队尾，让别的会话先来），
 // 然后把协程还给池子。
-func (s *Stage) release(key string) {
-	cfg := s.Config()
-	s.mu.Lock()
-	delete(s.inflight, key)
-	if s.closed {
-		s.mu.Unlock()
+func (w *Consumer) release(key string) {
+	cfg := w.Config()
+	w.mu.Lock()
+	delete(w.inflight, key)
+	if w.closed {
+		w.mu.Unlock()
 		return
 	}
-	if s.peeker.Len(key) > 0 {
-		s.markReadyLocked(key)
-		s.cond.Signal()
+	if w.peeker.Len(key) > 0 {
+		w.markReadyLocked(key)
+		w.cond.Signal()
 	}
-	s.resizeLocked(cfg.Concurrency)
-	s.mu.Unlock()
-	s.observe()
+	w.resizeLocked(cfg.Concurrency)
+	w.mu.Unlock()
+	w.observe()
 }
 
 // observe 把当前状态刷到指标上。必须在锁外调用：Buffer.Total() 要拿缓冲层自己的锁。
 // 频度是“每批一次”，对几毫秒到几十秒的处理耗时可忽略不计。
-func (s *Stage) observe() {
-	stage := s.opts.Name
-	s.mu.Lock()
-	workers, active, ready := s.workers, len(s.inflight), len(s.ready)
-	s.mu.Unlock()
-	telemetry.PipelineStageWorkers.WithLabelValues(stage).Set(float64(workers))
-	telemetry.PipelineStageActive.WithLabelValues(stage).Set(float64(active))
-	telemetry.PipelineStageReady.WithLabelValues(stage).Set(float64(ready))
-	if s.opts.Buffer != nil {
-		telemetry.PipelineStageBacklog.WithLabelValues(stage).Set(float64(s.opts.Buffer.Total()))
+func (w *Consumer) observe() {
+	node := w.opts.Name
+	w.mu.Lock()
+	workers, active, ready := w.workers, len(w.inflight), len(w.ready)
+	w.mu.Unlock()
+	telemetry.PipelineNodeWorkers.WithLabelValues(node).Set(float64(workers))
+	telemetry.PipelineNodeActive.WithLabelValues(node).Set(float64(active))
+	telemetry.PipelineNodeReady.WithLabelValues(node).Set(float64(ready))
+	if w.opts.Buffer != nil {
+		telemetry.PipelineNodeBacklog.WithLabelValues(node).Set(float64(w.opts.Buffer.Total()))
 	}
 }
 
-func (s *Stage) process(ctx context.Context, key string, items []Item, retries int) {
-	retryItems := s.opts.Handler(ctx, key, items)
+func (w *Consumer) process(ctx context.Context, key string, items []Item, retries int) {
+	retryItems := w.opts.Handler(ctx, key, items)
 	for attempt := 1; len(retryItems) > 0; attempt++ {
 		if attempt > retries || ctx.Err() != nil {
 			for _, failed := range retryItems {
-				if s.opts.OnDeadLetter != nil {
-					s.opts.OnDeadLetter(failed.Item, failed.Err)
+				if w.opts.OnDeadLetter != nil {
+					w.opts.OnDeadLetter(failed.Item, failed.Err)
 				} else {
-					logutil.Error("阶段处理失败，超过重试上限",
-						"stage", s.opts.Name, "item", failed.Item.ID, "err", failed.Err)
+					logutil.Error("节点处理失败，超过重试上限",
+						"node", w.opts.Name, "item", failed.Item.ID, "err", failed.Err)
 				}
 			}
 			return
@@ -320,42 +320,42 @@ func (s *Stage) process(ctx context.Context, key string, items []Item, retries i
 		next := make([]FailedItem, 0, len(retryItems))
 		for _, failed := range retryItems {
 			failed.Item.Attempts++
-			next = append(next, s.opts.Handler(ctx, key, []Item{failed.Item})...)
+			next = append(next, w.opts.Handler(ctx, key, []Item{failed.Item})...)
 		}
 		retryItems = next
 	}
 }
 
-func (s *Stage) context() context.Context {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.ctx
+func (w *Consumer) context() context.Context {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.ctx
 }
 
 // Active 返回当前正在处理批次的会话数（指标与测试用）。
 // 空闲会话不计入，池里睡着的协程也不计入。
-func (s *Stage) Active() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.inflight)
+func (w *Consumer) Active() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.inflight)
 }
 
 // Workers 返回当前池里的协程数（指标与测试用）。
-func (s *Stage) Workers() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.workers
+func (w *Consumer) Workers() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.workers
 }
 
 // Wait 等待池里所有协程退出。调用前应先关闭上游缓冲并调用 Close。
-func (s *Stage) Wait() {
-	s.wg.Wait()
+func (w *Consumer) Wait() {
+	w.wg.Wait()
 }
 
-// Close 标记阶段关闭并唤醒池里所有等活的协程。正在处理的那一批会跑完。
-func (s *Stage) Close() {
-	s.mu.Lock()
-	s.closed = true
-	s.cond.Broadcast()
-	s.mu.Unlock()
+// Close 标记消费者关闭并唤醒池里所有等活的协程。正在处理的那一批会跑完。
+func (w *Consumer) Close() {
+	w.mu.Lock()
+	w.closed = true
+	w.cond.Broadcast()
+	w.mu.Unlock()
 }

@@ -100,7 +100,7 @@ build_exe.bat      # Windows，等价于 ./build_linux.sh
 
 | 现象 | 先看 |
 | --- | --- |
-| 群里 @ 了没反应 | `pipeline_stage_backlog` 有没有涨；`im_events_total{result=...}` 是 accepted 还是 ignored |
+| 群里 @ 了没反应 | `pipeline_node_backlog` 有没有涨；`im_events_total{result=...}` 是 accepted 还是 ignored |
 | 面板打不开 | 日志有没有"Web 管理面板已启动"；`web_port` 是不是 0 |
 | 面板能开但接口 401 | 登录用的是 `web_username` + secret 里的 `web_password`；JWT 过期就重新登录 |
 | 指标抓不到 | 9100 是不是被占（启动日志会写"指标端点异常退出"）；`metrics_addr` 是不是 off |

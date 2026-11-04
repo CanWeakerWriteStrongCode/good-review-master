@@ -27,7 +27,7 @@ import (
 // 接 MQ 时：**工作流名就是消息的 tag，域的名字就是 topic**。消息带着 tag 在域之间
 // 走，每个域只订阅自己的 topic，所以加一条工作流不建 topic、不复制消费组配置。
 //
-// 每个节点都是一个固定大小的协程池（pipeline.Stage）：同一个会话在节点内串行，
+// 每个节点都是一个固定大小的协程池（pipeline.Consumer）：同一个会话在节点内串行，
 // 不同会话并行；会话闲着不占协程。
 type Bot struct {
 	cfg        config.Snapshot
@@ -119,37 +119,37 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 
 	// 工作流一：聊天。前置路由到这里，之后打标签 → 生成。
 	b.orch.workflow(WorkflowChat, pipeline.NodeAssets)
-	b.orch.connect(WorkflowChat, TopicTagged, pipeline.NodeAgent)
-	b.orch.exit(WorkflowChat, TopicReplied)
+	b.orch.connect(WorkflowChat, EventTagged, pipeline.NodeAgent)
+	b.orch.exit(WorkflowChat, EventReplied)
 
 	// 工作流二：管理指令。只走控制平面，执行完就结束。
 	//
 	// 终点写在这里而不是让域“沉默”——域只汇报发生过什么，链决定还要不要往下走。
 	// 将来要让指令执行完接下一个域，把这里换成 connect 即可，域一行代码都不用改。
 	b.orch.workflow(WorkflowCommand, pipeline.NodeCommand)
-	b.orch.exit(WorkflowCommand, TopicCommandDone)
+	b.orch.exit(WorkflowCommand, EventCommandDone)
 	return b
 }
 
-func (b *Bot) syncConfig() pipeline.StageConfig {
+func (b *Bot) syncConfig() pipeline.ConsumerConfig {
 	p := b.cfg().Pipeline
-	return pipeline.StageConfig{
+	return pipeline.ConsumerConfig{
 		Batch: p.SyncBatch, Linger: p.SyncLinger,
 		Concurrency: p.SyncConcurrency, Retries: p.SyncRetries,
 	}
 }
 
-func (b *Bot) assetConfig() pipeline.StageConfig {
+func (b *Bot) assetConfig() pipeline.ConsumerConfig {
 	p := b.cfg().Pipeline
-	return pipeline.StageConfig{
+	return pipeline.ConsumerConfig{
 		Batch: p.AssetBatch, Linger: p.AssetLinger,
 		Concurrency: p.AssetConcurrency, Retries: p.AssetRetries,
 	}
 }
 
-func (b *Bot) agentConfig() pipeline.StageConfig {
+func (b *Bot) agentConfig() pipeline.ConsumerConfig {
 	p := b.cfg().Pipeline
-	return pipeline.StageConfig{
+	return pipeline.ConsumerConfig{
 		Batch: p.AgentBatch, Linger: p.AgentLinger,
 		Concurrency: p.AgentConcurrency, Retries: p.AgentRetries,
 	}
@@ -157,9 +157,9 @@ func (b *Bot) agentConfig() pipeline.StageConfig {
 
 // commandConfig 管理指令域。Retries 固定 0：指令副作用不幂等，
 // 重试一次就等于执行两次（#添加人格 会生成两个人格），所以不开放配置。
-func (b *Bot) commandConfig() pipeline.StageConfig {
+func (b *Bot) commandConfig() pipeline.ConsumerConfig {
 	p := b.cfg().Pipeline
-	return pipeline.StageConfig{
+	return pipeline.ConsumerConfig{
 		Batch: p.CommandBatch, Linger: p.CommandLinger,
 		Concurrency: p.CommandConcurrency, Retries: 0,
 	}

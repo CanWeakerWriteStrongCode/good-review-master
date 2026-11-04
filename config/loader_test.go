@@ -382,7 +382,7 @@ func TestValidate缺少config文件(t *testing.T) {
 	}
 }
 
-// TestLoad幂等 是阶段 3 的前置条件：informer 会反复调 Load，
+// TestLoad幂等 是热重载的前置条件：informer 会反复调 Load，
 // 两次加载必须得到完全相同的配置，否则每次重载都会漂移一点。
 func TestLoad幂等(t *testing.T) {
 	path := writeFile(t, "config.yaml", baseConfig)
