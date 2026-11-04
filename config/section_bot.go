@@ -85,6 +85,7 @@ func (l *workspaceIDList) UnmarshalYAML(node *yaml.Node) error {
 //	    - "openid-1"
 //	    - "openid-2"
 //	  "群ID-B": "openid-1,openid-2"   # 逗号分隔写法
+//	  "群ID-C": "*"                   # 该群所有人都能执行管理指令
 //
 // 两种写法归一成同一个切片。不配就是空映射：所有群都没有管理员，
 // 也就没人能执行管理指令（#帮助 与私聊例外）。
@@ -151,6 +152,7 @@ type botSection struct {
 	// CommandAdmins 各群的管理员 user_id：只有名单里的人能执行 # 开头的管理指令。
 	//
 	// 不配 = 所有群都没有管理员 = 没人能执行管理指令（#帮助 与私聊例外）。
+	// 单个群的管理员列表里写 "*" = 该群所有人都能用；群 ID 本身仍要逐个列出。
 	// 群 ID 与 user_id 都是日志里的原始值：QQ 官方账号下两者都是 openid，
 	// 填 QQ 号永远匹配不上。写法见 commandAdmins。
 	CommandAdmins commandAdmins `yaml:"command_admins"`

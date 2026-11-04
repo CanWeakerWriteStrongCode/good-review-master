@@ -115,6 +115,24 @@ func TestCanUseCommand(t *testing.T) {
 		t.Fatal("群名单不支持通配符：别的群不能借用")
 	}
 
+	// 群内管理员列表里写 "*" = 该群所有人都能用（只放开成员这一层）。
+	openGroup := &config.Config{CommandAdmins: map[string][]string{
+		"group-a": {"*"},
+		"group-b": {"openid-admin"},
+	}}
+	if !CanUseCommand(openGroup, "group-a", "openid-anyone") {
+		t.Fatal("列表里有 \"*\" 时该群任意成员都应放行")
+	}
+	if !CanUseCommand(openGroup, "group-a", "openid-admin") {
+		t.Fatal("\"*\" 包含管理员本人")
+	}
+	if CanUseCommand(openGroup, "group-b", "openid-anyone") {
+		t.Fatal("\"*\" 只作用于写了它的那个群，不跨群扩散")
+	}
+	if CanUseCommand(openGroup, "group-c", "openid-anyone") {
+		t.Fatal("没配置的群照旧拒绝：fail-closed 不变")
+	}
+
 	// 私聊直接放行：对话人只有账号主人自己。
 	if !CanUseCommand(&config.Config{}, "private:openid-user", "openid-user") {
 		t.Fatal("私聊应放行，且不依赖配置")

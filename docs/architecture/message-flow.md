@@ -177,7 +177,7 @@ return WorkflowChat   // 现在只有一条工作流
 | `routeTable` / `trieNode` | `speech/command.go` | 前缀树快照，`atomic.Pointer` 整体替换；`trieMatch` 是最长前缀匹配 |
 | `Command.ContinueAfterRun` | `speech/command.go` | 执行完停不停。零值 false = 到此为止，只有 `#启动` 置 true |
 | `commandText` | `speech/command_run.go` | 按**文本段**取正文（不用渲染后的正文），尾部 `@机器人` 不会污染参数 |
-| `policy.CanUseCommand` | `policy/policy.go` | 权限唯一实现：私聊放行、群内按 `bot.command_admins` 精确匹配、`#帮助` 例外 |
+| `policy.CanUseCommand` | `policy/policy.go` | 权限唯一实现：私聊放行、群内按 `bot.command_admins` 精确匹配（列表里写 `*` = 该群所有人）、`#帮助` 例外 |
 | `internal_cmd.go` / `agent_gate.go` 各 handler | `speech/` | 真正干活：切人格写 `groupPersona` + `personaStore`；`#启动` / `#关闭` 写会话开关 |
 | `state.Scope.SaveGroupGate` / `LoadGroupGates` | `state/gate.go` | 会话开关落在 `settings` 表（前缀 `group_gate:`，后接工作空间 ID 与群号），三态靠「键在不在」表达 |
 

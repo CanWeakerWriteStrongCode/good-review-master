@@ -67,6 +67,8 @@ const privateChatPrefix = "private:"
 // CanUseCommand 判断某个会话成员能否执行管理指令（Category == "internal"）。
 //
 // 只认精确的群 ID：没配这个群、或这个群里没有这个人 → 拒绝（fail-closed）。
+// 群内的管理员列表里可以写 "*"，表示该群所有人都能执行——通配只开放到“成员”这一层：
+// 群 ID 仍要逐个列出，一个“全体群”开关等于把所有群的管理权一起交出去，不该顺手提供。
 // 私聊直接放行：对话人只有账号主人自己，没有越权面。
 func CanUseCommand(cfg *config.Config, chatID, userID string) bool {
 	if cfg == nil {
@@ -79,7 +81,7 @@ func CanUseCommand(cfg *config.Config, chatID, userID string) bool {
 	if !ok {
 		return false
 	}
-	return contains(admins, userID)
+	return contains(admins, wildcard) || contains(admins, userID)
 }
 
 // contains 是这几个名单唯一的匹配方式：逐项相等比较，不做前缀或正则匹配。
