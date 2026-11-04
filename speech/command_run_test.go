@@ -2,7 +2,6 @@ package speech
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"good-review-master/config"
@@ -59,11 +58,18 @@ func TestMatchInternalCommand只认管理指令(t *testing.T) {
 		}
 	}
 
+	// #切换人格 切成功后要往下走：这句话本身要用刚换来的人格回。
+	// 没切成的三种分支由 ContinueWhen 拦住，见 Test切换失败不往下走。
 	cmd := group("@bot(u1) #切换人格 锐评下")
-	// 普通指令执行完就终止：continues 必须为 false，否则会白跑后半条链。
 	if keyword, continues, ok := e.router.MatchInternalCommand(cmd, cmd.PlainText(), true); !ok ||
-		keyword != "#切换人格" || continues {
-		t.Fatalf("应命中 #切换人格 且终止，got %q continues=%v ok=%v", keyword, continues, ok)
+		keyword != "#切换人格" || !continues {
+		t.Fatalf("应命中 #切换人格 且继续，got %q continues=%v ok=%v", keyword, continues, ok)
+	}
+	// 不需要后续动作的指令仍然到此为止，不能多跑一跳。
+	help := group("@bot(u1) #帮助")
+	if keyword, continues, ok := e.router.MatchInternalCommand(help, help.PlainText(), true); !ok ||
+		keyword != internalKeywordHelp || continues {
+		t.Fatalf("#帮助 应命中且终止，got %q continues=%v ok=%v", keyword, continues, ok)
 	}
 	feature := group("@bot(u1) 锐评下 这台机器")
 	if _, _, ok := e.router.MatchInternalCommand(feature, feature.PlainText(), true); ok {
@@ -91,12 +97,44 @@ func Test指令参数不受尾部at污染(t *testing.T) {
 		},
 	}
 
-	route, text, ok := e.router.matchInternal(event, "#切换人格@bot(bot)", true)
+	route, extra, ok := e.router.matchInternal(event, "#切换人格@bot(bot)", true)
 	if !ok || route.Keyword != "#切换人格" {
 		t.Fatalf("应命中 #切换人格，ok=%v route=%+v", ok, route)
 	}
-	if extra := strings.TrimSpace(text[len(route.Keyword):]); extra != "" {
+	if extra != "" {
 		t.Fatalf("尾部 @ 不应进入参数，实际参数 %q", extra)
+	}
+}
+
+// Test切换人格失败不往下走 三种没切成的分支（只列可选人格/名字不存在/关键字没人格）
+// 必须到此为止：否则群里先看到报错，再收到一句莫名其妙的应答。
+func Test切换人格失败不往下走(t *testing.T) {
+	e := newSwitchTestEnv(t)
+
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"只列可选人格", "@bot(u1) #切换人格"},
+		{"名字不存在", "@bot(u1) #切换人格 不存在的角色"},
+		{"关键字没人格", "@bot(u1) #切换人格 闲聊"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			event := onebot.Event{
+				Type:       "message",
+				DetailType: "group",
+				GroupID:    e.groupID,
+				UserID:     "1",
+				Self:       onebot.Self{Platform: "qq", UserID: "bot"},
+				Message:    []onebot.Segment{onebot.TextSegment(tc.text)},
+			}
+			keyword, continues, ok := e.router.MatchInternalCommand(event, event.PlainText(), true)
+			if !ok || keyword != "#切换人格" || continues {
+				t.Fatalf("MatchInternalCommand = (%q, %v, %v)，want (#切换人格, false, true)",
+					keyword, continues, ok)
+			}
+		})
 	}
 }
 

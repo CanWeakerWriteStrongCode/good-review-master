@@ -33,6 +33,9 @@ const switchTestYAML = `cmd:
         system_prompt: |
           守住底线
         emotion: '{"情绪反应性":"高"}'
+        art: |-
+          (｡•̀ᴗ-)✧
+          ── 毒舌 ──
     - keyword: "温柔"
       prompt: |
         温和地回应群友。
@@ -44,6 +47,9 @@ const switchTestYAML = `cmd:
         system_prompt: |
           语气轻柔
         emotion: '{"情绪反应性":"低"}'
+    - keyword: "闲聊"
+      prompt: |
+        随便接两句。
 rules:
   chat_review: |
     规则：禁止人身攻击

@@ -136,8 +136,8 @@ func (r *RawJSON) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Persona 人格配置（5 个 essence 字段，全必填，无特例）。有子字段的字段用 JSON（RawJSON）保存，
-// LLM 自拟结构；纯叙述字段（Identity/SystemPrompt）保持 YAML 文本。
+// Persona 人格配置（5 个 essence 字段全必填，无特例；另有 1 个可选的展示字段 Art）。
+// 有子字段的字段用 JSON（RawJSON）保存，LLM 自拟结构；纯叙述字段（Identity/SystemPrompt/Art）保持 YAML 文本。
 // 曾设 8 字段（含 greeting/speech_style/examples），因"表演脚本"式的预设（固定开场白、口癖词表、
 // few-shot 示例）导致回答过于固定、内容易流于刻板，已砍掉——说话方式完全交给 LLM 依据性格+情绪自然生成。
 type Persona struct {
@@ -146,6 +146,13 @@ type Persona struct {
 	Relationship RawJSON `yaml:"relationship" json:"relationship"`   // 与群友的关系（必填，JSON 对象：角色/对待）
 	SystemPrompt string  `yaml:"system_prompt" json:"system_prompt"` // 人格级系统指令（必填，YAML 文本）
 	Emotion      RawJSON `yaml:"emotion" json:"emotion"`             // 情绪维度（必填，JSON 对象：维度→取值，核心）
+
+	// Art 人格上线时的字符画（可选）：#启动 / #切换人格 成功后先发它，再补一行「<人格名>正在启动中...」。
+	// 建议 1~3 行、每行不超过 12 字符：QQ 消息不是等宽字体，多行大图在手机上会歪。
+	// 必须左对齐：QQ 会把行首空格吃掉，靠缩进摆位的图在群里会散架（发送前也会再抹一次）。
+	// emoji 只能放行尾、只放一个（宽度不一致，夹在中间会把轮廓推歪；🫧 这类新符号老客户端会显示成方块）。
+	// 留空只发那一行启动语。
+	Art string `yaml:"art" json:"art"`
 }
 
 // PromptData 提示词可变部分的一份**完整快照**（发布后不可变）。

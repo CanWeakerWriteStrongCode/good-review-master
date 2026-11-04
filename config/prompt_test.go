@@ -295,6 +295,29 @@ func TestPromptSystem示例含内置提示词(t *testing.T) {
 	}
 }
 
+// TestPromptSystem示例的字符画能解析 鲸鱼娘的 art 不是空串、三行内容也都对。
+// 盯它的原因：默认配置里的 art 会随内嵌模板一起发给所有人，缩进写坏了只会以
+// “格式错误，以空指令集启动”的形式在首次启动时静默出现，没人会发现图没了。
+// 同时要求每行都行首无空格：QQ 会把行首空白吃掉，靠缩进摆位的图在群里必定散架。
+func TestPromptSystem示例的字符画能解析(t *testing.T) {
+	var cfg promptFile
+	if err := yaml.Unmarshal(promptSystemExampleTemplate, &cfg); err != nil {
+		t.Fatalf("内嵌模板解析失败：%v", err)
+	}
+	var art string
+	for _, c := range cfg.Cmd["chat_review"] {
+		if c.Keyword == "鲸鱼娘" && c.Persona != nil {
+			art = c.Persona.Art
+		}
+	}
+	if art == "" {
+		t.Fatal("鲸鱼娘的 persona.art 没解析出来（块标量缩进写坏了？）")
+	}
+	if got, want := art, "⌇ ⌇\n( ˶•ᴗ•˶ )>~ 💙\n╰─────╯"; got != want {
+		t.Fatalf("字符画 = %q，want %q", got, want)
+	}
+}
+
 // TestPromptConfig缺自定义文件也能用 保证首次运行（prompt_custom.yaml 尚未创建）正常。
 func TestPromptConfig缺自定义文件也能用(t *testing.T) {
 	dir := t.TempDir()

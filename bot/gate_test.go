@@ -16,7 +16,7 @@ import (
 )
 
 // gateTestYAML 一条带人格的关键字：#启动！ 锐评下 要能把「毒舌点评人」绑到这个群上，
-// 断言的方式就是看模型收到的 systemPrompt 里有没有它。
+// 断言的方式就是看模型收到的 systemPrompt 里有没有它。art 是启动时发的那张脸。
 const gateTestYAML = `cmd:
   chat_review:
     - keyword: "锐评下"
@@ -30,6 +30,9 @@ const gateTestYAML = `cmd:
         system_prompt: |
           守住底线
         emotion: '{"情绪反应性":"高"}'
+        art: |-
+          (｡•̀ᴗ-)✧
+          ── 毒舌 ──
 rules:
   chat_review: |
     规则：禁止人身攻击
@@ -154,6 +157,22 @@ func (e *gateTestEnv) waitCached(t *testing.T, msgID string) []conversation.Mess
 	return nil
 }
 
+// cachedWith 在群聊缓存里找一条含 needle 的消息：机器人自己的发言也进缓存，
+// 所以“群里看到的那段文字”可以直接这么验。
+func (e *gateTestEnv) cachedWith(t *testing.T, needle string) bool {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, m := range e.workspace(t).Cache.GetGroupCache(e.group, 100).GetAll() {
+			if strings.Contains(m.Content, needle) {
+				return true
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
 // Test启动指令开闸门之后这句话仍被回复 整个改造的核心验收：
 // 一条 @机器人 #启动！<人格名> 既要打开开关，又要紧接着用刚绑好的那个人格回一句。
 //
@@ -185,6 +204,72 @@ func Test启动指令开闸门之后这句话仍被回复(t *testing.T) {
 	}
 	// 它同时又是一条普通消息：进缓存，模型才看得到"刚刚有人让我启动"。
 	e.waitCached(t, "m1")
+	// 启动回执是人格的字符画 + 一行启动语，不是那句生硬的系统话术。
+	if !e.cachedWith(t, "锐评下正在启动中...") {
+		t.Fatal("启动回执应当带人格名并进缓存")
+	}
+}
+
+// Test人格名写在前面也能启动 群里更自然的说法：#锐评下，启动！
+// 它走的是前缀树之前那条专用规则，回复同样由 agent 用刚绑好的人格出。
+func Test人格名写在前面也能启动(t *testing.T) {
+	e := newGateTestEnv(t, nil)
+
+	e.send(t, "m1", "#锐评下，启动！")
+
+	calls := e.waitCalls(t, 1)
+	if len(calls) != 1 {
+		t.Fatalf("只该生成一次回复，实际 %d 次", len(calls))
+	}
+	if !strings.Contains(calls[0].SystemPrompt, "毒舌点评人") {
+		t.Fatalf("#锐评下，启动！ 之后应当用这个人格回复：\n%s", calls[0].SystemPrompt)
+	}
+	if !e.workspace(t).Router.AgentEnabled(e.group) {
+		t.Fatal("开关应当是开着的")
+	}
+}
+
+// Test切换人格之后这句话也由新人格回 #切换人格 从终止型改成继续型：
+// 指令先发字符画，紧接着 agent 用刚换上的人格回这句话。
+func Test切换人格之后这句话也由新人格回(t *testing.T) {
+	e := newGateTestEnv(t, func(cfg *config.Config) { cfg.AgentDefaultEnabled = true })
+
+	e.send(t, "m1", "#切换人格 锐评下")
+
+	calls := e.waitCalls(t, 1)
+	if len(calls) != 1 {
+		t.Fatalf("切人格之后这句话应当只被回一次，实际 %d 次", len(calls))
+	}
+	if !strings.Contains(calls[0].SystemPrompt, "毒舌点评人") {
+		t.Fatalf("应当用刚换上的人格回：\n%s", calls[0].SystemPrompt)
+	}
+	if !e.cachedWith(t, "锐评下正在启动中...") {
+		t.Fatal("切人格的回执应当带人格名并进缓存")
+	}
+}
+
+// Test关着的群里切人格不回应但会说明 关着的群换人格：人格真的换上了，
+// 回执写明“关闭中、暂时不会回应”，而这条指令不会把模型叫起来。
+func Test关着的群里切人格不回应但会说明(t *testing.T) {
+	e := newGateTestEnv(t, nil) // 直接构造的配置默认关
+
+	e.send(t, "m1", "#切换人格 锐评下")
+
+	if !e.cachedWith(t, "关闭中") {
+		t.Fatal("关着时换人格的回执应当说明关闭状态并进缓存")
+	}
+	ws := e.workspace(t)
+	personas, err := ws.State.LoadGroupPersonas()
+	if err != nil {
+		t.Fatalf("LoadGroupPersonas: %v", err)
+	}
+	if personas[e.group] != "锐评下" {
+		t.Fatalf("关着只是不回应，人格照旧要换上，实际 %+v", personas)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if calls := e.fake.Calls(); len(calls) != 0 {
+		t.Fatalf("关着的群不应因为切人格而调模型，实际 %d 次", len(calls))
+	}
 }
 
 // Test关闭指令只回执不往下走 #关闭 是终止型指令：

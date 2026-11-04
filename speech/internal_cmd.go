@@ -50,7 +50,17 @@ func (r *Router) registerInternalCommands() {
 	r.register(Command{Keyword: "#删除人格", Help: helpDelCmd, Category: "internal", Handler: r.handleDeleteCommand})
 	r.register(Command{Keyword: "#添加指令规则", Help: helpAddRule, Category: "internal", Handler: r.handleAddRule})
 	r.register(Command{Keyword: "#删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
-	r.register(Command{Keyword: "#切换人格", Help: helpSwitchPersona, Category: "internal", Handler: r.handleSwitchPersona})
+	r.register(Command{Keyword: "#切换人格", Help: helpSwitchPersona, Category: "internal",
+		Handler: r.handleSwitchPersona,
+		// 切成功才让这条消息继续去 agent——它要用刚换来的人格回这句话。
+		// 没切成的三种分支（只列可选人格 / 名字不存在 / 关键字没人格）到此为止，
+		// 否则群里会先看到报错、再收到一句莫名其妙的应答。
+		ContinueAfterRun: true,
+		ContinueWhen: func(extra string) bool {
+			name := strings.TrimSpace(extra)
+			return name != "" && r.personaBinding(name) != nil
+		},
+	})
 	r.register(Command{Keyword: "#取消人格", Help: helpCancelPersona, Category: "internal", Handler: r.handleCancelPersona})
 	// 门控指令：唯一两条执行完还要让消息继续往下走的指令。
 	// #启动 必须继续——它打开的就是下游那两个域，本条 @ 要由它们答。
@@ -232,6 +242,7 @@ func (r *Router) availableCategories() string {
 // 找到就把该人格值拷贝记为本群当前人格。
 // 内存里存的是自包含的值拷贝，state.db 里只存源关键字（启动时经 RestorePersonas 重绑）。
 // 仅对未命中关键字的纯 @ 聊天生效，命中关键字的指令仍用自带人格。
+// 切换成功后这条消息继续往下走（ContinueAfterRun），由 agent 用新人格回它。
 func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	name := strings.TrimSpace(extra)
 
@@ -264,7 +275,7 @@ func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, grou
 			persona:     *route.Persona,
 			sharedRules: route.SharedRules,
 		})
-		r.reply(event, groupID, "✅ 已切换人格："+name+"\n仅对普通@聊天生效，功能指令不受影响。")
+		r.personaBanner(event, groupID, name, route.Persona.Art)
 		return
 	}
 

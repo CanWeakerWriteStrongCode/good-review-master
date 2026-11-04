@@ -113,7 +113,7 @@ func (r *Router) MatchInternalCommand(event onebot.Event, content string, allowN
 | `#切换人格` / `#取消人格` | 管理 | ✂ 终止 | 只改人格，不回复这句话（不变） |
 | `#添加人格` / `#删除人格` | 管理 | ✂ 终止 | 会调模型生成提示词，副作用不幂等（不变） |
 | `#添加指令规则` / `#删除指令规则` | 管理 | ✂ 终止 | 同上（不变） |
-| `#启动` | 门控·开 | → 继续 | 打开会话开关；带参数时同时加载人格 |
+| `#启动` | 门控·开 | → 继续 | 打开会话开关；带参数时同时加载人格。也认人格名在前的 `#人格名，启动！` |
 | `#关闭` | 门控·关 | ✂ 终止 | 关掉开关，由 handler 自己回一句回执 |
 
 `#关闭` 声明为终止，理由是它的语义就是「到此为止，别再往后跑」：继续走的话 assets 与 agent 都会因为开关已关而什么都不做，白走两跳。`ContinueAfterRun` 让这个判断落在指令自己身上，拓扑只照抄。
@@ -187,8 +187,8 @@ agent  域：synced.CommandRan != "" → ReplyAddressedNow(...) → continue
 ```go
 // speech/agent_gate.go（新文件）
 const (
-    keywordStart = "#启动"
-    keywordStop  = "#关闭"
+    keywordAgentStart = "#启动"
+    keywordAgentStop  = "#关闭"
 )
 ```
 
@@ -201,13 +201,63 @@ const (
 - **权限**：`policy.CanUseCommand`，与其它 `#` 指令一致（`command_admins` 名单；私聊放行）。
 - **record-only 账号**：账号级策略盖过会话级，`command` 域直接跳过所有指令（现状语义），消息继续走 record-only 分支回固定话术。
 
-回执文案（`r.reply`）：
+回执（`personaBanner` → `r.reply`）：
 
 ```
-✅ 已启动：打标签与自动回复已开启（人格：鲸鱼娘）
-✅ 已启动：打标签与自动回复已开启（未找到人格「鲸鱼娘」，沿用当前人格）
+﹏﹏﹏﹏﹏﹏﹏﹏
+⌇ ⌇
+( ˶•ᴗ•˶ )>~ 💙
+╰─────╯
+鲸鱼娘正在启动中...
+
+﹏﹏﹏﹏﹏﹏﹏﹏            （一个人格都没设过：主角就是机器人自己）
+薛定谔的价值正在启动中...
+
+❌ 未找到人格「鲸鱼娘」，仍由「鲸鱼娘」回应。
+❌ 未找到人格「鲸鱼娘」，本群还没设定人格。
 ✅ 已关闭：本群暂停打标签与自动回复，发 #启动 可重新开启
 ```
+
+**为什么要先垫一行引线**：回执是「引用 + @ + 正文」（`SendGroupReplyE` 里 `at` 段和正文之间只隔一个空格），客户端把 @ 和正文首行拼成「@某人 <首行>」。不垫这一行，@ 就挤进字符画的首行，整张图当场散架（群里实测：`@薛定谔的价值 ⌇ ⌇`）。引线顺带当名字牌的上沿，比三行散字整齐。
+
+**为什么字符画必须左对齐**：QQ 会把消息里每行开头的空白吃掉（群里实测「    ⌇ ⌇」渲染成「⌇ ⌇」），靠缩进摆位的图到了群里必定散架。所以 `personaBanner` 发之前先调 `trimArtIndent` 抹平每行行首的空格/制表符——配置里怎么写、群里就怎么显示；`add_persona` 的提示词也明确要求“每行从第一个字符开始，不许用行首空格摆位”。
+
+**为什么不发「已启动：打标签与自动回复已开启（人格：鲸鱼娘）」**：那是一句系统话术，人格的辨识度应该体现在“它长什么样”，而不是一句括号里的说明。于是给 `config.Persona` 加一个可选的 `Art`（YAML 里 `art: |-` 手写，不靠模型生成——对齐、宽高、风格都不可控）：
+
+- `#启动` 带人名、不带名但已有群人格、`#切换人格` 成功，三个入口都走同一个 `personaBanner`：先发字符画，再补一行「<人格名>正在启动中...」。
+- 字符串可选：没配 `Art` 的人格只发那一行；一个人格都没设过时主角就是机器人自己，报它的昵称（`<机器人昵称>正在启动中...`），**不再退回任何系统话术**。
+- **名字写错只说没找到**：`❌ 未找到人格「X」，仍由「<当前人格>」回应。`（无人格时 `本群还没设定人格`）。开关照开——用户的意思是「让这个群恢复运行」，人格只是顺带的修饰；这里也不发字符画，否则群里会以为真换上了。
+- **会话关着时第二行改成说明**：`<名>已切换（本群关闭中，暂时不会回应，发 #启动 可开启）`。关着的话 agent 那一跳是静默丢弃，若还写“正在启动中”，群里只看到一张脸、没正文，会以为切失败了。`#启动` 进来时开关已先打开，所以它永远拿不到这个分支。
+- 字符画只在展示层用，`RenderPersona` 不读 `Art`——它不进提示词、不占 token。
+- 建议 1~3 行、每行不超 12 字符、行首不留空格：QQ 不是等宽字体，`█` `/` `\` 在比例字体里对不齐，二十行的鲸鱼在手机上必定歪；颜文字/单行符号才稳。emoji 只在行尾放一个（`💙 🐳 🎀 🌊 ✨` 这类老符号；`🫧` 等新 emoji 老客户端是豆腐块）——它的宽度是 1.5~2 个汉字，夹在图形中间会把轮廓推歪，还会把行高撑开。
+
+```
+⌇ ⌇
+( ˶•ᴗ•˶ )>~ 💙
+╰─────╯
+```
+
+**`#切换人格` 从终止型改成继续型**：它切完也要让这句话被刚换上的人格回一句（以前是切完一句“✅ 已切换人格”就结束）。因为不能用 `#启动` 那一份 `ContinueAfterRun` 的判断（它有四种去向），新增 `Command.ContinueWhen(extra)`：`ContinueAfterRun` 之后再判一次“这一次是否真的该继续”，把三种没切成的分支（只列可选人格 / 名字不存在 / 关键字没人格）挡在外面。没有它的话，那些分支后面还会白叫一次大模型，群里的表现是「报错 + 一句莫名其妙的应答」。
+
+**第二种写法：人格名在前**（`#鲸鱼娘，启动！` / `#HRBP,启动!`）。
+
+它进不了前缀树——`#` 后面是任意人格名，trie 只能存固定串。所以它是一条**跑在 trie 之前**的专用规则：
+
+```go
+// speech/agent_gate.go
+var personaStartRe = regexp.MustCompile(`^#([^，,\s\x{3000}]+)[，,]启动[！!]`)
+
+func (r *Router) matchPersonaStart(text string) (*Command, string, bool) // 复用已注册的 #启动 路由
+```
+
+- **为什么要抢在 trie 前面**：前缀匹配不看尾巴，`#帮助，启动！` 会被当成 `#帮助` 执行——人格名恰好叫「帮助」时就悄悄失败。
+- **复用同一条路由**（`trieMatch(trie, "#启动")`）：`ContinueAfterRun`、权限、handler 都跟那一份走，不多存第二份。
+- **形状是硬的**：`#` 紧接名字、名字紧接逗号、逗号紧接「启动」、启动紧接感叹号；名字里不能有空白与逗号。曾考虑四处都容错（每处一个 `[\s\x{3000}]*`），否决了：那等于四条隐式规则，解释成本比功能还高，而漏打一个空格的表现是「没反应」，比直接不命中更难查。
+- **仍然认的例外**：逗号 `，,` 与感叹号 `！!` 的四种组合；触发词后面跟别的内容（`#鲸鱼娘，启动！ 今天怎么样` 命中，后面的字不参与解析）。
+- **名字不能为空**：`#，启动！` 不是指令——只开开关就用 `#启动`。
+- **感叹号不能省**：`#鲸鱼娘，启动` 不是指令——群里正常聊天不该被它打开开关。
+- **`#鲸鱼娘，关闭！` 不支持**：关闭不绑人格，`#关闭` 一个词就够。
+- 两种写法的参数形态不一样（前者 extra 是名字，后者是未洗的尾巴），所以 `matchInternal` 直接交回**已切好的 extra**，不再让调用方按关键字长度二次切。
 
 ## 逐文件改动
 
@@ -218,10 +268,12 @@ const (
 | `bot/domains.go` | `handleCommand` 改成闸门（见下）；`handleAssets` 加开关判断；`handleAgent` 加「静默」与「CommandRan 直答」两个分支 |
 | `bot/router.go` | 文件保留；只删 `isInternalCommand`，`route` / `workflowOf` 改成单分支（参数形状留着，见「多工作流机制原样保留」） |
 | `bot/orchestrator_test.go`、`bot/pipeline_test.go` | 测试里拿 `WorkflowCommand` 当示例工作流名的地方，换成测试自造的工作流名（实现时用的是 `testWorkflowAlt = "alt"`）——那几则测的是多工作流机制，不能跟着删 |
-| `speech/command.go` | `Command` 加 `ContinueAfterRun` |
-| `speech/command_run.go` | `MatchInternalCommand` 多回一个 `continues` |
-| `speech/internal_cmd.go` | 注册 `#启动` / `#关闭`，加 `helpStart` / `helpStop`（`#帮助` 自动带出） |
-| `speech/agent_gate.go` | 新增：两个 handler、参数清洗、开关读写 |
+| `speech/command.go` | `Command` 加 `ContinueAfterRun`，再加 `ContinueWhen func(extra string) bool`（切人格成功才继续） |
+| `speech/command_run.go` | `MatchInternalCommand` 多回一个 `continues`；`matchInternal` 改成交回已切好的 `extra`，并把人格名前置的规则抢在 trie 之前 |
+| `speech/internal_cmd.go` | 注册 `#启动` / `#关闭`，加 `helpStart` / `helpStop`（`#帮助` 自动带出）；`#切换人格` 改成 `ContinueAfterRun` + `ContinueWhen` 并改发 `personaBanner` |
+| `speech/agent_gate.go` | 新增：两个 handler、参数清洗、开关读写、`personaBanner`（字符画 + 「<人格名>正在启动中...」） |
+| `config/prompt.go` | `Persona` 加可选的 `Art`（人格上线时的字符画，YAML 文本，不校验、不进提示词） |
+| `prompt_system.yaml` + `config/prompt_system_example.yaml` | `add_persona` 的提示词里要求顺带给 `art`；鲸鱼娘补一张示例字符画 |
 | `speech/dispatch.go` | 新增 `ReplyAddressedNow`（包内就是 `replyDefaultNow`） |
 | `speech/router.go` | `agentGate` 状态 + `SetAgentGateStore` + `RestoreAgentGates` + `AgentEnabled` 默认值回落 |
 | `conversation/types.go` | `Synced.CommandRan` |
@@ -249,7 +301,7 @@ for _, item := range items {
         out.Signals = append(out.Signals, pass(synced))
         continue
     }
-    if !continues {                              // 终止型：#帮助 / #切换人格 / #关闭 …
+    if !continues {                              // 终止型：#帮助 / #关闭 / 没切成的 #切换人格 …
         out.Signals = append(out.Signals, done(synced))
         continue
     }
@@ -300,9 +352,14 @@ if b.addressed(...) { ws.Router.RouteMessageNow(...) ; continue }
 | `state` | 三态存取：未设置 / 显式 true / 显式 false，重启后一致 |
 | `bot` | 改写 `Test管理指令走独立工作流` → `Test指令在聊天工作流入口终止`（`#帮助` 不进缓存、不触发模型） |
 | `bot` | `#启动！<人格名>` → 模型被调、人格块出现、开关落库、本条进缓存 |
+| `bot` | `#人格名，启动！`（人格名在前）→ 与上一条完全一样（专用规则复用了 `#启动` 那条路由） |
 | `bot` | `#关闭！` → 不调模型、开关落库为关、本条不进缓存（回执本身会进） |
 | `bot` | 未启动会话静默：`agent_default_enabled=false` 且没 `#启动` → 入库、进缓存、不调模型 |
 | `bot` | 非管理员的 `#启动` 不生效：开关不动、不调模型 |
+| `speech` | `#启动` / 沿用当前人格的 `#启动` / `#切换人格` 三个入口都发「字符画 + <人格名>正在启动中...」；没配 `Art` 的人格只发那一行 |
+| `speech` | 切人格的三种失败分支（只列可选人格 / 名字不存在 / 关键字没人格）`continues == false` |
+| `bot` | `#切换人格 <人格名>` 指令发完回执后，这句话仍由新人格回（恰好一次模型调用） |
+| `bot` | 关着的群里 `#切换人格`：人格照旧切上（落库）、回执带「关闭中，暂时不会回应」、不调模型 |
 
 ### 实施记录（2026-11-05）
 
@@ -310,6 +367,9 @@ if b.addressed(...) { ws.Router.RouteMessageNow(...) ; continue }
 - “模型调用恰好一次”寓在 `#启动` 那条端到端用例里：`len(calls) != 1` 就红；它同时证明指令没有被吞、也没有被二次执行（少了要数回执的假包装）。
 - `#启动` 的收尾与计划一致：关键字只注册到 `#启动`，`！` / `!` / 空格与人格名都落进 extra，由 `personaNameFromExtra` 洗掉。
 - `go test ./...` 全绿；`go vet ./...` 无输出。
+- 追加：「人格名在前」的写法（`#鲸鱼娘，启动！`）已补上，实现为 trie 之前的 `personaStartRe` + `matchPersonaStart`；`matchInternal` 的返回值从「原文」改成「已切好的 extra」，因为两种写法的参数位置不一样。
+- 追加：启动回执改成人格上线话术（`personaBanner`）：先发 `Persona.Art` 字符画，再补一行「<人格名>正在启动中...」。`#切换人格` 同时从「切完就结束」改成「切完继续」，用新增的 `ContinueWhen` 排除三种没切成的分支；两边共用同一个回执出口，不再各写一套文案。
+- 追加：`Art` 只落在展示层——`RenderPersona` 不读它，所以人格块与 token 占用一字未变；老配置不写 `art` 就是空串，行为与改动前一致。
 - 遗留：ADR-0007 未写。它与 [ADR-0005](../adr/0005-orchestration-layer.md) 第 5 条（数据平面/控制平面分开）和第 11 条（工作流 = tag）的关系需要单独记一页：本次是「指令仍占自己的节点与并发槽，但不再独占一条工作流」。
 
 ## 明确不做
@@ -324,10 +384,11 @@ if b.addressed(...) { ws.Router.RouteMessageNow(...) ; continue }
 
 ## 验收
 
-1. 群里 `@机器人 #启动！ 鲸鱼娘` → 一句回执之后，紧接着一条用「鲸鱼娘」人格生成的回复。
-2. `@机器人 #启动！ 不存在的人格` → 开关打开、回执说明跳过人格、本条照样被回复（当前人格）。
-3. `@机器人 #关闭！` → 一句回执；本条与之后的消息都不再调模型，但聊天记录里还在。
-4. `@机器人 #帮助` → 与现在完全一致，且**不**进群聊缓存。
-5. 重启进程后，关掉的群仍是关的，开着的群仍是开的。
-6. `grep -r "WorkflowCommand" .` 只剩注释与测试里自造的示例名；`orchestrator` 那套多工作流能力未动：`bot/orchestrator.go` 的 `workflows` / `connect` / `exit` 与 `bot/router.go` 的 `route` / `workflowOf` 都还在。
-7. `go test ./...` 全绿。
+1. `@机器人 #启动！ 鲸鱼娘` / `#鲸鱼娘，启动！` / `#HRBP,启动!` → 一条「<人格字符画> + <人格名>正在启动中...」之后，紧接着一条用该人格生成的回复；`#鲸鱼娘，启动！ 今天怎么样` 也命中，后面的字不参与解析。
+2. `@机器人 #切换人格 鲸鱼娘` → 同一套上场话术；紧接着这句话也由刚换上的人格回；`#切换人格 不存在的人格` 只报错、不再多一句应答。若本群处于 `#关闭` 状态，回执第二行变成「已切换（本群关闭中，暂时不会回应，发 #启动 可开启）」。
+3. `@机器人 #启动！ 不存在的人格` → 开关打开、回执说明跳过人格、本条照样被回复（当前人格）。
+4. `@机器人 #关闭！` → 一句回执；本条与之后的消息都不再调模型，但聊天记录里还在。
+5. `@机器人 #帮助` → 与现在完全一致，且**不**进群聊缓存。
+6. 重启进程后，关掉的群仍是关的，开着的群仍是开的。
+7. `grep -r "WorkflowCommand" .` 只剩注释与测试里自造的示例名；`orchestrator` 那套多工作流能力未动：`bot/orchestrator.go` 的 `workflows` / `connect` / `exit` 与 `bot/router.go` 的 `route` / `workflowOf` 都还在。
+8. `go test ./...` 全绿。
