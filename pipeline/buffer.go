@@ -21,18 +21,36 @@ type Item struct {
 
 // Buffer 是阶段之间的传送带。Put 放、Take 批量取、Ack 确认、Close 关闭。
 //
+// 这五个是所有传输都做得到的：内存队列能做，MQ 也能做。
+// “看一眼队列有多长”“不阻塞地取”是调度需要的能力，在 Peeker 里——
+// Stage 要求两者都有，拆成两个接口只是把“传输”和“怎么派活”分开说清楚。
+//
 // 内存实现的 Ack 是空操作（Take 即出队）；接 MQ 后 Ack 对应提交位点。
 type Buffer interface {
 	Put(ctx context.Context, item Item) error
+	// Take 阻塞取一批：没有数据时等到有数据、ctx 取消或关闭（关闭时返回 ErrClosed）。
 	Take(ctx context.Context, key string, max int) ([]Item, error)
-	// TakeReady 非阻塞取数：没有数据时返回空切片，用于凑批。
-	TakeReady(key string, max int) ([]Item, error)
 	Ack(ctx context.Context, items []Item) error
 	Close() error
-	// Len 返回某个分区当前积压条数（worker 退出与重启判断用）。
-	Len(key string) int
-	// Total 返回所有分区积压总数（关停排空用）。
+	// Total 返回本地可见的积压条数（关停排空与指标用）。
+	// 它不保证等于传输侧的全局积压：MQ 只数得到自己手上还没确认的那部分。
 	Total() int
+}
+
+// Peeker 是调度需要的能力：按分区数积压、非阻塞取数。
+//
+// Stage 的取数模型是“拉 + 回头看一眼”：派活前确认这个会话真有积压（next）、
+// 处理完看还有没有剩下的（release）、取数先探一条再等 linger 补齐（takeBatch）。
+// 三处都要看得见队列；少一样，“处理完还有剩”就发现不了，消息会滞留在队列里。
+//
+// 换 MQ 时这不是做不到，而是语义变了：Peeker 回答的是“本地预取队列里有多少”，
+// 不是 broker 全量。适配层要么维护本地预取队列并实现它，要么按 MQ 自己的
+// 消费循环另写一套调度（见 NewStage 的注释）。
+type Peeker interface {
+	// TakeReady 非阻塞取数：没有数据时返回空切片。
+	TakeReady(key string, max int) ([]Item, error)
+	// Len 返回某个分区当前积压条数。
+	Len(key string) int
 }
 
 // MemoryBuffer 进程内 FIFO：每个 Key 一条队列，另有一道全局限量。

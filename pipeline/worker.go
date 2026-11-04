@@ -23,6 +23,13 @@ type StageConfig struct {
 const maxBurstPerTurn = 3
 
 // BatchHandler 处理一批 Item，返回需要重试的条目。已经处理成功的条目不要放回来。
+//
+// 一批长什么样由传输层负责保证，域可以依赖三条：
+//  1. items 非空；
+//  2. 一批内所有 Item 的 Key 相同——跨 key 的批要先分组再调；
+//  3. 顺序即到达顺序，同一个 key 不会有两个协程并发处理。
+//
+// 换流式传输（MQ）时，这三条由适配层补齐：先攒批、再按 Key 分组，然后照这个契约调进来。
 type BatchHandler func(ctx context.Context, key string, items []Item) []FailedItem
 
 // FailedItem 一条处理失败的 Item 及原因。
@@ -50,7 +57,8 @@ type StageOptions struct {
 // 按到达顺序串行处理”这条不变；不同 key 之间并行。不同阶段各有一个 Stage，
 // 名额互不挤占，但一条消息仍然要依次走完三个阶段。
 type Stage struct {
-	opts StageOptions
+	opts   StageOptions
+	peeker Peeker // 构造期就断言好，取数路径不必每批再断言
 
 	mu       sync.Mutex
 	cond     *sync.Cond
@@ -63,9 +71,28 @@ type Stage struct {
 	closed   bool
 }
 
+// NewStage 构造一个阶段消费者。
+//
+// Buffer 必须实现 Peeker：Stage 的调度模型是「拉 + 回头看一眼」——
+// 派活前要确认这个会话真有积压（next）、处理完要看还有没有剩下的（release）、
+// 取数要先非阻塞探一条再补齐（takeBatch）。少了“看得见队列”这个能力，
+// “处理完还有剩”就无法发现，消息会静静留在队列里没人取。
+//
+// MQ 的推送模型不是做不到，而是它的 Peeker 语义变成“本地预取队列里有多少”，
+// 不是 broker 全量。真要接 MQ，要么给消费端维护本地预取队列并实现 Peeker，
+// 要么按 MQ 自己的消费循环另写一套调度——不要假装它是内存队列。
 func NewStage(opts StageOptions) *Stage {
+	if opts.Buffer == nil {
+		panic("pipeline: Stage 需要一个 Buffer")
+	}
+	peeker, ok := opts.Buffer.(Peeker)
+	if !ok {
+		panic("pipeline: Stage 的 Buffer 必须实现 Peeker（要能按分区数积压、非阻塞取数），" +
+			"否则“处理完还有没有剩下的”发现不了，消息会滞留在队列里")
+	}
 	s := &Stage{
 		opts:     opts,
+		peeker:   peeker,
 		ctx:      context.Background(),
 		readySet: make(map[string]bool),
 		inflight: make(map[string]bool),
@@ -176,7 +203,7 @@ func (s *Stage) next() (string, bool) {
 				continue
 			}
 			// 队列已经被处理完的分区不必再派活，新数据到达会重新 Submit。
-			if s.opts.Buffer != nil && s.opts.Buffer.Len(key) == 0 {
+			if s.peeker.Len(key) == 0 {
 				continue
 			}
 			s.inflight[key] = true
@@ -222,7 +249,7 @@ func (s *Stage) drain(key string) {
 // takeBatch 从分区取一批。有活才会被派过来，所以这里是非阻塞取：
 // 队列空就返回 nil，不去等（等数据是就绪队列的事，不该占着协程）。
 func (s *Stage) takeBatch(ctx context.Context, key string, cfg StageConfig) []Item {
-	items, err := s.opts.Buffer.TakeReady(key, 1)
+	items, err := s.peeker.TakeReady(key, 1)
 	if err != nil || len(items) == 0 {
 		return nil
 	}
@@ -235,7 +262,7 @@ func (s *Stage) takeBatch(ctx context.Context, key string, cfg StageConfig) []It
 		}
 	}
 	if remaining := cfg.Batch - len(items); remaining > 0 {
-		if more, err := s.opts.Buffer.TakeReady(key, remaining); err == nil {
+		if more, err := s.peeker.TakeReady(key, remaining); err == nil {
 			items = append(items, more...)
 		}
 	}
@@ -252,7 +279,7 @@ func (s *Stage) release(key string) {
 		s.mu.Unlock()
 		return
 	}
-	if s.opts.Buffer != nil && s.opts.Buffer.Len(key) > 0 {
+	if s.peeker.Len(key) > 0 {
 		s.markReadyLocked(key)
 		s.cond.Signal()
 	}

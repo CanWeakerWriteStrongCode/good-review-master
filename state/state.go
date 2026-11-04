@@ -17,6 +17,7 @@
 //	persona.go    workspace_profile（群人格在 groups.persona_keyword 列上）
 //	jobs.go       asset_tag_jobs（Stage 2 的补标签欠条）
 //	ops.go        send_ledger / alerts / settings / 工作空间列表
+//	processed.go  processed_items（消息处理台账，把重投变幂等）
 //
 // 所有方法都挂在 Store（共享连接）或 Scope（带 workspace_id 的视图）上，
 // 没有额外的 Repo 接口：调用方拿到的仍然是 *state.Scope。

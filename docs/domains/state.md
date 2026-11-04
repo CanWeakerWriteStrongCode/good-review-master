@@ -13,7 +13,7 @@
 
 ## 库的形状
 
-12 张表、10 条索引、2 个群统计触发器。
+13 张表、11 条索引、2 个群统计触发器。
 
 | 表 | 存什么 | 主要写入方 |
 | --- | --- | --- |
@@ -29,6 +29,7 @@
 | `send_ledger` | 发送台账（动作 ID → 结果） | `deliver` |
 | `alerts` | 异常现场：窗口太小、重试超限等 | `bot` / `speech` |
 | `settings` | 运行时参数覆盖（键为 `pipeline` / `assets`） | 面板改参数 |
+| `processed_items` | 消息处理台账（`Item.ID` → 何时处理完）；把重投变幂等。接口已就位，还没有域调用 | 暂无（为接 MQ 预留） |
 
 ## 两条写入规则
 
@@ -44,13 +45,15 @@
 
 群统计的两个触发器同样按这个思路写：先 `UPDATE`，`WHERE NOT EXISTS` 才 `INSERT`，避免给 `groups` 白烧自增号。
 
+`processed_items` 是个例外：它只有“在不在”这一个状态，没有要更新的列，所以用 `ON CONFLICT DO NOTHING`。冲突时直接放弃插入、不消耗自增号，和 `DO UPDATE` 不是一回事。
+
 ## 建库
 
 `state/schema.go` 的 `migrate`：
 
-1. 读 `PRAGMA user_version`，等于当前的 `schemaVersion`（17）就直接返回。
+1. 读 `PRAGMA user_version`，等于当前的 `schemaVersion`（18）就直接返回。
 2. 如果版本号大于 0，或者库里已经有 `messages` 表，**报错并要求删文件重来**。
-3. 只有全新空库才往下建：12 条 `CREATE TABLE`（带 `AUTOINCREMENT`）、10 条索引、2 个触发器，最后写 `user_version = 17`。
+3. 只有全新空库才往下建：13 条 `CREATE TABLE`（带 `AUTOINCREMENT`）、11 条索引、2 个触发器，最后写 `user_version = 18`。
 
 第 2 步那个 `tableExists` 判断不是为了好看：`CREATE TABLE IF NOT EXISTS` 遇到"有表但没有版本号"的野生库会一声不响地跳过，结果是一个缺列却自称最新版的库。宁可报错。
 
@@ -100,8 +103,9 @@ sequenceDiagram
 
 | 文件 | 看什么 |
 | --- | --- |
-| `state/schema.go` | 建库门槛、12 张表的 DDL、索引、群统计触发器 |
+| `state/schema.go` | 建库门槛、13 张表的 DDL、索引、群统计触发器 |
 | `state/state.go` | `Open`、`Store`、`Scope`、`Close`、`Report` |
+| `state/processed.go` | 处理台账：`Processed` / `MarkProcessed` / `PurgeProcessed` |
 | `state/messages.go` | `SaveMessage` 的"先 UPDATE 后 INSERT"、`LoadRecent`、`Messages` |
 | `state/directory.go` | 成员名、自我 ID、资料历史 |
 | `state/persona.go` | 画像与群人格 |

@@ -67,6 +67,7 @@ sequenceDiagram
   participant IM as im.Server
   participant B as bot.Bot
   participant S1 as Stage1 补名入库
+  participant SC as StageCommand 管理指令
   participant S2 as Stage2 图片标签
   participant S3 as Stage3 生成回复
   participant SP as speech
@@ -78,18 +79,25 @@ sequenceDiagram
   IM->>B: 放入入站队列（满了回 503）
   B->>S1: b1.Put(Inbound)
   S1->>DB: 成员名补全、写 messages
-  S1->>S2: b2.Put(Synced)
-  S2->>L: 只对没见过的图调一次描述
-  S2->>DB: 写 image_notes / asset_tag_jobs
-  S2->>S3: b3.Put(Synced)
-  S3->>SP: 组上下文、判断该不该回
-  SP->>L: chat/completions（需要时插 MCP 工具轮）
-  L-->>SP: 文本
-  SP->>A: send_message（分句时最多 5 条）
-  SP->>DB: 记回复、更新缓存锚点
+  alt 命中管理指令
+    S1->>SC: bCmd.Put(Synced)
+    SC->>SP: RunInternalCommand：判权限 → 执行 handler
+    SP->>A: send_message（不调大模型、不进缓存）
+  else 普通聊天
+    S1->>S2: b2.Put(Synced)
+    S2->>L: 只对没见过的图调一次描述
+    S2->>DB: 写 image_notes / asset_tag_jobs
+    S2->>S3: b3.Put(Synced)
+    S3->>SP: 组上下文、判断该不该回
+    SP->>L: chat/completions（需要时插 MCP 工具轮）
+    L-->>SP: 文本
+    SP->>A: send_message（分句时最多 5 条）
+    SP->>DB: 记回复、更新缓存锚点
+  end
 ```
 
-三个阶段各自的批量、并发、重试在 `config.yaml` 的 `pipeline` 段；每个阶段干什么见 [domains/pipeline.md](../domains/pipeline.md)。
+这是鸟瞰图。想跟着代码走一遍（每段进哪个类型、那个类型靠什么结构干活），看
+[message-flow.md](message-flow.md)；每个阶段的具体行为见 [domains/pipeline.md](../domains/pipeline.md)。
 
 ## 端口
 

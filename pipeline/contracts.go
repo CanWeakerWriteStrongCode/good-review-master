@@ -1,4 +1,8 @@
-// Package pipeline 定义三段式消息流水线的阶段契约与缓冲层。
+// Package pipeline 定义各域之间交接的契约与缓冲层：编排层把消息编码成 Item
+// 放进 Buffer，下一个域取一批处理。
+//
+// 本包不知道这个项目有几个域、它们之间怎么接——那是编排层的事（`bot` 的
+// `nodes` / `edges`）。这里只认“节点名”这个字符串。
 //
 // 阶段之间的数据只允许放可序列化的 ID 与值，不放 *Workspace 之类运行时指针：
 // 这样现在用进程内实现，以后可以直接换成消息队列，业务代码不用改。
@@ -10,12 +14,16 @@ import (
 	"sync/atomic"
 )
 
-// 缓冲层分区键。M0 先用单一分区保持现有的全局 FIFO 行为；
+// SerialKey 是 M0 的单一分区键：所有消息共用一条全局 FIFO。
 // 每会话一个分区在 M4 打开，Key 改成 workspaceID + "|" + chatID。
-const (
-	SerialKey = "serial"
+const SerialKey = "serial"
 
-	StageIngest  = "ingest"
+// 节点名。Item.Stage 记的永远是消息将要去的那个节点，而不是造出它的那个节点——
+// 幂等键与告警分类都按它算。
+//
+// 本包不知道有几个节点、它们怎么接：那是编排层的事（`bot` 的 workflows / edges / exits）。
+// StageSync 现在指前置（入口 + 补名），沿用旧名是为了面板指标和 dead_letter_sync 不用改。
+const (
 	StageSync    = "sync"
 	StageAssets  = "assets"
 	StageAgent   = "agent"

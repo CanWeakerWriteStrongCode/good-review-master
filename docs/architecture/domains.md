@@ -55,6 +55,19 @@ flowchart TB
   POL --> CFG
 ```
 
+## 域之间怎么串起来
+
+域与域之间互不调用。域执行完把结果交回编排层（`bot.Bot` 的 `orchestrator`），编排层按工作流表（`workflows`）、连线表（`edges`）和终点表（`exits`）把消息编码成 `pipeline.Item` 投进下一个节点的 `pipeline.Buffer`，或者就地结束。
+
+- **一次交接 = 一个 `Item`**，`Body` 是 JSON 载荷（`conversation.Inbound` / `Synced`）。域手里没有 `Buffer`，也不知道下游是谁——它只说「这一步发生了什么」（`Outcome.Routes` 里的 `Topic`），不评价这件事够不够格当最后一站。
+- **一个节点一段消费 = 一个 `pipeline.Stage`**。节点数不是架构约束：加一个域就是 `orch.mount` 一次 + `connect` 一条。
+- **一个前置 + 多条工作流**。前置（`mountRouter`）是入口 + 补名，所有消息共用、不属于任何一条工作流；工作流用 `orch.workflow(名字, 入口域)` 声明，之间互不相连。今天是两条：聊天（补名→打标签→生成）、管理指令（补名→执行）。
+- **顺序由编排层统一提供**。`Item.Key` 是分区键（`workspaceID|chatID`），同 key 串行、不同 key 并行，域自己不用加锁保序。
+- **到哪结束也由编排层定**。终点写在工作流上（`orch.exit`），不写在域里：同一个域挂在两条工作流上，可以一条继续、一条到此为止，域一行不改。
+- **投递失败不重试本批**。域交回回执时副作用已经发生了（入库、打标签、发出回复），重跑一遍等于重复执行；所以记一条死信让这条消息停在这一跳。
+
+所以这个项目的骨架不是“四阶段”，而是**一个前置 + 消息驱动的域 + 一个编排层**。今天是两条工作流，明天加第三条（别的入口、别的域组合）不需要新实例，也不需要动前置。见 [ADR-0005](../adr/0005-orchestration-layer.md)、[message-flow.md](message-flow.md)。
+
 ## 每个包一句话
 
 | 包 | 职责 | 从这进 | 详情 |
@@ -64,7 +77,7 @@ flowchart TB
 | `web/server` | Gin 路由、JWT 登录、面板 API、静态资源 | `server.go` 的 `newRouter` | [domains/panel](../domains/panel.md) |
 | `web/frontend` | UniApp H5，构建产物嵌进二进制 | `package.json` | [domains/panel](../domains/panel.md) |
 | `im` | 入站 HTTP：收 AstrBot 推来的事件，立刻应答 | `server.go` 的 `Start` | [domains/ingest](../domains/ingest.md) |
-| `bot` | 消费循环与三个阶段的具体实现 | `ingest.go` 的 `Run`、`stages.go` | [domains/pipeline](../domains/pipeline.md) |
+| `bot` | 编排层（`orchestrator`）+ 前置与三个域的具体实现 | `orchestrator.go`、`handler.go` 的 `NewBot`、`stages.go` | [message-flow](message-flow.md) |
 | `speech` | 指令路由、生成、主动插话裁决、排版、发送 | `router.go`、`generate.go`、`dispatch.go` | [domains/speech](../domains/speech.md) |
 | `workspace` | 工作空间（= 一个机器人账号）的内存态与共享库读写 | `workspace.go`、`sync.go` | [domains/workspace](../domains/workspace.md) |
 | `pipeline` | 阶段契约与缓冲：`Item`、`Buffer`、`Worker` | `contracts.go`、`buffer.go`、`worker.go` | [domains/pipeline](../domains/pipeline.md) |

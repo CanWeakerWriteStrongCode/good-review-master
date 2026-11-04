@@ -222,7 +222,8 @@ func (r *Router) availableCategories() string {
 }
 
 // handleSwitchPersona #切换人格 <人格名>：在路由表里找"自带人格"的关键字，
-// 找到就把该人格值拷贝记为本群当前人格（#取消人格 清除，重启清空）。
+// 找到就把该人格值拷贝记为本群当前人格。
+// 内存里存的是自包含的值拷贝，state.db 里只存源关键字（启动时经 RestorePersonas 重绑）。
 // 仅对未命中关键字的纯 @ 聊天生效，命中关键字的指令仍用自带人格。
 func (r *Router) handleSwitchPersona(_ context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {
 	name := strings.TrimSpace(extra)

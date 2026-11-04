@@ -363,4 +363,22 @@ func Test管理指令走独立阶段(t *testing.T) {
 	if calls := fake.Calls(); len(calls) != 0 {
 		t.Fatalf("管理指令不应调用大模型，实际 %d 次", len(calls))
 	}
+
+	// 拓扑要覆盖全部回执：前置回的是工作流名（chat / command），
+	// 域回的是去向（tagged / command_done / replied）。后两个没有下一站，
+	// 必须是显式终点——不能靠"没连线"推断，那样漏一条线就会变成静默少走一步。
+	assertTopicsCovered(t, b.orch,
+		WorkflowChat, WorkflowCommand, TopicTagged, TopicCommandDone, TopicReplied)
+	if b.orch.router == nil {
+		t.Fatal("应当挂了一个前置")
+	}
+	if len(b.orch.workflows) != 2 {
+		t.Fatalf("应当有两条工作流，实际 %d 条：%v", len(b.orch.workflows), b.orch.workflows)
+	}
+	if !b.orch.exits[TopicCommandDone] {
+		t.Fatal("command_done 应当被声明为终点")
+	}
+	if !b.orch.exits[TopicReplied] {
+		t.Fatal("replied 应当被声明为终点")
+	}
 }

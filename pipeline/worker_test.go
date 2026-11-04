@@ -332,3 +332,24 @@ func TestStage同一会话不并发(t *testing.T) {
 		t.Fatal("同一个会话被两个协程同时处理")
 	}
 }
+
+// opaqueBuffer 只实现 Buffer、不实现 Peeker：模拟“看不见队列”的传输（MQ 的推送模型）。
+type opaqueBuffer struct{}
+
+func (opaqueBuffer) Put(context.Context, Item) error                   { return nil }
+func (opaqueBuffer) Take(context.Context, string, int) ([]Item, error) { return nil, nil }
+func (opaqueBuffer) Ack(context.Context, []Item) error                 { return nil }
+func (opaqueBuffer) Close() error                                      { return nil }
+func (opaqueBuffer) Total() int                                        { return 0 }
+
+// Test看不见队列的缓冲不能直接套Stage 把“为什么不能套”钉在测试里：
+// Stage 靠 Peeker 发现“处理完还有没有剩下的”，少了它消息会滞留在队列里。
+// 与其静默少处理，不如构造期就报出来。
+func Test看不见队列的缓冲不能直接套Stage(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Buffer 不实现 Peeker 时 NewStage 应当 panic")
+		}
+	}()
+	NewStage(StageOptions{Name: "opaque", Buffer: opaqueBuffer{}})
+}

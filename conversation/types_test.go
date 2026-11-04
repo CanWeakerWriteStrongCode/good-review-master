@@ -22,7 +22,7 @@ func TestInbound可序列化(t *testing.T) {
 			QQAtMe:      true,
 		},
 	}
-	item, err := pipeline.NewItem(pipeline.StageIngest, pipeline.SerialKey, "m1", in)
+	item, err := pipeline.NewItem(pipeline.StageSync, pipeline.SerialKey, "m1", in)
 	if err != nil {
 		t.Fatalf("NewItem: %v", err)
 	}

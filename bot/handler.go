@@ -10,26 +10,28 @@ import (
 	"good-review-master/workspace"
 )
 
-// Bot 机器人运行时：IM 事件 → B1 → Stage 1 → B2 → Stage 2 → B3 → Stage 3。
+// Bot 机器人运行时，同时是这条流水线的**编排层**。
 //
-// 管理指令在 Stage 1 被分流到独立的 Stage Command：控制平面不占打标签与
-// Agent 的并发槽，也不进群聊缓存。
+// 一条 IM 事件的走法：入口把消息放进前置 → 前置补名后决定进哪条工作流 →
+// 工作流里的域依次处理，每一步都把结果交回编排层，由编排层按连线投给下一个域。
+// 域与域之间没有引用关系，顺序写在 NewBot 的连线上。
 //
-// 每个阶段都是一个固定大小的协程池（pipeline.Stage）：同一个会话在阶段内串行，
+// 现在是**一个前置 + 两条工作流**：
+//
+//	聊天   前置补名 → 打标签（assets）→ 生成（agent）
+//	指令   前置补名 → 管理指令（command）
+//
+// 两条工作流在补名之后分开：控制平面不占打标签与生成的并发槽，也不进群聊缓存。
+// 加一条工作流 = 一行 workflow + 几次 connect，前置不用动、也不需要新实例。
+//
+// 每个节点都是一个固定大小的协程池（pipeline.Stage）：同一个会话在节点内串行，
 // 不同会话并行；会话闲着不占协程。
 type Bot struct {
 	cfg        config.Snapshot
 	workspaces *workspace.Manager
 
-	b1   pipeline.Buffer // 入站 → Stage 1
-	b2   pipeline.Buffer // Stage 1 → Stage 2
-	b3   pipeline.Buffer // Stage 2 → Stage 3
-	bCmd pipeline.Buffer // Stage 1 → Stage Command（管理指令）
-
-	stage1       *pipeline.Stage
-	stage2       *pipeline.Stage
-	stage3       *pipeline.Stage
-	stageCommand *pipeline.Stage
+	// orch 是编排层：域的挂载点、去向连线、起停与排空都在它手里。
+	orch *orchestrator
 
 	dedup *messageDedup
 
@@ -102,27 +104,27 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 		cfg:        cfg,
 		workspaces: workspaces,
 		dedup:      newMessageDedup(),
-		b1:         pipeline.NewMemoryBuffer(perChat, global),
-		b2:         pipeline.NewMemoryBuffer(perChat, global),
-		b3:         pipeline.NewMemoryBuffer(perChat, global),
-		bCmd:       pipeline.NewMemoryBuffer(perChat, global),
 	}
-	b.stage1 = pipeline.NewStage(pipeline.StageOptions{
-		Name: pipeline.StageSync, Buffer: b.b1, Config: b.syncConfig,
-		Handler: b.handleSync, OnDeadLetter: b.deadLetter,
-	})
-	b.stage2 = pipeline.NewStage(pipeline.StageOptions{
-		Name: pipeline.StageAssets, Buffer: b.b2, Config: b.assetConfig,
-		Handler: b.handleAssets, OnDeadLetter: b.deadLetter,
-	})
-	b.stage3 = pipeline.NewStage(pipeline.StageOptions{
-		Name: pipeline.StageAgent, Buffer: b.b3, Config: b.agentConfig,
-		Handler: b.handleAgent, OnDeadLetter: b.deadLetter,
-	})
-	b.stageCommand = pipeline.NewStage(pipeline.StageOptions{
-		Name: pipeline.StageCommand, Buffer: b.bCmd, Config: b.commandConfig,
-		Handler: b.handleCommand, OnDeadLetter: b.deadLetter,
-	})
+	b.orch = newOrchestrator(b.deadLetter)
+
+	// 挂载节点。handler 只把结果交回来，不碰任何缓冲，所以这里不需要告诉它下游是谁。
+	// 前置不放进工作流：它只回答“这条消息走哪条”，不属于任何一条。
+	b.orch.mountRouter(pipeline.StageSync, b.handleIngest, b.syncConfig, perChat, global)
+	b.orch.mount(pipeline.StageAssets, b.handleAssets, b.assetConfig, perChat, global)
+	b.orch.mount(pipeline.StageAgent, b.handleAgent, b.agentConfig, perChat, global)
+	b.orch.mount(pipeline.StageCommand, b.handleCommand, b.commandConfig, perChat, global)
+
+	// 工作流一：聊天。前置路由到这里，之后打标签 → 生成。
+	b.orch.workflow(WorkflowChat, pipeline.StageAssets)
+	b.orch.connect(TopicTagged, pipeline.StageAgent)
+	b.orch.exit(TopicReplied)
+
+	// 工作流二：管理指令。只走控制平面，执行完就结束。
+	//
+	// 终点写在这里而不是让域“沉默”——域只汇报发生过什么，链决定还要不要往下走。
+	// 将来要让指令执行完接下一个域，把这里换成 connect 即可，域一行代码都不用改。
+	b.orch.workflow(WorkflowCommand, pipeline.StageCommand)
+	b.orch.exit(TopicCommandDone)
 	return b
 }
 

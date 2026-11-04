@@ -6,8 +6,8 @@
 
 | 它做 | 它不做 |
 | --- | --- |
-| 指令匹配、直答、主动插话裁决 | 入队、补成员名、写 `messages`（Stage 1 做完了） |
-| 选窗、拼上下文、调模型、跑工具轮 | 图片描述（Stage 2 做完了） |
+| 指令匹配、直答、主动插话裁决 | 入队、补成员名、写 `messages`（前置做完了） |
+| 选窗、拼上下文、调模型、跑工具轮 | 图片描述（打标签域做完了） |
 | 排版、分句、调发送动作、记发送台账 | HTTP 入站校验、工作空间归属 |
 
 依赖只朝下：`speech` 只 import `conversation`、`config`、`llm`、`onebot`、`mcpserver` 这些中低层包，**不 import `bot`、`pipeline`、`web`**。
@@ -40,7 +40,7 @@
 | `deliver.go` | 交付：句子 → 发送动作 → 台账 → 聊天渠道 |
 | `persona_render.go` | 人格：按群绑定，渲染成提示片段 |
 | `internal_cmd.go` | 内置指令：群内动态增删指令、切人格这类不花模型钱的命令 |
-| `command_run.go` | 内部指令的“判”与“做”：`MatchInternalCommand`（只读，给 Stage 1 分流）、`RunInternalCommand`（唯一副作用入口） |
+| `command_run.go` | 内部指令的“判”与“做”：`MatchInternalCommand`（只读，给前置路由用）、`RunInternalCommand`（唯一副作用入口） |
 
 ## 管理指令的权限与入口
 
@@ -70,7 +70,7 @@ sequenceDiagram
 
   B->>R: RouteMessageNow(content, event, chatID, 窗口快照)
   R->>C: 匹配指令
-  alt 命中管理指令（正常链路已在 Stage Command 执行，这里只有面板/调试触发）
+  alt 命中管理指令（正常链路已在控制域执行，这里只有面板/调试触发）
     R->>R: RunInternalCommand：判权限 → 取参数 → handler
   else 命中功能指令
     C-->>R: HandlerFunc

@@ -21,10 +21,10 @@ const (
 	drainPollInterval = 20 * time.Millisecond
 )
 
-// Run 启动各段消费 worker，并阻塞到生命周期结束。
+// Run 启动各域消费 worker，并阻塞到生命周期结束。
 //
 // 关闭时先停止接收新事件，给存量队列 DrainTimeout 排空；到期后关闭缓冲，
-// 各 worker 退出。消息本体在 Stage 1 已同步入库，排空失败不会丢正文。
+// 各 worker 退出。消息本体在补全域已同步入库，排空失败不会丢正文。
 func (b *Bot) Run(ctx context.Context) {
 	logutil.Info("🤖 机器人已就绪，等待 IM 事件推送")
 
@@ -32,23 +32,14 @@ func (b *Bot) Run(ctx context.Context) {
 	// DrainTimeout 控制），而不是让在途消息半途而废。
 	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
-	b.stage1.Run(workerCtx)
-	b.stage2.Run(workerCtx)
-	b.stage3.Run(workerCtx)
-	b.stageCommand.Run(workerCtx)
+	b.orch.run(workerCtx)
 
 	<-ctx.Done()
 	logutil.Info("消息处理开始排空", "超时", b.cfg().Pipeline.DrainTimeout)
 	b.drain(b.cfg().Pipeline.DrainTimeout)
 	b.closeBuffers()
-	b.stage1.Close()
-	b.stage2.Close()
-	b.stage3.Close()
-	b.stageCommand.Close()
-	b.stage1.Wait()
-	b.stage2.Wait()
-	b.stage3.Wait()
-	b.stageCommand.Wait()
+	b.orch.closeStages()
+	b.orch.wait()
 	logutil.Info("消息分发循环已退出")
 }
 
@@ -58,21 +49,29 @@ func (b *Bot) drain(timeout time.Duration) {
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if b.pending() == 0 && b.stage1.Active() == 0 && b.stage2.Active() == 0 &&
-			b.stage3.Active() == 0 && b.stageCommand.Active() == 0 {
+		if b.orch.idle() {
 			return
 		}
 		time.Sleep(drainPollInterval)
 	}
-	logutil.Warn("关停排空超时，仍有消息未处理完", "pending", b.pending(),
-		"active", b.stage1.Active()+b.stage2.Active()+b.stage3.Active()+b.stageCommand.Active())
+	logutil.Warn("关停排空超时，仍有消息未处理完",
+		"pending", b.orch.pending(), "active", b.orch.active())
 }
 
-func (b *Bot) pending() int {
-	return b.b1.Total() + b.b2.Total() + b.b3.Total() + b.bCmd.Total()
+// closeBuffers 关闭各域缓冲；阻塞中的 Take 会被唤醒。
+//
+// 只关一次：closeOnce 同时也把 closed 抬起，入口据此开始拒收新事件。
+func (b *Bot) closeBuffers() {
+	b.closeOnce.Do(func() {
+		b.closed.Store(true)
+		b.orch.closeBuffers()
+	})
 }
 
-// AcceptEvent 把一条事件放进 B1 后立即返回。
+// AcceptEvent 把一条事件交给编排层放进入前置，然后立即返回。
+//
+// 前置会补名、入库，再决定进哪条工作流——那一段在入站应答之后发生，
+// 所以 HTTP 这边不会被补名拖慢。
 func (b *Bot) AcceptEvent(ctx context.Context, account string, event onebot.Event) (bool, error) {
 	if b.closed.Load() {
 		return false, pipeline.ErrClosed
@@ -102,20 +101,13 @@ func (b *Bot) AcceptEvent(ctx context.Context, account string, event onebot.Even
 		logutil.Debug("入站去重：同一条消息已在处理中", "workspace", ws.ID, "msgID", event.MessageID)
 		return false, nil
 	}
-	item, err := pipeline.NewItem(pipeline.StageIngest, key, event.MessageID,
-		conversation.Inbound{WorkspaceID: ws.ID, Event: event})
-	if err != nil {
-		logutil.Error("编码入站事件失败", "workspace", ws.ID, "msgID", event.MessageID, "err", err)
-		return false, nil
-	}
-
 	putCtx, cancel := context.WithTimeout(ctx, enqueueTimeout)
 	defer cancel()
-	if err := b.b1.Put(putCtx, item); err != nil {
+	if err := b.orch.admit(putCtx, key, event.MessageID,
+		conversation.Inbound{WorkspaceID: ws.ID, Event: event}); err != nil {
 		b.dedup.forget(dedupKey)
 		logutil.Warn("入站缓冲已满或已关闭", "workspace", ws.ID, "msgID", event.MessageID, "err", err)
 		return false, err
 	}
-	b.stage1.Submit(key)
 	return true, nil
 }

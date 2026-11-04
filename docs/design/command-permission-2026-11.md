@@ -1,6 +1,8 @@
 # 管理指令权限与前移计划
 
-> 状态：待实施
+> 状态：Implemented——主体是待办与实施顺序，已全部兑现，可删
+> 日期：2026-11
+> 结论落在：[ADR-0005](../adr/0005-orchestration-layer.md)、[domains/speech](../domains/speech.md)
 > 范围：`config`、`policy`、`speech`、`bot`
 > 前置讨论：指令系统本质是控制平面的硬编码调用，不是 Agent（见 [speech 域](../domains/speech.md)）
 

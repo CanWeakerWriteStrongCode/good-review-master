@@ -22,7 +22,7 @@
 | 指标 | 说明 | 怎么读 |
 | --- | --- | --- |
 | `pipeline_stage_backlog{stage}` | 各阶段队列里没被取走的消息数 | 持续抬升 = 这个阶段跟不上 |
-| `pipeline_stage_batch_duration_seconds{stage}` | 处理一批的耗时 | Stage 3 分位数抬升说明模型变慢，不是消息变多 |
+| `pipeline_stage_batch_duration_seconds{stage}` | 处理一批的耗时 | `stage="agent"` 的分位数抬升说明模型变慢，不是消息变多 |
 | `im_events_total{result}` | 入站事件按去向计数 | `accepted` 与 `ignored` 差值大 = 桥接层推了不该推的；`queue_full` 涨 = 下游堵了 |
 
 ### 2. 流水线

@@ -52,5 +52,5 @@
 | [0002](0002-dialect-not-repository.md) | 不为 MySQL 抽 Repository，只抽方言差异 | 已采纳 |
 | [0003](0003-no-migration-chain.md) | 建库只建最新版，不做旧库升级链 | 已采纳 |
 | [0004](0004-update-before-insert.md) | 单行写入先 UPDATE，没命中才 INSERT | 已采纳 |
-| [0005](0005-three-stage-pipeline.md) | 三阶段流水线 + 内存缓冲，不引消息队列 | 已采纳 |
+| [0005](0005-orchestration-layer.md) | 各域由编排层用消息串联，不引消息队列 | 已采纳 |
 | [0006](0006-token-cost-cache-window.md) | 缓存窗口按 token 成本扩展，不按固定条数 | 已采纳 |

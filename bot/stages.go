@@ -18,19 +18,21 @@ import (
 	"good-review-master/workspace"
 )
 
-// handleSync 是 Stage 1：同一会话的一批消息统一补名、组装并同步入库。
-func (b *Bot) handleSync(ctx context.Context, key string, items []pipeline.Item) []pipeline.FailedItem {
+// handleIngest 是前置：所有消息都从它过。同一会话的一批统一补名、组装并同步入库，
+// 然后交回编排层——这里的回执里 Topic 是工作流名，不是去向。
+//
+// 它不属于任何一条工作流：加一条工作流不用动它，它也只管“这条消息走哪条”，
+// 不管那条工作流里有什么。
+func (b *Bot) handleIngest(ctx context.Context, _ string, items []pipeline.Item) Outcome {
+	var out Outcome
 	byWorkspace := make(map[string][]conversation.Inbound)
-	failed := make([]pipeline.FailedItem, 0)
-	byMessage := make(map[string]pipeline.Item, len(items))
 	for _, item := range items {
 		in, err := pipeline.DecodeItem[conversation.Inbound](item)
 		if err != nil {
-			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
+			out.Failed = append(out.Failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
 		}
 		byWorkspace[in.WorkspaceID] = append(byWorkspace[in.WorkspaceID], in)
-		byMessage[in.Event.MessageID] = item
 	}
 
 	for workspaceID, inbounds := range byWorkspace {
@@ -41,33 +43,30 @@ func (b *Bot) handleSync(ctx context.Context, key string, items []pipeline.Item)
 		}
 		cfg := ws.Snapshot()()
 		for _, synced := range ws.PrepareBatch(ctx, inbounds) {
-			nextKey := conversation.ChatKey(synced.WorkspaceID, synced.ChatID)
-			// 管理指令走独立阶段：控制平面不占打标签与 Agent 的并发槽，也不进群聊缓存
-			//（模型看不到“刚才有人切了人格”，已确认可接受）。
-			// record-only 的指令不转出：备用号只记录，交回原路径由 Stage 3 回固定话术。
-			if b.isInternalCommand(ws, cfg, synced) && !policy.IsRecordOnly(cfg, ws.ID) {
-				if err := b.forward(ctx, b.bCmd, pipeline.StageCommand, nextKey, synced.Message.MessageID, synced); err != nil {
-					if item, ok := byMessage[synced.Message.MessageID]; ok {
-						b.deadLetter(item, err)
-					}
-				} else {
-					b.stageCommand.Submit(nextKey)
-				}
-				continue
-			}
-			if err := b.forward(ctx, b.b2, pipeline.StageAssets, nextKey, synced.Message.MessageID, synced); err != nil {
-				if item, ok := byMessage[synced.Message.MessageID]; ok {
-					b.deadLetter(item, err)
-				}
-			} else {
-				b.stage2.Submit(nextKey)
-			}
+			out.Routes = append(out.Routes, Route{
+				Topic:   b.workflowOf(ws, cfg, synced),
+				Key:     conversation.ChatKey(synced.WorkspaceID, synced.ChatID),
+				MsgID:   synced.Message.MessageID,
+				Payload: synced,
+			})
 		}
 	}
-	return failed
+	return out
 }
 
-// isInternalCommand 只做只读匹配：命中就说明这条消息该进 Stage Command。
+// workflowOf 回答“这条消息进哪条工作流”，只读、无副作用，可以单独测。
+//
+// 管理指令走独立工作流：控制平面不占打标签与生成的并发槽，也不进群聊缓存
+// （模型看不到“刚才有人切了人格”，已确认可接受）。
+// record-only 的指令不转出：备用号只记录，交回聊天工作流由生成域回固定话术。
+func (b *Bot) workflowOf(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) string {
+	if b.isInternalCommand(ws, cfg, synced) && !policy.IsRecordOnly(cfg, ws.ID) {
+		return WorkflowCommand
+	}
+	return WorkflowChat
+}
+
+// isInternalCommand 只做只读匹配：命中就说明这条消息该走指令工作流。
 // 执行前的第二次匹配在 speech.RunInternalCommand 里，两处不能合并。
 func (b *Bot) isInternalCommand(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) bool {
 	if ws == nil || ws.Router == nil {
@@ -78,17 +77,26 @@ func (b *Bot) isInternalCommand(ws *workspace.Workspace, cfg *config.Config, syn
 	return ok
 }
 
-// handleCommand 是 Stage Command：执行管理指令，不进入 Stage 2/3。
+// handleCommand 是管理指令域：执行指令，不进入打标签与生成。
 //
-// 永远返回空：指令副作用不幂等，重试等于执行两次（#添加人格 会生成两个人格）。
-// 失败只能在 handler 内部回一句错误，这条消息就此结束。
-func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item) []pipeline.FailedItem {
+// 交回执但不重试：指令副作用不幂等，重试等于执行两次（#添加人格 会生成两个人格）。
+// 失败只能在 handler 内部回一句错误，这条消息不再进重试队列。
+func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item) Outcome {
+	var out Outcome
 	for _, item := range items {
 		synced, err := pipeline.DecodeItem[conversation.Synced](item)
 		if err != nil {
 			logutil.Warn("指令阶段载荷解码失败，已丢弃", "item", item.ID, "err", err)
 			continue
 		}
+		// 如实汇报"这一条经手完了"，不管下面走了哪个分支。之后还有没有下一站
+		// 不在这里决定：现在 command_done 被声明为终点，要接审计域时改链即可。
+		out.Routes = append(out.Routes, Route{
+			Topic:   TopicCommandDone,
+			Key:     conversation.ChatKey(synced.WorkspaceID, synced.ChatID),
+			MsgID:   synced.Message.MessageID,
+			Payload: synced,
+		})
 		ws, ok := b.workspaces.ByID(synced.WorkspaceID)
 		if !ok || ws.Router == nil {
 			continue
@@ -103,17 +111,17 @@ func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item
 				"message", synced.Message.MessageID, "content", synced.Message.Content)
 		}
 	}
-	return nil
+	return out
 }
 
-// handleAssets 是 Stage 2：给一批消息打资产标签，欠条落库后继续进入 Stage 3。
-func (b *Bot) handleAssets(ctx context.Context, key string, items []pipeline.Item) []pipeline.FailedItem {
-	failed := make([]pipeline.FailedItem, 0)
+// handleAssets 是打标签域：给一批消息打资产标签、写欠条，然后回执给编排层。
+func (b *Bot) handleAssets(ctx context.Context, _ string, items []pipeline.Item) Outcome {
+	var out Outcome
 	tagger := b.workspaces.Tagger()
 	for _, item := range items {
 		synced, err := pipeline.DecodeItem[conversation.Synced](item)
 		if err != nil {
-			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
+			out.Failed = append(out.Failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
 		}
 		if ws, ok := b.workspaces.ByID(synced.WorkspaceID); ok {
@@ -131,14 +139,15 @@ func (b *Bot) handleAssets(ctx context.Context, key string, items []pipeline.Ite
 				b.persistDeferred(synced, result)
 			}
 		}
-		nextKey := conversation.ChatKey(synced.WorkspaceID, synced.ChatID)
-		if err := b.forward(ctx, b.b3, pipeline.StageAgent, nextKey, synced.Message.MessageID, synced); err != nil {
-			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
-			continue
-		}
-		b.stage3.Submit(nextKey)
+		// 回执交给编排层：它知道“打完标签”该由谁接手。
+		out.Routes = append(out.Routes, Route{
+			Topic:   TopicTagged,
+			Key:     conversation.ChatKey(synced.WorkspaceID, synced.ChatID),
+			MsgID:   synced.Message.MessageID,
+			Payload: synced,
+		})
 	}
-	return failed
+	return out
 }
 
 // persistDeferred 把没打完标签的资产写成欠条，只记原始地址。
@@ -168,9 +177,12 @@ func (b *Bot) persistDeferred(synced conversation.Synced, result assets.TagResul
 	}
 }
 
-// handleAgent 是 Stage 3：提交缓存、冻结快照、同步执行一次路由/主动接话。
-func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item) []pipeline.FailedItem {
-	failed := make([]pipeline.FailedItem, 0)
+// handleAgent 是生成域：提交缓存、冻结快照、同步执行一次路由/主动接话。
+//
+// 每条经手的消息都交一条 TopicReplied 回执，包括"判定不该回"的那些——
+// 域只汇报这一条处理完了；之后还有没有事，由链的拓扑决定。
+func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item) Outcome {
+	var out Outcome
 	type proactiveTask struct {
 		ws       *workspace.Workspace
 		synced   conversation.Synced
@@ -181,9 +193,17 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 	for _, item := range items {
 		synced, err := pipeline.DecodeItem[conversation.Synced](item)
 		if err != nil {
-			failed = append(failed, pipeline.FailedItem{Item: item, Err: err})
+			out.Failed = append(out.Failed, pipeline.FailedItem{Item: item, Err: err})
 			continue
 		}
+		// 后面每个分支都是终结分支（回、不回、放弃），所以先把回执记上。
+		// 真正投递发生在 handler 返回之后，不影响执行顺序。
+		out.Routes = append(out.Routes, Route{
+			Topic:   TopicReplied,
+			Key:     key,
+			MsgID:   synced.Message.MessageID,
+			Payload: synced,
+		})
 		ws, ok := b.workspaces.ByID(synced.WorkspaceID)
 		if !ok {
 			continue
@@ -224,11 +244,11 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 		// 交给下一批的最后一条。避免刷屏时每条都跑一次裁判。
 		latestProactive = &proactiveTask{ws: ws, synced: synced, snapshot: snapshot}
 	}
-	if latestProactive != nil && b.b3.Len(key) == 0 {
+	if latestProactive != nil && b.orch.backlog(pipeline.StageAgent, key) == 0 {
 		latestProactive.ws.Router.TryProactiveNow(ctx, latestProactive.synced.Event,
 			latestProactive.synced.ChatID, latestProactive.synced.Message.Content, latestProactive.snapshot)
 	}
-	return failed
+	return out
 }
 
 // addressed 判断这条消息是不是冲着机器人来的。
@@ -301,28 +321,5 @@ func (b *Bot) deadLetter(item pipeline.Item, err error) {
 	}
 }
 
-// forward 把一个阶段载荷编码后放进下一段缓冲。
-func (b *Bot) forward(ctx context.Context, buf pipeline.Buffer, stage, key, messageID string, payload any) error {
-	item, err := pipeline.NewItem(stage, key, messageID, payload)
-	if err != nil {
-		logutil.Error("编码阶段载荷失败", "stage", stage, "err", err)
-		return err
-	}
-	if err := buf.Put(ctx, item); err != nil {
-		logutil.Warn("写入阶段缓冲失败", "stage", stage, "err", err)
-		return err
-	}
-	return nil
-}
-
-// closeBuffers 关闭各阶段缓冲；阻塞中的 Take 会被唤醒。
-func (b *Bot) closeBuffers() {
-	b.closeOnce.Do(func() {
-		b.closed.Store(true)
-		for _, buf := range []pipeline.Buffer{b.b1, b.b2, b.b3, b.bCmd} {
-			if err := buf.Close(); err != nil {
-				logutil.Warn("关闭阶段缓冲失败", "err", err)
-			}
-		}
-	})
-}
+// forward 与 closeBuffers 都不在这个文件里了：域只管处理，投递与起停在
+// orchestrator 与 ingest.go（Run/drain/closeBuffers）。

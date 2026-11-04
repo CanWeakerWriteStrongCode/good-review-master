@@ -20,7 +20,7 @@ func TestMemoryBuffer同分区FIFO(t *testing.T) {
 	b := NewMemoryBuffer(8, 8)
 	ctx := context.Background()
 	for _, id := range []string{"1", "2", "3"} {
-		if err := b.Put(ctx, mustItem(t, StageIngest, SerialKey, id, struct{}{})); err != nil {
+		if err := b.Put(ctx, mustItem(t, StageSync, SerialKey, id, struct{}{})); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 	}
@@ -32,7 +32,7 @@ func TestMemoryBuffer同分区FIFO(t *testing.T) {
 		t.Fatalf("应取 3 条，得到 %d", len(got))
 	}
 	for i, item := range got {
-		want := []string{"ingest|serial|1", "ingest|serial|2", "ingest|serial|3"}[i]
+		want := []string{"sync|serial|1", "sync|serial|2", "sync|serial|3"}[i]
 		if item.ID != want {
 			t.Fatalf("第 %d 条 = %q, want %q", i, item.ID, want)
 		}
@@ -66,14 +66,14 @@ func TestMemoryBuffer批量上限与分区隔离(t *testing.T) {
 
 func TestMemoryBuffer满时等待并尊重超时(t *testing.T) {
 	b := NewMemoryBuffer(1, 1)
-	item := mustItem(t, StageIngest, SerialKey, "1", struct{}{})
+	item := mustItem(t, StageSync, SerialKey, "1", struct{}{})
 	if err := b.Put(context.Background(), item); err != nil {
 		t.Fatalf("首次 Put: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if err := b.Put(ctx, mustItem(t, StageIngest, SerialKey, "2", struct{}{})); err == nil {
+	if err := b.Put(ctx, mustItem(t, StageSync, SerialKey, "2", struct{}{})); err == nil {
 		t.Fatal("满队列应阻塞到超时")
 	}
 
@@ -89,11 +89,11 @@ func TestMemoryBuffer满时等待并尊重超时(t *testing.T) {
 func TestMemoryBuffer关闭后唤醒阻塞方(t *testing.T) {
 	b := NewMemoryBuffer(1, 1)
 	ctx := context.Background()
-	_ = b.Put(ctx, mustItem(t, StageIngest, SerialKey, "1", struct{}{}))
+	_ = b.Put(ctx, mustItem(t, StageSync, SerialKey, "1", struct{}{}))
 
 	putDone := make(chan error, 1)
 	go func() {
-		putDone <- b.Put(ctx, mustItem(t, StageIngest, SerialKey, "2", struct{}{}))
+		putDone <- b.Put(ctx, mustItem(t, StageSync, SerialKey, "2", struct{}{}))
 	}()
 	time.Sleep(20 * time.Millisecond)
 	if err := b.Close(); err != nil {
@@ -125,7 +125,7 @@ func Test阶段载荷可序列化(t *testing.T) {
 		MessageID   string `json:"message_id"`
 	}
 	in := payload{WorkspaceID: "qq_official_bot_1906", MessageID: "m1"}
-	item := mustItem(t, StageIngest, SerialKey, "m1", in)
+	item := mustItem(t, StageSync, SerialKey, "m1", in)
 	got, err := DecodeItem[payload](item)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)

@@ -21,7 +21,7 @@ const (
 	// schemaVersion 当前表结构版本，写在 SQLite 的 PRAGMA user_version 里。
 	//
 	// 改表结构时把它 +1；旧库不做升级，换个文件重新建。
-	schemaVersion = 17
+	schemaVersion = 18
 )
 
 // ensureFile 先以 0600 建出文件再交给驱动：消息原文与昵称属于隐私数据。
@@ -210,6 +210,20 @@ func migrate(db *gorm.DB, path string) error {
 			value      TEXT NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		// processed_items 记“这条消息已经处理完”，item_id 就是 pipeline.Item.ID
+		// （stage|key|消息ID）。消息可能被重投：进程重启、入站重推、将来接 MQ 后的
+		// 至少一次投递。域处理前查一次，就能把重投变成幂等。
+		//
+		// 只记“成功之后”，不记“开始处理”：崩溃时宁可重做一次（代价是重复调用），
+		// 也不要留下“已认领但没做完”的行——那会把重投彻底拦掉，等于丢消息。
+		`CREATE TABLE IF NOT EXISTS processed_items (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			item_id      TEXT NOT NULL,
+			workspace_id TEXT NOT NULL DEFAULT '',
+			stage        TEXT NOT NULL DEFAULT '',
+			created_at   INTEGER NOT NULL,
+			UNIQUE (item_id)
+		)`,
 	}
 	for _, statement := range statements {
 		if err := db.Exec(statement).Error; err != nil {
@@ -234,6 +248,7 @@ func migrate(db *gorm.DB, path string) error {
 			WHERE platform <> '' AND account_kind <> '' AND account <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_asset_tag_jobs_pending ON asset_tag_jobs(status, updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_processed_items_created ON processed_items(created_at)`,
 	}
 	for _, statement := range indexes {
 		if err := db.Exec(statement).Error; err != nil {
