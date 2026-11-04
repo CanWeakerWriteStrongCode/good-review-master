@@ -70,6 +70,15 @@ func (r *Router) routeMessage(ctx context.Context, content string, event onebot.
 		return
 	}
 
+	// 管理指令（Category == internal）统一交给 RunInternalCommand：
+	// 权限判定、参数解析、handler 调用只有那一个入口，#帮助 与私聊的例外也在里面。
+	// 阶段二把指令前移到独立阶段后，正常消息链路已经到不了这里；
+	// 面板与调试触发仍从这条路径进来，两边行为必须一致，所以不再各写一份。
+	if route.Category == "internal" {
+		r.RunInternalCommand(ctx, event, groupID, content, true)
+		return
+	}
+
 	extra := strings.TrimSpace(text[len(route.Keyword):])
 	// 关键字路由只把"路由自带人格"渲染进 systemPrompt 末尾；
 	// 群人格（#切换人格）只在未命中关键字的纯 @ 聊天里生效，见 replyDefault。

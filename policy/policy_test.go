@@ -81,3 +81,42 @@ func TestIsRecordOnly(t *testing.T) {
 		t.Fatal("\"*\" 不应让所有账号都变成只记录")
 	}
 }
+
+func TestCanUseCommand(t *testing.T) {
+	cfg := &config.Config{CommandAdmins: map[string][]string{
+		"group-a": {"openid-admin", "openid-second"},
+		"group-b": {"openid-admin"},
+	}}
+
+	if !CanUseCommand(cfg, "group-a", "openid-admin") {
+		t.Fatal("名单内的管理员应放行")
+	}
+	if !CanUseCommand(cfg, "group-b", "openid-admin") {
+		t.Fatal("同一个管理员在别的群也配了时应放行")
+	}
+	if CanUseCommand(cfg, "group-a", "openid-member") {
+		t.Fatal("名单外的成员必须拒绝")
+	}
+	if CanUseCommand(cfg, "group-c", "openid-admin") {
+		t.Fatal("没配置的群必须拒绝：管理员身份不跨群继承")
+	}
+
+	// 没配置任何群：所有群都拒绝（fail-closed）。
+	if CanUseCommand(&config.Config{}, "group-a", "openid-admin") {
+		t.Fatal("空名单必须拒绝所有群")
+	}
+	if CanUseCommand(nil, "group-a", "openid-admin") {
+		t.Fatal("nil 配置必须拒绝")
+	}
+
+	// 群名字里写 "*" 不是通配符：它只是一个叫 "*" 的群。
+	wildcardGroup := &config.Config{CommandAdmins: map[string][]string{"*": {"openid-admin"}}}
+	if CanUseCommand(wildcardGroup, "group-a", "openid-admin") {
+		t.Fatal("群名单不支持通配符：别的群不能借用")
+	}
+
+	// 私聊直接放行：对话人只有账号主人自己。
+	if !CanUseCommand(&config.Config{}, "private:openid-user", "openid-user") {
+		t.Fatal("私聊应放行，且不依赖配置")
+	}
+}

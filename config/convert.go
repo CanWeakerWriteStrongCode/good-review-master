@@ -36,6 +36,7 @@ func assemble(sections *sections) *Config {
 		AllowGroups:        parseCommaList(sections.Bot.AllowGroups.String()),
 		WorkspaceAccounts:  convertWorkspaceAccounts([]string(sections.Bot.AllowWorkspaceAccounts)),
 		RecordOnlyAccounts: convertWorkspaceAccounts([]string(sections.Bot.RecordOnlyAccounts)),
+		CommandAdmins:      convertCommandAdmins(sections.Bot.CommandAdmins),
 
 		ProactiveEnabled:      sections.Bot.ProactiveEnabled,
 		ProactiveCooldown:     time.Duration(*sections.Bot.ProactiveCooldownSec) * time.Second,
@@ -120,6 +121,19 @@ func convertWorkspaceAccounts(entries []string) []string {
 		if entry = strings.TrimSpace(entry); entry != "" {
 			out = append(out, entry)
 		}
+	}
+	return out
+}
+
+// convertCommandAdmins 复制一份群管理员名单，避免运行时与解析结构共享底层数组。
+// 去空与去重已在 Validate 做过，这里只做复制。
+func convertCommandAdmins(admins map[string][]string) map[string][]string {
+	if len(admins) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(admins))
+	for groupID, users := range admins {
+		out[groupID] = append([]string(nil), users...)
 	}
 	return out
 }

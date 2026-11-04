@@ -12,19 +12,24 @@ import (
 
 // Bot 机器人运行时：IM 事件 → B1 → Stage 1 → B2 → Stage 2 → B3 → Stage 3。
 //
+// 管理指令在 Stage 1 被分流到独立的 Stage Command：控制平面不占打标签与
+// Agent 的并发槽，也不进群聊缓存。
+//
 // 每个阶段都是一个固定大小的协程池（pipeline.Stage）：同一个会话在阶段内串行，
 // 不同会话并行；会话闲着不占协程。
 type Bot struct {
 	cfg        config.Snapshot
 	workspaces *workspace.Manager
 
-	b1 pipeline.Buffer // 入站 → Stage 1
-	b2 pipeline.Buffer // Stage 1 → Stage 2
-	b3 pipeline.Buffer // Stage 2 → Stage 3
+	b1   pipeline.Buffer // 入站 → Stage 1
+	b2   pipeline.Buffer // Stage 1 → Stage 2
+	b3   pipeline.Buffer // Stage 2 → Stage 3
+	bCmd pipeline.Buffer // Stage 1 → Stage Command（管理指令）
 
-	stage1 *pipeline.Stage
-	stage2 *pipeline.Stage
-	stage3 *pipeline.Stage
+	stage1       *pipeline.Stage
+	stage2       *pipeline.Stage
+	stage3       *pipeline.Stage
+	stageCommand *pipeline.Stage
 
 	dedup *messageDedup
 
@@ -100,6 +105,7 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 		b1:         pipeline.NewMemoryBuffer(perChat, global),
 		b2:         pipeline.NewMemoryBuffer(perChat, global),
 		b3:         pipeline.NewMemoryBuffer(perChat, global),
+		bCmd:       pipeline.NewMemoryBuffer(perChat, global),
 	}
 	b.stage1 = pipeline.NewStage(pipeline.StageOptions{
 		Name: pipeline.StageSync, Buffer: b.b1, Config: b.syncConfig,
@@ -112,6 +118,10 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 	b.stage3 = pipeline.NewStage(pipeline.StageOptions{
 		Name: pipeline.StageAgent, Buffer: b.b3, Config: b.agentConfig,
 		Handler: b.handleAgent, OnDeadLetter: b.deadLetter,
+	})
+	b.stageCommand = pipeline.NewStage(pipeline.StageOptions{
+		Name: pipeline.StageCommand, Buffer: b.bCmd, Config: b.commandConfig,
+		Handler: b.handleCommand, OnDeadLetter: b.deadLetter,
 	})
 	return b
 }
@@ -137,6 +147,16 @@ func (b *Bot) agentConfig() pipeline.StageConfig {
 	return pipeline.StageConfig{
 		Batch: p.AgentBatch, Linger: p.AgentLinger,
 		Concurrency: p.AgentConcurrency, Retries: p.AgentRetries,
+	}
+}
+
+// commandConfig 管理指令阶段。Retries 固定 0：指令副作用不幂等，
+// 重试一次就等于执行两次（#添加人格 会生成两个人格），所以不开放配置。
+func (b *Bot) commandConfig() pipeline.StageConfig {
+	p := b.cfg().Pipeline
+	return pipeline.StageConfig{
+		Batch: p.CommandBatch, Linger: p.CommandLinger,
+		Concurrency: p.CommandConcurrency, Retries: 0,
 	}
 }
 

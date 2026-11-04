@@ -22,6 +22,11 @@ type Config struct {
 	WorkspaceAccounts  []string    // 允许自动开通的工作空间 ID；含 "*" 表示全部
 	RecordOnlyAccounts []string    // 只记录不回复的工作空间 ID；空表示全部都正常回复
 
+	// CommandAdmins 各群的管理员 user_id：只有名单里的人能执行 # 开头的管理指令。
+	// 键是群 ID（QQ 官方账号下是群 openid），值是允许的 user_id 列表。
+	// 空表示所有群都没有管理员：没人能执行管理指令（#帮助 与私聊除外）。
+	CommandAdmins map[string][]string
+
 	// 主动插话（非 @ 时由大模型裁决）。全局一份，所有工作空间共用。
 	ProactiveEnabled      bool
 	ProactiveCooldown     time.Duration // 主动发言后该群的冷却
@@ -66,9 +71,14 @@ type PipelineConf struct {
 	AgentLinger      time.Duration
 	AgentConcurrency int
 	AgentRetries     int
-	PerChatCapacity  int
-	GlobalCapacity   int
-	DrainTimeout     time.Duration // 0 = 关停不等待存量
+	// 管理指令阶段：不占打标签与 Agent 的并发槽。Go 代码里 Retries 固定传 0，
+	// 指令副作用不幂等（#添加人格 重试一次就是两个人格）。
+	CommandBatch       int
+	CommandLinger      time.Duration
+	CommandConcurrency int
+	PerChatCapacity    int
+	GlobalCapacity     int
+	DrainTimeout       time.Duration // 0 = 关停不等待存量
 }
 
 // AssetsConf 资产打标签与后台补标签参数。

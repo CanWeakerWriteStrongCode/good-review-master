@@ -40,6 +40,10 @@ const (
 	helpHelp = "查看可用指令"
 )
 
+// internalKeywordHelp 是「#帮助」的关键字。它对未授权用户也开放：
+// 查看指令列表没有副作用，而且新部署上线时会话里可能只有这一条能回应。
+const internalKeywordHelp = "#帮助"
+
 // registerInternalCommands 向路由器注册所有内置管理指令
 func (r *Router) registerInternalCommands() {
 	r.register(Command{Keyword: "#添加人格", Help: helpAddCmd, Category: "internal", Handler: r.handleAddCommand})
@@ -48,7 +52,7 @@ func (r *Router) registerInternalCommands() {
 	r.register(Command{Keyword: "#删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
 	r.register(Command{Keyword: "#切换人格", Help: helpSwitchPersona, Category: "internal", Handler: r.handleSwitchPersona})
 	r.register(Command{Keyword: "#取消人格", Help: helpCancelPersona, Category: "internal", Handler: r.handleCancelPersona})
-	r.register(Command{Keyword: "#帮助", Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
+	r.register(Command{Keyword: internalKeywordHelp, Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
 }
 
 func (r *Router) handleAddCommand(ctx context.Context, event onebot.Event, groupID string, systemPrompt string, keywordPrompt string, mentionerNick string, extra string) {

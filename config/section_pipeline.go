@@ -27,6 +27,12 @@ type pipelineSection struct {
 	AgentConcurrency *int `yaml:"agent_concurrency"`
 	AgentRetries     *int `yaml:"agent_retries"`
 
+	// 管理指令阶段。没有 command_retries：指令副作用不幂等
+	// （#添加人格 重试一次就是两个人格），代码里固定传 0，不开放配置。
+	CommandBatch       *int `yaml:"command_batch"`
+	CommandLingerMs    *int `yaml:"command_linger_ms"`
+	CommandConcurrency *int `yaml:"command_concurrency"`
+
 	PerChatCapacity *int `yaml:"per_chat_capacity"`
 	GlobalCapacity  *int `yaml:"global_capacity"`
 
@@ -34,19 +40,22 @@ type pipelineSection struct {
 }
 
 const (
-	defaultSyncBatch        = 20
-	defaultAssetBatch       = 4
-	defaultAgentBatch       = 1
-	defaultSyncLingerMs     = 20
-	defaultAssetLingerMs    = 20
-	defaultAgentLingerMs    = 0
-	defaultSyncConcurrency  = 8
-	defaultAssetConcurrency = 3
-	defaultAgentConcurrency = 3
-	defaultStageRetries     = 3
-	defaultPerChatCapacity  = 500
-	defaultGlobalCapacity   = 5000
-	defaultDrainTimeoutSec  = 10
+	defaultSyncBatch          = 20
+	defaultAssetBatch         = 4
+	defaultAgentBatch         = 1
+	defaultSyncLingerMs       = 20
+	defaultAssetLingerMs      = 20
+	defaultAgentLingerMs      = 0
+	defaultSyncConcurrency    = 8
+	defaultAssetConcurrency   = 3
+	defaultAgentConcurrency   = 3
+	defaultCommandBatch       = 1
+	defaultCommandLingerMs    = 0
+	defaultCommandConcurrency = 2
+	defaultStageRetries       = 3
+	defaultPerChatCapacity    = 500
+	defaultGlobalCapacity     = 5000
+	defaultDrainTimeoutSec    = 10
 )
 
 func (s *pipelineSection) Name() string { return "pipeline" }
@@ -74,6 +83,9 @@ func (s *pipelineSection) SetDefaults() {
 	set(&s.AgentLingerMs, defaultAgentLingerMs)
 	set(&s.AgentConcurrency, defaultAgentConcurrency)
 	set(&s.AgentRetries, defaultStageRetries)
+	set(&s.CommandBatch, defaultCommandBatch)
+	set(&s.CommandLingerMs, defaultCommandLingerMs)
+	set(&s.CommandConcurrency, defaultCommandConcurrency)
 	set(&s.PerChatCapacity, defaultPerChatCapacity)
 	set(&s.GlobalCapacity, defaultGlobalCapacity)
 	set(&s.DrainTimeoutSec, defaultDrainTimeoutSec)
@@ -90,6 +102,8 @@ func (s *pipelineSection) Validate() error {
 		{"pipeline.asset_concurrency", s.AssetConcurrency},
 		{"pipeline.agent_batch", s.AgentBatch},
 		{"pipeline.agent_concurrency", s.AgentConcurrency},
+		{"pipeline.command_batch", s.CommandBatch},
+		{"pipeline.command_concurrency", s.CommandConcurrency},
 		{"pipeline.per_chat_capacity", s.PerChatCapacity},
 		{"pipeline.global_capacity", s.GlobalCapacity},
 	}
@@ -108,6 +122,7 @@ func (s *pipelineSection) Validate() error {
 		{"pipeline.asset_retries", s.AssetRetries},
 		{"pipeline.agent_linger_ms", s.AgentLingerMs},
 		{"pipeline.agent_retries", s.AgentRetries},
+		{"pipeline.command_linger_ms", s.CommandLingerMs},
 		{"pipeline.drain_timeout_sec", s.DrainTimeoutSec},
 	}
 	for _, item := range nonNegative {
@@ -122,20 +137,23 @@ func (s *pipelineSection) convert() PipelineConf {
 	ms := func(v *int) time.Duration { return time.Duration(*v) * time.Millisecond }
 	sec := func(v *int) time.Duration { return time.Duration(*v) * time.Second }
 	return PipelineConf{
-		SyncBatch:        *s.SyncBatch,
-		SyncLinger:       ms(s.SyncLingerMs),
-		SyncConcurrency:  *s.SyncConcurrency,
-		SyncRetries:      *s.SyncRetries,
-		AssetBatch:       *s.AssetBatch,
-		AssetLinger:      ms(s.AssetLingerMs),
-		AssetConcurrency: *s.AssetConcurrency,
-		AssetRetries:     *s.AssetRetries,
-		AgentBatch:       *s.AgentBatch,
-		AgentLinger:      ms(s.AgentLingerMs),
-		AgentConcurrency: *s.AgentConcurrency,
-		AgentRetries:     *s.AgentRetries,
-		PerChatCapacity:  *s.PerChatCapacity,
-		GlobalCapacity:   *s.GlobalCapacity,
-		DrainTimeout:     sec(s.DrainTimeoutSec),
+		SyncBatch:          *s.SyncBatch,
+		SyncLinger:         ms(s.SyncLingerMs),
+		SyncConcurrency:    *s.SyncConcurrency,
+		SyncRetries:        *s.SyncRetries,
+		AssetBatch:         *s.AssetBatch,
+		AssetLinger:        ms(s.AssetLingerMs),
+		AssetConcurrency:   *s.AssetConcurrency,
+		AssetRetries:       *s.AssetRetries,
+		AgentBatch:         *s.AgentBatch,
+		AgentLinger:        ms(s.AgentLingerMs),
+		AgentConcurrency:   *s.AgentConcurrency,
+		AgentRetries:       *s.AgentRetries,
+		CommandBatch:       *s.CommandBatch,
+		CommandLinger:      ms(s.CommandLingerMs),
+		CommandConcurrency: *s.CommandConcurrency,
+		PerChatCapacity:    *s.PerChatCapacity,
+		GlobalCapacity:     *s.GlobalCapacity,
+		DrainTimeout:       sec(s.DrainTimeoutSec),
 	}
 }

@@ -7,7 +7,11 @@
 // 本包只有纯函数：不持有状态，除 config 外不 import 项目内的任何包。
 package policy
 
-import "good-review-master/config"
+import (
+	"strings"
+
+	"good-review-master/config"
+)
 
 // wildcard 是所有名单都认的通配符。
 const wildcard = "*"
@@ -54,6 +58,28 @@ func AllowsAllAccounts(cfg *config.Config) bool {
 // 不支持 "*"：全部静默等于没有机器人，配置校验阶段就拒绝了。
 func IsRecordOnly(cfg *config.Config, channelID string) bool {
 	return cfg != nil && contains(cfg.RecordOnlyAccounts, channelID)
+}
+
+// privateChatPrefix 是私聊会话 ID 的前缀（见 onebot.Event.ChatID）：
+// 私聊的 ID 是 "private:" + userID，无法当作固定的群 ID 配置。
+const privateChatPrefix = "private:"
+
+// CanUseCommand 判断某个会话成员能否执行管理指令（Category == "internal"）。
+//
+// 只认精确的群 ID：没配这个群、或这个群里没有这个人 → 拒绝（fail-closed）。
+// 私聊直接放行：对话人只有账号主人自己，没有越权面。
+func CanUseCommand(cfg *config.Config, chatID, userID string) bool {
+	if cfg == nil {
+		return false
+	}
+	if strings.HasPrefix(chatID, privateChatPrefix) {
+		return true
+	}
+	admins, ok := cfg.CommandAdmins[chatID]
+	if !ok {
+		return false
+	}
+	return contains(admins, userID)
 }
 
 // contains 是这几个名单唯一的匹配方式：逐项相等比较，不做前缀或正则匹配。

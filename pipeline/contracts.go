@@ -15,10 +15,11 @@ import (
 const (
 	SerialKey = "serial"
 
-	StageIngest = "ingest"
-	StageSync   = "sync"
-	StageAssets = "assets"
-	StageAgent  = "agent"
+	StageIngest  = "ingest"
+	StageSync    = "sync"
+	StageAssets  = "assets"
+	StageAgent   = "agent"
+	StageCommand = "command"
 )
 
 // 阶段载荷类型（conversation.Inbound / conversation.Synced）不在这里定义：

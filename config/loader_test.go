@@ -659,6 +659,61 @@ llm:
 	}
 }
 
+// TestCommandAdmins兼容列表与字符串 command_admins 是「群 ID → 管理员列表」：
+// 值支持 YAML 列表与逗号分隔字符串，群内去空白去重；不配就是空（所有群都没有管理员）。
+func TestCommandAdmins兼容列表与字符串(t *testing.T) {
+	cfg, err := loadWith(t, `bot:
+  command_admins:
+    "group-a":
+      - " user-1 "
+      - "user-2"
+      - "user-1"
+    "group-b": "user-3, user-4"
+runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	want := map[string][]string{
+		"group-a": {"user-1", "user-2"},
+		"group-b": {"user-3", "user-4"},
+	}
+	if !reflect.DeepEqual(cfg.CommandAdmins, want) {
+		t.Fatalf("CommandAdmins = %v，期望 %v", cfg.CommandAdmins, want)
+	}
+
+	// 不配：所有群都没有管理员，没人能用管理指令。
+	plain, err := loadWith(t, `runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`, "")
+	if err != nil {
+		t.Fatalf("加载失败：%v", err)
+	}
+	if len(plain.CommandAdmins) != 0 {
+		t.Fatalf("未配置时 CommandAdmins 应为空，实际 %v", plain.CommandAdmins)
+	}
+
+	// 群 ID 为空：几乎肯定是缩进/引号写错，拒绝启动。
+	if _, err := loadWith(t, `bot:
+  command_admins:
+    "": ["user-1"]
+runtime:
+  llm_timeout_sec: 20
+  max_msg_rune: 500
+llm:
+  model_name: "m"
+`, ""); err == nil {
+		t.Fatal("空群 ID 应被拒绝")
+	}
+}
+
 // TestReplyMaxSentences 最终回复的句数上限：缺省 5；显式 0 = 关闭排版；负数非法。
 func TestReplyMaxSentences(t *testing.T) {
 	const minimal = `runtime:

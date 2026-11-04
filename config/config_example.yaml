@@ -25,6 +25,12 @@ bot:
   # 主备双号时给备份号配这里：缓存一直在更新，把两个号调换一下就能接管。
   record_only_accounts: []
   # 例：record_only_accounts: ["qq_official_bot_1904xxxx"]
+  # 管理指令管理员：群 ID → 允许执行 # 开头管理指令的 user_id 列表。
+  # 不配 = 所有群都没有管理员 = 没人能执行管理指令（#帮助 与私聊不受限）。
+  # 群 ID 与 user_id 都取日志里的原值（QQ 官方账号下都是 openid，不是 QQ 号）。
+  command_admins:
+    "group-openid-1": ["user-openid-1", "user-openid-2"]
+    # 也支持逗号分隔："group-openid-2": "user-openid-1,user-openid-2"
   # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
   # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
   # 裁判和生成用的是同一份窗口：进入 Agent 时先按 llm_send_count / 缓存命中算一次，
@@ -201,6 +207,11 @@ pipeline:
   agent_linger_ms: 0              # 0 = 不等
   agent_concurrency: 3             # 同时几条消息在生成回复；对着 llama-server 的 -np 走
   agent_retries: 3                # 0 = 不重试
+  # Stage Command（管理指令）：独立于打标签与 Agent，慢指令不再堵入库。
+  # 没有 command_retries：指令副作用不幂等，代码里固定 0。
+  command_batch: 1
+  command_linger_ms: 0
+  command_concurrency: 2
   # 单群/单私聊最多积压多少条；整个进程最多积压多少条（0 会让流水线停摆，非法）
   per_chat_capacity: 500
   global_capacity: 5000

@@ -1,6 +1,8 @@
-# 三阶段流水线
+# 四阶段流水线
 
-一条消息从入站队列出来，经过三个处理阶段走到回复。阶段之间的传送带是内存队列，每个阶段自己管批量、并发、重试。
+一条消息从入站队列出来，经过四个处理阶段走到回复或指令执行。阶段之间的传送带是内存队列，每个阶段自己管批量、并发、重试。
+
+前三个阶段是数据平面（补全数据 → 打图标签 → 生成回复）；第四个阶段是指令的控制平面：管理指令在里面执行，不占大模型并发槽、不进群聊缓存。
 
 ## 边界
 
@@ -17,16 +19,22 @@
 | B1 | `bot.AcceptEvent` | Stage 1 | `conversation.Inbound` |
 | B2 | Stage 1 | Stage 2 | `conversation.Synced` |
 | B3 | Stage 2 | Stage 3 | `conversation.Synced`（多了 `Assets` / `ImageNotes`） |
+| bCmd | Stage 1 | Stage Command | `conversation.Synced`（管理指令，只走这一个阶段） |
 
 `Item` 只有五个字段：`ID`（`stage|key|消息ID`，天然幂等键）、`Key`（分区键，现在是 `workspaceID|chatID`）、`Stage`、`Body`（JSON）、`Attempts`。载荷类型定义在 `conversation` 里，`pipeline` 不定义——否则底层包为了用值对象会反过来 import 编排层。
 
-## 三个阶段各干什么
+## 四个阶段各干什么
 
 | 阶段 | 入口 | 做什么 | 失败去哪 |
 | --- | --- | --- | --- |
-| Stage 1 补名入库 | `handleSync` | 按工作空间分组 → `PrepareBatch` 补成员名、补被引用消息 → 写 `messages` → 投 B2 | 重试 `sync_retries` 次，超限进 alerts |
+| Stage 1 补名入库 | `handleSync` | 按工作空间分组 → `PrepareBatch` 补成员名、补被引用消息 → 写 `messages` → 命中管理指令投 bCmd，其余投 B2 | 重试 `sync_retries` 次，超限进 alerts |
 | Stage 2 图片标签 | `handleAssets` | 查图库有没有这条图的描述，没有才调视觉模型 → 写 `image_notes`；没打完的写 `asset_tag_jobs` 欠条 → 投 B3 | 欠条留给后台补，不阻塞消息 |
 | Stage 3 生成回复 | `handleAgent` | 进群聊缓存 → 学身份 → 判断该不该回 → 交 `speech` | 生成的失败由 `speech` 自己兜 |
+| Stage Command 管理指令 | `handleCommand` | 交 `speech.RunInternalCommand`：再判一次匹配 → 判权限 → 执行 handler | 不重试（`Retries` 固定 0，指令副作用不幂等），失败只记日志 |
+
+Stage 1 的分流用的是只读匹配（`speech.MatchInternalCommand`），它不执行任何东西；真正的执行集中在 `RunInternalCommand`，权限判定只写在它里面。分流与执行各判一次：两次之间路由表可能被别的指令改过（`#删除人格` 会把关键字删掉），第二次失配就丢弃（正文在 Stage 1 已经入库）。
+
+`record_only_accounts` 里的账号不走指令阶段：指令消息按普通消息进 Stage 3，由那里的既有分支回固定话术。
 
 Stage 3 里有两个容易看漏的取舍：
 
@@ -53,9 +61,15 @@ flowchart TB
     P3["固定协程池 ×agent_concurrency"]
     K3["同样按会话串行"]
   end
+  subgraph "Stage Command · 管理指令"
+    PC["固定协程池 ×command_concurrency"]
+    KC["同样按会话串行"]
+  end
   IN --> P1
   R1 --> P1
   P1 --- K1
+  P1 -->|"命中管理指令：bCmd.Put + Submit(key)"| PC
+  PC --- KC
   P1 -->|"b2.Put + Submit(key)"| P2
   P2 --- K2
   P2 -->|"b3.Put + Submit(key)"| P3
@@ -77,6 +91,7 @@ flowchart TB
 | `sync_concurrency` / `sync_retries` | 8 / 3 | 库只开一个连接，并发再高也是排队 |
 | `asset_batch` / `asset_concurrency` | 4 / 3 | 实际出站请求还要乘 `tag_concurrency` |
 | `agent_batch` / `agent_concurrency` | 1 / 3 | 对齐模型服务的并发槽位（`-np`），别越过它 |
+| `command_batch` / `command_concurrency` | 1 / 2 | 管理指令阶段；没有 `command_retries`，代码里固定 0 |
 | `per_chat_capacity` | 500 | 单群积压上限 |
 | `global_capacity` | 5000 | 全进程积压上限 |
 | `drain_timeout_sec` | 10 | 关停时最多等多久把存量做完 |
@@ -89,7 +104,7 @@ flowchart TB
 sequenceDiagram
   participant A as app
   participant B as bot.Run
-  participant W as 三个 Stage
+  participant W as 四个 Stage
   B->>B: 起 worker（用独立 ctx，不受应用 ctx 影响）
   A->>B: ctx 取消
   B->>W: drain(DrainTimeout)：等 pending 和 active 都归零
@@ -122,5 +137,5 @@ sequenceDiagram
 | `pipeline/buffer.go` | `Buffer` 接口、`MemoryBuffer` 的阻塞与关闭语义 |
 | `pipeline/worker.go` | `Stage` 的池、ready 队列、inflight、`maxBurstPerTurn`、重试与死信 |
 | `bot/ingest.go` | `Run`（起停、排空）、`AcceptEvent`（入 B1） |
-| `bot/stages.go` | `handleSync` / `handleAssets` / `handleAgent` |
+| `bot/stages.go` | `handleSync` / `handleAssets` / `handleAgent` / `handleCommand` |
 | `conversation/types.go` | `Inbound`、`Synced` 的字段与谁填什么 |

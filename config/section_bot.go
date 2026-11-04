@@ -78,6 +78,55 @@ func (l *workspaceIDList) UnmarshalYAML(node *yaml.Node) error {
 	}
 }
 
+// commandAdmins 是 command_admins 的解码类型：群 ID → 管理员 user_id 列表。
+//
+//	command_admins:
+//	  "群ID-A":                 # 列表写法
+//	    - "openid-1"
+//	    - "openid-2"
+//	  "群ID-B": "openid-1,openid-2"   # 逗号分隔写法
+//
+// 两种写法归一成同一个切片。不配就是空映射：所有群都没有管理员，
+// 也就没人能执行管理指令（#帮助 与私聊例外）。
+type commandAdmins map[string][]string
+
+func (m *commandAdmins) UnmarshalYAML(node *yaml.Node) error {
+	// 整段写成 null / 空串等同于没配。
+	if node.Kind == yaml.ScalarNode && node.Value == "" {
+		*m = nil
+		return nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("bot.command_admins 只支持「群ID: 管理员列表」的映射写法，实际是 %s", node.Tag)
+	}
+	out := make(map[string][]string, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		groupID := strings.TrimSpace(node.Content[i].Value)
+		value := node.Content[i+1]
+		var users []string
+		switch value.Kind {
+		case yaml.ScalarNode:
+			users = parseCommaList(value.Value)
+		case yaml.SequenceNode:
+			var items []string
+			if err := value.Decode(&items); err != nil {
+				return err
+			}
+			users = make([]string, 0, len(items))
+			for _, item := range items {
+				if item = strings.TrimSpace(item); item != "" {
+					users = append(users, item)
+				}
+			}
+		default:
+			return fmt.Errorf("bot.command_admins[%q] 只支持逗号分隔字符串或 YAML 列表，实际是 %s", groupID, value.Tag)
+		}
+		out[groupID] = users
+	}
+	*m = out
+	return nil
+}
+
 // botSection 机器人白名单（config.yaml 的 bot 段）
 type botSection struct {
 	// AllowGroups 群白名单，支持逗号分隔字符串与 YAML 列表两种写法（见 groupList）。
@@ -98,6 +147,13 @@ type botSection struct {
 	// 不主动接话；只有被 @ 或私聊时回一句固定话术表明身份。
 	// 主备双号部署时给备份号配这里：主答挂了把这两个号换一下即可，历史缓存还在。
 	RecordOnlyAccounts workspaceIDList `yaml:"record_only_accounts"`
+
+	// CommandAdmins 各群的管理员 user_id：只有名单里的人能执行 # 开头的管理指令。
+	//
+	// 不配 = 所有群都没有管理员 = 没人能执行管理指令（#帮助 与私聊例外）。
+	// 群 ID 与 user_id 都是日志里的原始值：QQ 官方账号下两者都是 openid，
+	// 填 QQ 号永远匹配不上。写法见 commandAdmins。
+	CommandAdmins commandAdmins `yaml:"command_admins"`
 
 	// ---- 主动插话（非 @ 时由大模型裁决要不要接话） ----
 	// 全局一份，所有工作空间共用；关闭时行为与改造前完全一致。
@@ -216,6 +272,41 @@ func (s *botSection) Validate() error {
 				"档案里没有它会无法自动开通，也就记录不到消息", "account", account)
 		}
 	}
+
+	// command_admins：群 ID 去空白后不能为空、不能撞键；用户 ID 去重。
+	// 某个群名单为空只告警不报错：写了一半的配置不该阻止启动，
+	// 代价是该群没人能用管理指令（群级 fail-closed）。
+	if len(s.CommandAdmins) == 0 {
+		logutil.Warn("未配置 bot.command_admins：所有群的管理指令已禁用（#帮助 与私聊不受限）")
+	}
+	cleanedAdmins := make(map[string][]string, len(s.CommandAdmins))
+	for groupID, users := range s.CommandAdmins {
+		key := strings.TrimSpace(groupID)
+		if key == "" {
+			return fmt.Errorf("bot.command_admins 的群 ID 不能为空")
+		}
+		if _, ok := cleanedAdmins[key]; ok {
+			return fmt.Errorf("bot.command_admins 中重复的群 ID（去空白后相同）：%s", key)
+		}
+		cleaned := make([]string, 0, len(users))
+		seenUser := make(map[string]struct{}, len(users))
+		for _, user := range users {
+			user = strings.TrimSpace(user)
+			if user == "" {
+				continue
+			}
+			if _, dup := seenUser[user]; dup {
+				continue
+			}
+			seenUser[user] = struct{}{}
+			cleaned = append(cleaned, user)
+		}
+		if len(cleaned) == 0 {
+			logutil.Warn("bot.command_admins 里这个群没有管理员：该群没有人能执行管理指令", "group", key)
+		}
+		cleanedAdmins[key] = cleaned
+	}
+	s.CommandAdmins = cleanedAdmins
 
 	// 主动插话的数值项：0 是有效值（不冷却/不设间隔等），负数没有意义。
 	for _, item := range []struct {

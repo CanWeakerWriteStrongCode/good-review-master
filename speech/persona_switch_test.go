@@ -83,6 +83,8 @@ func newSwitchTestEnv(t *testing.T) *switchTestEnv {
 			CacheMissCost:    1.0,
 			MaxContextTokens: 50000,
 		},
+		// 管理指令默认对未授权用户关闭：这个环境里的操作者 UserID 固定为 "1"。
+		CommandAdmins: map[string][]string{"20001": {"1"}},
 	}
 	fake := testutil.NewFakeLLM()
 	obClient := onebot.NewClient("", nil, "") // 死地址，SendGroupMessage 仅日志

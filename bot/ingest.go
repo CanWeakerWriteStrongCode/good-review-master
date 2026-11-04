@@ -21,7 +21,7 @@ const (
 	drainPollInterval = 20 * time.Millisecond
 )
 
-// Run 启动三段消费 worker，并阻塞到生命周期结束。
+// Run 启动各段消费 worker，并阻塞到生命周期结束。
 //
 // 关闭时先停止接收新事件，给存量队列 DrainTimeout 排空；到期后关闭缓冲，
 // 各 worker 退出。消息本体在 Stage 1 已同步入库，排空失败不会丢正文。
@@ -35,6 +35,7 @@ func (b *Bot) Run(ctx context.Context) {
 	b.stage1.Run(workerCtx)
 	b.stage2.Run(workerCtx)
 	b.stage3.Run(workerCtx)
+	b.stageCommand.Run(workerCtx)
 
 	<-ctx.Done()
 	logutil.Info("消息处理开始排空", "超时", b.cfg().Pipeline.DrainTimeout)
@@ -43,9 +44,11 @@ func (b *Bot) Run(ctx context.Context) {
 	b.stage1.Close()
 	b.stage2.Close()
 	b.stage3.Close()
+	b.stageCommand.Close()
 	b.stage1.Wait()
 	b.stage2.Wait()
 	b.stage3.Wait()
+	b.stageCommand.Wait()
 	logutil.Info("消息分发循环已退出")
 }
 
@@ -55,17 +58,18 @@ func (b *Bot) drain(timeout time.Duration) {
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if b.pending() == 0 && b.stage1.Active() == 0 && b.stage2.Active() == 0 && b.stage3.Active() == 0 {
+		if b.pending() == 0 && b.stage1.Active() == 0 && b.stage2.Active() == 0 &&
+			b.stage3.Active() == 0 && b.stageCommand.Active() == 0 {
 			return
 		}
 		time.Sleep(drainPollInterval)
 	}
 	logutil.Warn("关停排空超时，仍有消息未处理完", "pending", b.pending(),
-		"active", b.stage1.Active()+b.stage2.Active()+b.stage3.Active())
+		"active", b.stage1.Active()+b.stage2.Active()+b.stage3.Active()+b.stageCommand.Active())
 }
 
 func (b *Bot) pending() int {
-	return b.b1.Total() + b.b2.Total() + b.b3.Total()
+	return b.b1.Total() + b.b2.Total() + b.b3.Total() + b.bCmd.Total()
 }
 
 // AcceptEvent 把一条事件放进 B1 后立即返回。

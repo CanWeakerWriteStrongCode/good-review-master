@@ -40,6 +40,19 @@
 | `deliver.go` | 交付：句子 → 发送动作 → 台账 → 聊天渠道 |
 | `persona_render.go` | 人格：按群绑定，渲染成提示片段 |
 | `internal_cmd.go` | 内置指令：群内动态增删指令、切人格这类不花模型钱的命令 |
+| `command_run.go` | 内部指令的“判”与“做”：`MatchInternalCommand`（只读，给 Stage 1 分流）、`RunInternalCommand`（唯一副作用入口） |
+
+## 管理指令的权限与入口
+
+内部指令（`Category == "internal"`）会改系统状态，默认就不该开放：
+
+- **每个群单独配管理员**（`bot.command_admins`），名单外的成员一律拒绝；没配的群 = 没人能用。管理员身份不跨群继承，`"*"` 不是通配符。
+- **两个例外**：`#帮助` 对所有人开放（查看列表无副作用）；私聊直接放行（只有一个人，没必要再压权限）。
+- **只判 `internal`**：「锐评」这类功能指令（`chat_review`）不受影响。
+
+权限判定只有一份实现（`policy.CanUseCommand`），调用点只有 `RunInternalCommand`。`MatchInternalCommand` 是只读的、不判权限，它只回答“这条消息要不要送到指令阶段”。
+
+指令参数按**文本段**解析（`commandText`）：渲染后的正文会把 `@昵称(ID)` 按原位置拼进去，直接拿来切参数会让「`#切换人格` + 末尾还 @ 了机器人」变成「未找到人格：@昵称(ID)」。
 
 ## 一次 @ 的处理
 
@@ -57,7 +70,9 @@ sequenceDiagram
 
   B->>R: RouteMessageNow(content, event, chatID, 窗口快照)
   R->>C: 匹配指令
-  alt 命中指令
+  alt 命中管理指令（正常链路已在 Stage Command 执行，这里只有面板/调试触发）
+    R->>R: RunInternalCommand：判权限 → 取参数 → handler
+  else 命中功能指令
     C-->>R: HandlerFunc
     R->>R: 执行（可能调模型，也可能纯本地）
   else 没命中

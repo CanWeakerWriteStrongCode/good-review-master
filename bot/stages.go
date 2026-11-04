@@ -39,8 +39,22 @@ func (b *Bot) handleSync(ctx context.Context, key string, items []pipeline.Item)
 			logutil.Debug("工作空间已不存在，跳过这一批", "workspace", workspaceID)
 			continue
 		}
+		cfg := ws.Snapshot()()
 		for _, synced := range ws.PrepareBatch(ctx, inbounds) {
 			nextKey := conversation.ChatKey(synced.WorkspaceID, synced.ChatID)
+			// 管理指令走独立阶段：控制平面不占打标签与 Agent 的并发槽，也不进群聊缓存
+			//（模型看不到“刚才有人切了人格”，已确认可接受）。
+			// record-only 的指令不转出：备用号只记录，交回原路径由 Stage 3 回固定话术。
+			if b.isInternalCommand(ws, cfg, synced) && !policy.IsRecordOnly(cfg, ws.ID) {
+				if err := b.forward(ctx, b.bCmd, pipeline.StageCommand, nextKey, synced.Message.MessageID, synced); err != nil {
+					if item, ok := byMessage[synced.Message.MessageID]; ok {
+						b.deadLetter(item, err)
+					}
+				} else {
+					b.stageCommand.Submit(nextKey)
+				}
+				continue
+			}
 			if err := b.forward(ctx, b.b2, pipeline.StageAssets, nextKey, synced.Message.MessageID, synced); err != nil {
 				if item, ok := byMessage[synced.Message.MessageID]; ok {
 					b.deadLetter(item, err)
@@ -51,6 +65,45 @@ func (b *Bot) handleSync(ctx context.Context, key string, items []pipeline.Item)
 		}
 	}
 	return failed
+}
+
+// isInternalCommand 只做只读匹配：命中就说明这条消息该进 Stage Command。
+// 执行前的第二次匹配在 speech.RunInternalCommand 里，两处不能合并。
+func (b *Bot) isInternalCommand(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) bool {
+	if ws == nil || ws.Router == nil {
+		return false
+	}
+	_, ok := ws.Router.MatchInternalCommand(synced.Event, synced.Message.Content,
+		b.allowNicknameFallback(ws, cfg.BotNickname))
+	return ok
+}
+
+// handleCommand 是 Stage Command：执行管理指令，不进入 Stage 2/3。
+//
+// 永远返回空：指令副作用不幂等，重试等于执行两次（#添加人格 会生成两个人格）。
+// 失败只能在 handler 内部回一句错误，这条消息就此结束。
+func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item) []pipeline.FailedItem {
+	for _, item := range items {
+		synced, err := pipeline.DecodeItem[conversation.Synced](item)
+		if err != nil {
+			logutil.Warn("指令阶段载荷解码失败，已丢弃", "item", item.ID, "err", err)
+			continue
+		}
+		ws, ok := b.workspaces.ByID(synced.WorkspaceID)
+		if !ok || ws.Router == nil {
+			continue
+		}
+		cfg := ws.Snapshot()()
+		if !ws.Router.RunInternalCommand(ctx, synced.Event, synced.ChatID,
+			synced.Message.Content, b.allowNicknameFallback(ws, cfg.BotNickname)) {
+			// 分流后路由表被别的指令改掉（关键字被删了）：丢弃即可，
+			// 消息正文在 Stage 1 已经入库。
+			logutil.Warn("指令在分流后已匹配不上，已丢弃",
+				"workspace", ws.ID, "chat", synced.ChatID,
+				"message", synced.Message.MessageID, "content", synced.Message.Content)
+		}
+	}
+	return nil
 }
 
 // handleAssets 是 Stage 2：给一批消息打资产标签，欠条落库后继续进入 Stage 3。
@@ -262,11 +315,11 @@ func (b *Bot) forward(ctx context.Context, buf pipeline.Buffer, stage, key, mess
 	return nil
 }
 
-// closeBuffers 关闭三段缓冲；阻塞中的 Take 会被唤醒。
+// closeBuffers 关闭各阶段缓冲；阻塞中的 Take 会被唤醒。
 func (b *Bot) closeBuffers() {
 	b.closeOnce.Do(func() {
 		b.closed.Store(true)
-		for _, buf := range []pipeline.Buffer{b.b1, b.b2, b.b3} {
+		for _, buf := range []pipeline.Buffer{b.b1, b.b2, b.b3, b.bCmd} {
 			if err := buf.Close(); err != nil {
 				logutil.Warn("关闭阶段缓冲失败", "err", err)
 			}

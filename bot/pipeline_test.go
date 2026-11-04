@@ -286,3 +286,81 @@ func Test只记录账号不回复但照常入缓存(t *testing.T) {
 		t.Fatalf("只记录账号不应调用大模型，实际 %d 次", len(calls))
 	}
 }
+
+// Test管理指令走独立阶段 内部指令不该进 Stage 2/3：不调大模型、不进群聊缓存。
+// 走旧路径时 #帮助 会先被 gc.Add 再回复，所以“缓存里没有它”就是分流生效的证据。
+func Test管理指令走独立阶段(t *testing.T) {
+	dir := t.TempDir()
+	system := filepath.Join(dir, "prompt_system.yaml")
+	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		AllowGroups:       []string{"g1"},
+		WorkspaceAccounts: []string{"qq_official_bot_1906"},
+		BotNickname:       "小助理",
+		CommandAdmins:     map[string][]string{"g1": {"u1"}},
+		MaxCacheMsg:       100,
+		MaxMsgRune:        500,
+		LLMSendCount:      10,
+		LLMTimeout:        2 * time.Second,
+	}
+	snapshot := func() *config.Config { return cfg }
+	fake := testutil.NewFakeLLM()
+	mgr, err := workspace.New(snapshot, system, filepath.Join(dir, "prompt_custom.yaml"),
+		fake, nil, nil, context.Background())
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	t.Cleanup(mgr.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	b := NewBot(snapshot, mgr)
+	go b.Run(ctx)
+
+	event := onebot.Event{
+		ID:          "e1",
+		Time:        float64(time.Now().Unix()),
+		Type:        "message",
+		DetailType:  "group",
+		Self:        onebot.Self{Platform: "qq", UserID: "bot-openid"},
+		AccountKind: "official_bot",
+		MessageID:   "m1",
+		GroupID:     "g1",
+		UserID:      "u1",
+		Message: []onebot.Segment{
+			onebot.TextSegment("#帮助"),
+			onebot.MentionSegment("bot-openid"),
+		},
+		AltMessage: "@小助理 #帮助",
+	}
+	if accepted, err := b.AcceptEvent(ctx, "1906", event); err != nil || !accepted {
+		t.Fatalf("AcceptEvent = %v, %v", accepted, err)
+	}
+
+	// 给 Stage 1/Command 足够时间跑完；若仍走旧路径，这会儿已经进缓存了。
+	time.Sleep(500 * time.Millisecond)
+	ws, ok := mgr.ByID("qq_official_bot_1906")
+	if !ok {
+		t.Fatal("工作空间未开通")
+	}
+	// 机器人自己的回复会进缓存（recordSelfReply），但入站的那条指令本体不该进：
+	// 它没走 Stage 3，也就没有 gc.Add。
+	msgs := ws.Cache.GetGroupCache("g1", 100).GetAll()
+	replied := false
+	for _, msg := range msgs {
+		if msg.MessageID == "m1" {
+			t.Fatalf("管理指令本体不应进入群聊缓存：%+v", msg)
+		}
+		if strings.Contains(msg.Content, "指令帮助") {
+			replied = true
+		}
+	}
+	if !replied {
+		t.Fatalf("指令没有得到回复，可能根本没执行：%+v", msgs)
+	}
+	if calls := fake.Calls(); len(calls) != 0 {
+		t.Fatalf("管理指令不应调用大模型，实际 %d 次", len(calls))
+	}
+}
