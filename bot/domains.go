@@ -51,7 +51,13 @@ func (b *Bot) handleSync(ctx context.Context, _ string, items []pipeline.Item) R
 	return out
 }
 
-// handleCommand 是管理指令域：执行指令，不进入打标签与生成。
+// handleCommand 是指令域，也是聊天工作流的闸门：执行指令，然后如实交回"还要不要往下走"。
+//
+// 三种结局：
+//
+//	不是指令        → command_pass，交给打标签与生成
+//	终止型指令      → command_done，到此为止（#帮助 / #切换人格 / #关闭 …）
+//	门控指令 #启动  → 执行完打上 CommandRan，交 command_pass 继续往下
 //
 // 交回执但不重试：指令副作用不幂等，重试等于执行两次（#添加人格 会生成两个人格）。
 // 失败只能在 handler 内部回一句错误，这条消息不再进重试队列。
@@ -63,32 +69,58 @@ func (b *Bot) handleCommand(ctx context.Context, _ string, items []pipeline.Item
 			logutil.Warn("指令域载荷解码失败，已丢弃", "item", item.ID, "err", err)
 			continue
 		}
-		// 如实汇报"这一条经手完了"，不管下面走了哪个分支。之后还有没有下一站
-		// 不在这里决定：现在 command_done 被声明为终点，要接审计域时改链即可。
-		out.Signals = append(out.Signals, Signal{
-			Event:   EventCommandDone,
-			Key:     conversation.ChatKey(synced.WorkspaceID, synced.ChatID),
-			MsgID:   synced.Message.MessageID,
-			Payload: synced,
-		})
-		ws, ok := b.workspaces.ByID(synced.WorkspaceID)
-		if !ok || ws.Router == nil {
-			continue
-		}
-		cfg := ws.Snapshot()()
-		if !ws.Router.RunInternalCommand(ctx, synced.Event, synced.ChatID,
-			synced.Message.Content, b.allowNicknameFallback(ws, cfg.BotNickname)) {
-			// 分流后路由表被别的指令改掉（关键字被删了）：丢弃即可，
-			// 消息正文在 sync 已经入库。
-			logutil.Warn("指令在分流后已匹配不上，已丢弃",
-				"workspace", ws.ID, "chat", synced.ChatID,
-				"message", synced.Message.MessageID, "content", synced.Message.Content)
-		}
+		key := conversation.ChatKey(synced.WorkspaceID, synced.ChatID)
+		out.Signals = append(out.Signals, b.gate(ctx, key, synced))
 	}
 	return out
 }
 
+// gate 处理一条消息的闸门部分，交回"这一条该发的那个事件"。
+//
+// 没有指令、或指令已失效时一律交给 command_pass：消息已经入库，
+// 让它照常走一次聊天（不回复、也不丢）比卡在这里好。
+func (b *Bot) gate(ctx context.Context, key string, synced conversation.Synced) Signal {
+	pass := Signal{Event: EventCommandPass, Key: key, MsgID: synced.Message.MessageID, Payload: synced}
+	done := Signal{Event: EventCommandDone, Key: key, MsgID: synced.Message.MessageID, Payload: synced}
+
+	ws, ok := b.workspaces.ByID(synced.WorkspaceID)
+	if !ok || ws.Router == nil {
+		return pass
+	}
+	cfg := ws.Snapshot()()
+	// 备用号只记录：账号级策略盖过会话级，指令一条都不执行（保持改造前的语义）。
+	if policy.IsRecordOnly(cfg, ws.ID) {
+		return pass
+	}
+
+	keyword, continues, matched := ws.Router.MatchInternalCommand(
+		synced.Event, synced.Message.Content, b.allowNicknameFallback(ws, cfg.BotNickname))
+	if !matched {
+		return pass
+	}
+	if !ws.Router.RunInternalCommand(ctx, synced.Event, synced.ChatID,
+		synced.Message.Content, b.allowNicknameFallback(ws, cfg.BotNickname)) {
+		// 分流后路由表被别的指令改掉（关键字被删了）：丢弃即可，
+		// 消息正文在 sync 已经入库。
+		logutil.Warn("指令在分流后已匹配不上，已丢弃",
+			"workspace", ws.ID, "chat", synced.ChatID,
+			"message", synced.Message.MessageID, "content", synced.Message.Content)
+		return pass
+	}
+	if !continues {
+		return done
+	}
+	// 门控指令已经执行完了：下游不能再把它当指令匹配一次，
+	// 否则会执行两遍、且这句话一句也回不出来（见 speech.ReplyAddressedNow）。
+	synced.CommandRan = keyword
+	pass.Payload = synced
+	return pass
+}
+
 // handleAssets 是打标签域：给一批消息打资产标签、写欠条，然后回执给编排层。
+//
+// 会话开关关着时跳过打标签（图只给模型看，不回复就不用看），
+// 但仍然交回 EventTagged：下游自己会判断要不要干活，这里不替它决定。
 func (b *Bot) handleAssets(ctx context.Context, _ string, items []pipeline.Item) Outcome {
 	var out Outcome
 	tagger := b.workspaces.Tagger()
@@ -99,7 +131,7 @@ func (b *Bot) handleAssets(ctx context.Context, _ string, items []pipeline.Item)
 			continue
 		}
 		if ws, ok := b.workspaces.ByID(synced.WorkspaceID); ok {
-			if tagger != nil && len(synced.Message.Images) > 0 {
+			if tagger != nil && len(synced.Message.Images) > 0 && ws.Router.AgentEnabled(synced.ChatID) {
 				result := tagger.TagURLs(ctx, synced.Message.Images)
 				synced.Message.ImageIDs = result.ImageIDs
 				synced.Message.ImageNotes = result.ImageNotes
@@ -155,6 +187,10 @@ func (b *Bot) persistDeferred(synced conversation.Synced, result assets.TagResul
 //
 // 每条经手的消息都交一条 EventReplied 事件，包括"判定不该回"的那些——
 // 域只汇报这一条处理完了；之后还有没有事，由链的拓扑决定。
+//
+// 两道闸门先于一切回复动作：
+//  1. record-only 账号：只记录，被点名时回一句固定话术；
+//  2. 会话开关关着（#关闭 过）：同样只记录，但连那句话也不回。
 func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item) Outcome {
 	var out Outcome
 	type proactiveTask struct {
@@ -202,6 +238,12 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 			continue
 		}
 
+		// 会话被 #关闭 过：连固定话术也不回。群已经要求它闭嘴，
+		// 再回一句"我关了"正是它该停的那种噪音。
+		if !ws.Router.AgentEnabled(synced.ChatID) {
+			continue
+		}
+
 		msgs := gc.GetAll()
 		index := conversation.FindMsgIndex(msgs, synced.Message.MessageID)
 		if index < 0 {
@@ -209,6 +251,13 @@ func (b *Bot) handleAgent(ctx context.Context, key string, items []pipeline.Item
 			continue
 		}
 		snapshot := msgs[:index+1]
+
+		// 门控指令（#启动）已经执行完了：这句 @ 要回，但不能再当指令匹配一遍
+		// （那会二次执行、并且一句不回）。直接按当前人格直答。
+		if synced.CommandRan != "" {
+			ws.Router.ReplyAddressedNow(ctx, synced.Message.Content, synced.Event, synced.ChatID, snapshot)
+			continue
+		}
 
 		if b.addressed(ws, cfg, synced) {
 			ws.Router.RouteMessageNow(ctx, synced.Message.Content, synced.Event, synced.ChatID, snapshot)

@@ -17,13 +17,16 @@ import (
 // 这里只回答"是不是指令"和"执行一条指令"，不碰流水线本身。
 
 // MatchInternalCommand 只回答"这条消息是不是内部指令"，不执行、不改状态。
-// 前置用它决定把消息送去哪条工作流；必须保持无副作用。
-func (r *Router) MatchInternalCommand(event onebot.Event, content string, allowNickname bool) (string, bool) {
-	route, _, ok := r.matchInternal(event, content, allowNickname)
-	if !ok {
-		return "", false
+// 前置用它决定发哪种事件（终止 / 继续）；必须保持无副作用。
+//
+// continues 是命中指令的 ContinueAfterRun：它只回答「执行完还要不要让这条消息
+// 走下去」，不预设是哪一条指令——拓扑只照抄，不认关键字。
+func (r *Router) MatchInternalCommand(event onebot.Event, content string, allowNickname bool) (keyword string, continues bool, ok bool) {
+	route, _, matched := r.matchInternal(event, content, allowNickname)
+	if !matched {
+		return "", false, false
 	}
-	return route.Keyword, true
+	return route.Keyword, route.ContinueAfterRun, true
 }
 
 // RunInternalCommand 执行一条内部指令，返回 false 表示"现在匹配不上了"。

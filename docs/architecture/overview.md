@@ -79,16 +79,17 @@ sequenceDiagram
   IM->>B: orch.admit(Inbound)，入站缓冲满了回 503
   B->>S: Item{Node:sync, Tag:空}
   S->>DB: 补成员名、补被引用消息、写 messages
-  S-->>B: 交回工作流名（chat 或 command）
-  alt 命中管理指令
-    B->>C: enter(command)，Tag 从此为 command
+  S-->>B: 交回工作流名（现在只有 chat）
+  B->>C: enter(chat)，Tag 从此为 chat
+  alt 是普通管理指令（如 #帮助）
     C->>SP: RunInternalCommand：再判匹配 → 判权限 → 执行 handler
     SP->>A: send_message（不调大模型、不进缓存）
     C-->>B: 交回 command_done
     Note over B: 这条工作流把它声明为终点，到此为止
-  else 普通聊天
-    B->>G: enter(chat)，Tag 从此为 chat
-    G->>L: 只对没见过的图调一次描述
+  else 不是指令，或门控指令 #启动
+    C-->>B: 交回 command_pass（门控指令已在载荷里记下 CommandRan）
+    B->>G: advance(chat, command_pass)
+    G->>L: 只对没见过的图调一次描述（会话开关关着时跳过）
     G->>DB: 写 image_notes / asset_tag_jobs
     G-->>B: 交回 tagged
     B->>R: advance(chat, tagged)

@@ -37,6 +37,8 @@ func assemble(sections *sections) *Config {
 		WorkspaceAccounts:  convertWorkspaceAccounts([]string(sections.Bot.AllowWorkspaceAccounts)),
 		RecordOnlyAccounts: convertWorkspaceAccounts([]string(sections.Bot.RecordOnlyAccounts)),
 		CommandAdmins:      convertCommandAdmins(sections.Bot.CommandAdmins),
+		// SetDefaults 保证非 nil，这里直接解引用。
+		AgentDefaultEnabled: *sections.Bot.AgentDefaultEnabled,
 
 		ProactiveEnabled:      sections.Bot.ProactiveEnabled,
 		ProactiveCooldown:     time.Duration(*sections.Bot.ProactiveCooldownSec) * time.Second,

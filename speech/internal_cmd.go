@@ -52,6 +52,13 @@ func (r *Router) registerInternalCommands() {
 	r.register(Command{Keyword: "#删除指令规则", Help: helpDelRule, Category: "internal", Handler: r.handleDeleteRule})
 	r.register(Command{Keyword: "#切换人格", Help: helpSwitchPersona, Category: "internal", Handler: r.handleSwitchPersona})
 	r.register(Command{Keyword: "#取消人格", Help: helpCancelPersona, Category: "internal", Handler: r.handleCancelPersona})
+	// 门控指令：唯一两条执行完还要让消息继续往下走的指令。
+	// #启动 必须继续——它打开的就是下游那两个域，本条 @ 要由它们答。
+	// #关闭 不继续：开关已关，再走两跳只会在两个关掉的域里空跑。
+	r.register(Command{Keyword: keywordAgentStart, Help: helpAgentStart, Category: "internal",
+		Handler: r.handleAgentStart, ContinueAfterRun: true})
+	r.register(Command{Keyword: keywordAgentStop, Help: helpAgentStop, Category: "internal",
+		Handler: r.handleAgentStop})
 	r.register(Command{Keyword: internalKeywordHelp, Help: helpHelp, Category: "internal", Handler: r.handleListCommands})
 }
 

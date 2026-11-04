@@ -51,3 +51,4 @@
 | [cache-cost-2026-11.md](cache-cost-2026-11.md) | 缓存窗口「扩展」与「重置」的成本测算 | Implemented | [ADR-0006](../adr/0006-token-cost-cache-window.md) |
 | [mq-readiness-2026-11.md](mq-readiness-2026-11.md) | 上 MQ 之前必须补什么、什么时候才真该换 | Accepted（本期不做） | [ADR-0005](../adr/0005-orchestration-layer.md) 的「后果」 |
 | [orchestrator-workflow-2026-11.md](orchestrator-workflow-2026-11.md) | 域回消息、编排层转发的改造方案：`Pick` / `Signal`、`enter` / `advance`、五条边界条件 | Implemented | [ADR-0005](../adr/0005-orchestration-layer.md)、[message-flow](../architecture/message-flow.md)、[domains/pipeline](../domains/pipeline.md) |
+| [command-gate-2026-11.md](command-gate-2026-11.md) | 指令模块前移到 Agent 工作流入口：`#启动` / `#关闭` 门控、会话级开关、`CommandRan` 防止二次执行 | Implemented | 待补 ADR-0007 |

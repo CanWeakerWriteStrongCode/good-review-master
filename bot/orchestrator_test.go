@@ -204,6 +204,12 @@ func Test编排层同一个去向既连线又称终点会panic(t *testing.T) {
 	}
 }
 
+// testWorkflowAlt 是测试里自造的第二条工作流。
+//
+// 以前这里直接拿 WorkflowCommand 当样本，指令工作流并进 chat 之后它不存在了；
+// 但"编排层支持多条工作流"这件事本身必须继续有测试盯着，所以自己造一个名字。
+const testWorkflowAlt = "alt"
+
 // Test前置把消息路由到不同工作流 是拆分后的核心：前置不属于任何一条工作流，
 // 它只回一个工作流名，编排层负责翻译成那条工作流的入口域。
 // 两条工作流各自收到自己的那一条，没有串到对方。
@@ -219,7 +225,7 @@ func Test前置把消息路由到不同工作流(t *testing.T) {
 	o.mountRouter(pipeline.NodeSync, func(_ context.Context, key string, items []pipeline.Item) RouterOutcome {
 		workflow := WorkflowChat
 		if key == "cmd" {
-			workflow = WorkflowCommand
+			workflow = testWorkflowAlt
 		}
 		return RouterOutcome{Picks: []Pick{{
 			Workflow: workflow, Key: key, MsgID: items[0].ID, Payload: struct{}{},
@@ -234,7 +240,7 @@ func Test前置把消息路由到不同工作流(t *testing.T) {
 		return Outcome{}
 	}, testConsumerConfig, 8, 8)
 	o.workflow(WorkflowChat, "chat_entry")
-	o.workflow(WorkflowCommand, "cmd_entry")
+	o.workflow(testWorkflowAlt, "cmd_entry")
 
 	o.run(ctx)
 	defer func() {
@@ -279,7 +285,7 @@ func Test没挂前置时admit报错(t *testing.T) {
 }
 
 // Test两条工作流各自解析同名去向 是 topic + tag 模型的核心：
-// 去向只在所属的那条工作流里查，所以 chat 和 command 各声明一个 "done" 互不干扰。
+// 去向只在所属的那条工作流里查，所以 chat 和自造的那条各声明一个 "done" 互不干扰。
 // 消息带着自己的 tag 走到底，投到各自工作流的下一个域。
 func Test两条工作流各自解析同名去向(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -301,14 +307,14 @@ func Test两条工作流各自解析同名去向(t *testing.T) {
 		return Outcome{}
 	}, testConsumerConfig, 8, 8)
 	o.mount("cmd_next", func(_ context.Context, _ string, items []pipeline.Item) Outcome {
-		got <- "command:" + items[0].Tag
+		got <- testWorkflowAlt + ":" + items[0].Tag
 		return Outcome{}
 	}, testConsumerConfig, 8, 8)
 
 	o.workflow(WorkflowChat, "chat_entry")
 	o.connect(WorkflowChat, "done", "chat_next")
-	o.workflow(WorkflowCommand, "cmd_entry")
-	o.connect(WorkflowCommand, "done", "cmd_next")
+	o.workflow(testWorkflowAlt, "cmd_entry")
+	o.connect(testWorkflowAlt, "done", "cmd_next")
 
 	o.run(ctx)
 	defer func() {
@@ -320,11 +326,11 @@ func Test两条工作流各自解析同名去向(t *testing.T) {
 	if err := o.start(ctx, WorkflowChat, "k1", "m1", struct{}{}); err != nil {
 		t.Fatalf("start chat: %v", err)
 	}
-	if err := o.start(ctx, WorkflowCommand, "k2", "m2", struct{}{}); err != nil {
+	if err := o.start(ctx, testWorkflowAlt, "k2", "m2", struct{}{}); err != nil {
 		t.Fatalf("start command: %v", err)
 	}
 
-	want := map[string]bool{"chat:chat": false, "command:command": false}
+	want := map[string]bool{"chat:chat": false, testWorkflowAlt + ":" + testWorkflowAlt: false}
 	for range want {
 		select {
 		case v := <-got:

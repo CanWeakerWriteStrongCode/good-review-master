@@ -27,6 +27,11 @@ type Config struct {
 	// 空表示所有群都没有管理员：没人能执行管理指令（#帮助 与私聊除外）。
 	CommandAdmins map[string][]string
 
+	// AgentDefaultEnabled 会话没有显式 #启动 / #关闭 过时，打标签与 Agent 是否运行。
+	// 这是会话策略（不是性能参数），所以跟 command_admins 一起放在 bot 段。
+	// 默认 true：与改造前行为一致；配成 false 则新群默认静默，要 #启动 才回复。
+	AgentDefaultEnabled bool
+
 	// 主动插话（非 @ 时由大模型裁决）。全局一份，所有工作空间共用。
 	ProactiveEnabled      bool
 	ProactiveCooldown     time.Duration // 主动发言后该群的冷却

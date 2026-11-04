@@ -13,40 +13,37 @@ flowchart TB
   AC -->|"admit"| R["前置 sync · handleSync<br/>补全入库"]
   R -->|"PrepareBatch"| WS["workspace.Workspace.PrepareBatch"]
   WS --> DB[("state.db messages")]
-  R -->|"route"| RT["router · 只读择路<br/>不是节点，没有队列"]
-  RT -->|"回执 chat（tag）"| O["bot.orchestrator<br/>workflows：tag → 拓扑"]
-  RT -->|"回执 command（tag）"| O
+  R -->|"route"| ROUTE["router · 择路（单分支）<br/>不是节点，没有队列"]
+  ROUTE -->|"回执 chat（tag）"| O["bot.orchestrator<br/>workflows：tag → 拓扑"]
 
-  subgraph W1["工作流一：聊天"]
+  subgraph W1["工作流：聊天"]
+    SC["command · handleCommand<br/>闸门"]
     S2["assets · handleAssets"]
     S3["agent · handleAgent"]
   end
-  subgraph W2["工作流二：管理指令"]
-    SC["command · handleCommand"]
-  end
 
-  O -->|"enter(chat)：入口 assets"| S2
+  O -->|"enter(chat)：入口 command"| SC
+  O -->|"advance(chat, command_pass)：下一站 assets"| S2
   O -->|"advance(chat, tagged)：下一站 agent"| S3
-  O -->|"enter(command)：入口 command"| SC
+  SC --> RUN["speech.Router.RunInternalCommand"]
+  RUN --> POL["policy.CanUseCommand"]
   S2 -->|"Tagger.TagURLs"| AS["assets.ImageTagger"]
   S2 -->|"回执 tagged（chat）"| O
   S3 --> GC["conversation.GroupMsgCache"]
-  S3 -->|"被点名"| RT["speech.Router.RouteMessageNow"]
+  S3 -->|"被点名（含门控指令那句话）"| RT["speech.Router.RouteMessageNow"]
   S3 -->|"没被点名"| PA["speech.Router.TryProactiveNow"]
   RT --> GEN["Generate"]
   GEN --> LLM["llm.Client"]
   GEN --> DEL["sendReply"]
   DEL --> OB["onebot.Client"]
-  SC --> RUN["speech.Router.RunInternalCommand"]
-  RUN --> POL["policy.CanUseCommand"]
   S3 -->|"回执 replied（chat）"| O
-  SC -->|"回执 command_done（command）"| O
+  SC -->|"回执 command_done（chat）：指令执行完就停"| O
   O -->|"回执是所属工作流的终点<br/>声明为 ends"| END["到此为止"]
 ```
 
-一句话版：`im.Server` 收 → `bot.Bot` 交给编排层的前置 → 前置的 `sync` 补全入库、`router` 回一句「这条走聊天还是走指令」→ 编排层把这个名字记成消息的 **tag**，按它找到那条工作流的入口域（**topic**）：聊天走 `assets` 打标签 → `agent` 生成；指令走 `command` 执行。`agent` 之后的 `speech` 决定回不回、回什么，`deliver` 发出去。两条工作流的最后一个域交回「这一步完成了」，各自那条工作流把它声明为终点，消息到此结束。
+一句话版：`im.Server` 收 → `bot.Bot` 交给编排层的前置 → 前置的 `sync` 补全入库、`router` 回一个工作流名 → 编排层把这个名字记成消息的 **tag**，按它找到那条工作流的入口域（**topic**）：`command` 先当闸门（执行指令，决定还往不往下走）→ `assets` 打标签 → `agent` 生成。`agent` 之后的 `speech` 决定回不回、回什么，`deliver` 发出去。最后一个域交回「这一步完成了」，那条工作流把它声明为终点，消息到此结束。
 
-**前置只有一道，工作流有多条**。前置管「入口 + 补名 + 走哪条」，两条工作流之间没有任何连线——加一条工作流只是多一个 `workflow` 声明和它的几条 `connect`，前置不用动。
+**前置只有一道，工作流可以有多条**。前置管「入口 + 补名 + 走哪条」，工作流之间没有任何连线——加一条工作流只是多一个 `workflow` 声明和它的几条 `connect`，前置不用动。现在只有一条（`WorkflowChat`），所以 `workflowOf` 是个单分支函数，但参数与调用形状都留着。
 
 **域与域之间不互相调用**，中间那一跳永远是编排层：域手里没有 `Buffer`，只把「这一步发生了什么」交回去。
 
@@ -156,40 +153,45 @@ for _, synced := range ws.PrepareBatch(ctx, inbounds) {
 **路由规则**（`workflowOf`：只读、无副作用，可以单独测）：
 
 ```go
-if isInternalCommand(...) && !policy.IsRecordOnly(...) → WorkflowCommand
-else                                                     → WorkflowChat
+return WorkflowChat   // 现在只有一条工作流
 ```
 
-- `isInternalCommand` 调 `Router.MatchInternalCommand`：**只读**匹配（点名判定 → 剥前缀 → 前缀树 → `Category == "internal"`），不执行任何东西。
-- `record_only_accounts` 的账号不转出：它的指令按普通消息继续走聊天工作流，由生成域回固定话术。
-- 工作流名到入口域的那张表在 `bot/handler.go`：`chat → assets`、`command → command`。
+- 指令工作流并进聊天链之后，择路不再需要「这条是不是指令」——那个判断下移到 `command` 域（闸门），同一件事不再留两份。
+- 参数（`ws` / `cfg` / `synced`）全部用 `_` 收着：加第二条工作流时把判断填回去就行，调用方与编排层都不用动。
+- 工作流名到入口域的那张表在 `bot/handler.go`：`chat → command`。
 
-## ⑤ 控制域：`bot.handleCommand`
+## ⑤ 闸门域：`bot.handleCommand`
 
 **手里**：`conversation.Synced`。
 
-只转发一次调用，其余全在 `speech` 里：
+聊天工作流的第一站，也是唯一一个「可能不让消息继续走」的域：
+
+- 不是指令 → 回 `EventCommandPass`，继续去 `assets`。
+- 指令执行完就停 → 回 `EventCommandDone`（聊天工作流的终点），消息到此结束。
+- 门控指令（`#启动`，即 `Command.ContinueAfterRun`）→ 执行完把关键字记进 `Synced.CommandRan`，回 `EventCommandPass` 继续往下走。
 
 | 结构 | 位置 | 干什么 |
 | --- | --- | --- |
+| `Router.MatchInternalCommand` | `speech/command_run.go` | 只读匹配：点名 → 剥前缀 → 前缀树 → `Category == "internal"`；顺带交回该指令的 `ContinueAfterRun` |
 | `Router.RunInternalCommand` | `speech/command_run.go` | 指令**唯一**的副作用入口：再匹配一次 → 判权限 → 取参数 → 调 handler |
 | `routeTable` / `trieNode` | `speech/command.go` | 前缀树快照，`atomic.Pointer` 整体替换；`trieMatch` 是最长前缀匹配 |
-| `Command` | `speech/command.go` | 一条指令：关键字、`Category`、`Handler`、可选人格 |
+| `Command.ContinueAfterRun` | `speech/command.go` | 执行完停不停。零值 false = 到此为止，只有 `#启动` 置 true |
 | `commandText` | `speech/command_run.go` | 按**文本段**取正文（不用渲染后的正文），尾部 `@机器人` 不会污染参数 |
 | `policy.CanUseCommand` | `policy/policy.go` | 权限唯一实现：私聊放行、群内按 `bot.command_admins` 精确匹配、`#帮助` 例外 |
-| `internal_cmd.go` 各 handler | `speech/internal_cmd.go` | 真正干活：切人格写 `groupPersona` + `personaStore`，增删指令触发 `Rebuild` |
+| `internal_cmd.go` / `agent_gate.go` 各 handler | `speech/` | 真正干活：切人格写 `groupPersona` + `personaStore`；`#启动` / `#关闭` 写会话开关 |
+| `state.Scope.SaveGroupGate` / `LoadGroupGates` | `state/gate.go` | 会话开关落在 `settings` 表（前缀 `group_gate:`，后接工作空间 ID 与群号），三态靠「键在不在」表达 |
 
-两次匹配（前置路由一次、执行前一次）是故意的：中间可能被别的指令改了路由表（`#删除人格` 会删关键字），第二次失配就丢弃——正文在前置已经入库了。
+两次匹配（闸门里一次、执行前一次）是故意的：中间可能被别的指令改了路由表（`#删除人格` 会删关键字），第二次失配就丢弃——正文在前置已经入库了。
 
 这个域 `Retries` 固定 0：指令副作用不幂等，重试一次就是执行两次。
 
-处理完交回一条 `EventCommandDone` 回执。域只汇报「这一条经手完了」；指令工作流在 `NewBot` 里把 `command_done` 声明为终点（`orch.exit`），所以消息到此结束。**终止由链声明，不由域沉默**——要让指令执行完接下一个域，把那条 `exit` 换成 `connect` 就行，这个文件不用改。
+**终止由链声明，不由域沉默**：`command_done` 在 `NewBot` 里被 `orch.exit` 声明为终点；要让某类指令执行完接下一个域，把那行 `exit` 换成 `connect` 就行，这个文件不用改。门控指令走的就是这条路——`#启动` 回 `command_pass`，于是它自己那句话会继续流到 `agent` 被回复。
 
 ## ⑥ 打标签域：`bot.handleAssets`
 
 **手里**：`conversation.Synced`。
 
-只处理图片，且只处理「库里还没有描述」的图。
+只处理图片，且只处理「库里还没有描述」的图。会话开关关着时整块跳过——不回话就不用看图，这一步不值得花钱。仍然照交 `EventTagged`：下游自己会判断要不要干活。
 
 | 结构 | 位置 | 干什么 |
 | --- | --- | --- |
@@ -214,6 +216,9 @@ else                                                     → WorkflowChat
 | `conversation.Store` / `GroupMsgCache` | `conversation/cache.go` | 每群一个环形缓存 + O(1) 去重集；`Add` 入缓存，`GetAll` 出快照 |
 | `Workspace.LearnIdentity` / `SyncSelfName` | `workspace/workspace.go` | 学机器人自己的 openid 与群内显示名（openid 是账号级，学一次全群可用） |
 | `policy.IsRecordOnly` | `policy/policy.go` | 只记录不回复的账号：缓存入库照做，被点名时 `SayFixed(RecordOnlyReply)` 就结束，不调模型 |
+| `Router.AgentEnabled` | `speech/router.go` | 会话开关（`#启动` / `#关闭`）：关着时同样只入库进缓存，连固定话术也不回 |
+| `Synced.CommandRan` | `conversation/types.go` | 非空说明这条消息的门控指令已在闸门执行过：不能再当指令匹配一遍（那会二次执行、而且一句不回），改走 `ReplyAddressedNow` 直答 |
+| `Router.ReplyAddressedNow` | `speech/dispatch.go` | 跳过关键字与内部指令匹配，按本群当前人格直接答一次 |
 | `conversation.FindMsgIndex` | `conversation/cache.go` | 在快照里定位触发消息；找不到说明已被挤出窗口 → 记 `window_too_small` 告警并放弃 |
 | `speech.IsAddressed` | `speech/judge.go` | 这条是不是冲机器人来的（@、昵称、私聊） |
 | `Router.RouteMessageNow` | `speech/dispatch.go` | 被点名：同步跑完路由 → 生成 → 发送 |
@@ -238,7 +243,7 @@ else                                                     → WorkflowChat
 
 | 命中什么 | 走哪 | 结果 |
 | --- | --- | --- |
-| `Category == "internal"` | `RunInternalCommand` | 正常链路已经到不了这里（控制域拦了），只剩面板/调试触发 |
+| `Category == "internal"` | `RunInternalCommand` | 正常链路已经到不了这里（闸门拦了），只剩面板/调试触发 |
 | 功能指令（如「锐评」） | `route.Handler` | 先记「触发锐评」日志，再进 `Generate` |
 | 没命中 | `replyDefaultNow` | 纯问答，按群人格补 system prompt |
 
@@ -297,7 +302,8 @@ else                                                     → WorkflowChat
 | 域之间谁接谁、加一个域 | `bot/handler.go` 的 `mount` / `connect`，以及各域的 `Outcome.Signals` |
 | 加一条工作流（新的入口 + 新的域组合） | `bot/handler.go` 的 `workflow` / `connect`；前置不用动 |
 | 某一类消息到此为止、或接下一个域 | `bot/handler.go` 的 `exit` ↔ `connect`，域不用改 |
-| 什么算管理指令、走哪条工作流 | `bot/router.go`（`route` / `workflowOf`） |
+| 什么算管理指令、执行完停不停 | `bot/domains.go` 的 `gate` + `Command.ContinueAfterRun` |
+| 会话级的 Agent 开关 | `speech/agent_gate.go`（`#启动` / `#关闭`）+ `state/gate.go` |
 | 指令的权限与执行 | `speech/command_run.go` + `policy.CanUseCommand` |
 | 指令本身的行为 | `speech/internal_cmd.go` 对应 handler |
 | 打标签、看图 | `assets/tagger.go`、`asset_tag_jobs` 的后台补 |

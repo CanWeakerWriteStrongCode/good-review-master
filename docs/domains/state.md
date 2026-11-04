@@ -28,7 +28,7 @@
 | `asset_tag_jobs` | 没打完的图片标签欠条 | `assets` / 后台补 |
 | `send_ledger` | 发送台账（动作 ID → 结果） | `deliver` |
 | `alerts` | 异常现场：窗口太小、重试超限等 | `bot` / `speech` |
-| `settings` | 运行时参数覆盖（键为 `pipeline` / `assets`） | 面板改参数 |
+| `settings` | 运行时参数覆盖（键为 `pipeline` / `assets`）+ 会话级 Agent 开关（前缀 `group_gate:`，后接 `工作空间ID` + 分隔符 + `群号`） | 面板改参数 / `#启动`·`#关闭` |
 | `processed_items` | 消息处理台账（`Item.ID` → 何时处理完）；把重投变幂等。接口已就位，还没有域调用 | 暂无（为接 MQ 预留） |
 
 ## 两条写入规则

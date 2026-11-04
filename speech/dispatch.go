@@ -30,6 +30,20 @@ func (r *Router) RouteMessageNow(ctx context.Context, content string, event oneb
 	r.routeMessage(ctx, content, event, groupID, snapshot, true)
 }
 
+// ReplyAddressedNow 是"指令已经执行完，这句话仍然要被回"的入口：
+// 跳过关键字与内部指令的匹配，直接按本群当前人格直答一次。
+//
+// 只有门控指令（#启动）会走到这里：它必须在被回复之前执行完（下游两个域要看开关），
+// 而 RouteMessageNow 一命中内部指令就 return，会把这句话吞掉——于是它会执行两次、
+// 且一句不回。所以由调用方（agent 域）看到 Synced.CommandRan 后改走这里。
+func (r *Router) ReplyAddressedNow(ctx context.Context, content string, event onebot.Event, groupID string, snapshot []conversation.Message) {
+	cfg := r.appCfg()
+	// 与 routeMessage 同一个剥前缀函数：这里不匹配关键字，但正文仍要去掉 @昵称。
+	text := stripCQPrefix(content, cfg)
+	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement(), "")
+	r.replyDefaultNow(ctx, text, event, groupID, systemPrompt, snapshot)
+}
+
 func (r *Router) routeMessage(ctx context.Context, content string, event onebot.Event, groupID string, snapshot []conversation.Message, sync bool) {
 	// 路由本身也记一个 span：它是"一条群消息"与"一次大模型调用"之间的那一跳，
 	// 少了它，链路图上就看不出是哪条消息触发的、命中了哪个关键字。

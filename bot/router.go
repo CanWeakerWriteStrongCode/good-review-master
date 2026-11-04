@@ -3,7 +3,6 @@ package bot
 import (
 	"good-review-master/config"
 	"good-review-master/conversation"
-	"good-review-master/policy"
 	"good-review-master/workspace"
 )
 
@@ -12,8 +11,8 @@ import (
 // 它不是一个节点——没有自己的 Buffer 和 Consumer。原因不是「它简单」，而是三条：
 //
 //   - 它没有自己的资源特征。补全要写库（慢、要背压、要按会话串行），
-//     打标签要调视觉模型，生成要调大模型——这些才值得一个池子。
-//     择路只是一次配置读取加一次前缀树匹配。
+//     指令要改会话状态，打标签要调视觉模型，生成要调大模型——这些才值得一个池子。
+//     择路只是一次配置读取加一次判断。
 //   - 它和补全共享同一个内存值。判断依据是 PrepareBatch 刚造出来的
 //     synced.Message.Content 和 ws.Router；拆成两个节点就要把整个 Synced
 //     编码成 JSON 再解出来，只为读一个字段。
@@ -39,23 +38,13 @@ func (b *Bot) route(ws *workspace.Workspace, cfg *config.Config, synced conversa
 
 // workflowOf 回答「这条消息进哪条工作流」，只读、无副作用，可以单独测。
 //
-// 管理指令走独立工作流：控制平面不占打标签与生成的并发槽，也不进群聊缓存
-// （模型看不到「刚才有人切了人格」，已确认可接受）。
-// record-only 的指令不转出：备用号只记录，交回聊天工作流由生成域回固定话术。
-func (b *Bot) workflowOf(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) string {
-	if b.isInternalCommand(ws, cfg, synced) && !policy.IsRecordOnly(cfg, ws.ID) {
-		return WorkflowCommand
-	}
+// 现在只有一条：指令是聊天工作流的第一个域（见 NewBot 的连线），不再在这里分流。
+// "是不是指令"这个判断下移到 command 域——它本来就要再匹配一次才能执行，
+// 在这里再判一遍等于同一件事留两份实现。
+//
+// 参数形状故意留着（下划线命名），它是**加工作流的唯一入口**：
+// 以后要多一条链，这里加一个分支 + NewBot 里 workflow/mount/connect/exit，
+// 别处（前置、域、编排层）一行都不用动。
+func (b *Bot) workflowOf(_ *workspace.Workspace, _ *config.Config, _ conversation.Synced) string {
 	return WorkflowChat
-}
-
-// isInternalCommand 只做只读匹配：命中就说明这条消息该走指令工作流。
-// 执行前的第二次匹配在 speech.RunInternalCommand 里，两处不能合并。
-func (b *Bot) isInternalCommand(ws *workspace.Workspace, cfg *config.Config, synced conversation.Synced) bool {
-	if ws == nil || ws.Router == nil {
-		return false
-	}
-	_, ok := ws.Router.MatchInternalCommand(synced.Event, synced.Message.Content,
-		b.allowNicknameFallback(ws, cfg.BotNickname))
-	return ok
 }

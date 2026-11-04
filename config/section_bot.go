@@ -155,6 +155,12 @@ type botSection struct {
 	// 填 QQ 号永远匹配不上。写法见 commandAdmins。
 	CommandAdmins commandAdmins `yaml:"command_admins"`
 
+	// AgentDefaultEnabled 会话没有显式 #启动 / #关闭 过时，打标签与 Agent 是否运行。
+	//
+	// 指针区分"没写"与"写了 false"：前者用默认值 true（与改造前行为一致）。
+	// 配成 false 则新群默认静默，要 #启动 才会回复。
+	AgentDefaultEnabled *bool `yaml:"agent_default_enabled"`
+
 	// ---- 主动插话（非 @ 时由大模型裁决要不要接话） ----
 	// 全局一份，所有工作空间共用；关闭时行为与改造前完全一致。
 
@@ -197,6 +203,11 @@ func (s *botSection) SetDefaults() {
 	setDefault(&s.ProactiveJudgeIntervalSec, 20)
 	setDefault(&s.ProactiveJudgeTimeoutSec, 20)
 	setDefault(&s.ProactiveJudgeImages, 1)
+	// 没写就沿改造前的行为：打标签与 Agent 默认跑。
+	if s.AgentDefaultEnabled == nil {
+		value := true
+		s.AgentDefaultEnabled = &value
+	}
 }
 
 // Validate 只做"不可能工作"的判定。

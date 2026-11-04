@@ -60,6 +60,15 @@ type Router struct {
 	groupPersonaMu sync.RWMutex
 	groupPersona   map[string]*groupPersonaBinding // groupID → 本群当前人格
 
+	// agentGate 各会话的 Agent 开关（#启动/#关闭 维护），同时管打标签与生成。
+	// 没有这个键 = 从未显式设置过，回落到 bot.agent_default_enabled；
+	// 这就是为什么值存 bool 而"有没有"靠 map 本身表达（三态）。
+	agentGateMu sync.RWMutex
+	agentGate   map[string]bool // chatID → true 开 / false 关
+
+	// agentGateStore 可选：把会话开关落到共享 state.db。
+	agentGateStore AgentGateStore
+
 	// proactive 主动插话的每群状态。键是 groupID，但因为 Router 每个工作空间一个，
 	// 实际语义是 (workspace, group) 联合——同一个群里的两个机器人互不阻塞。
 	proactive proactiveRegistry
@@ -91,6 +100,13 @@ type PersonaStore interface {
 	DeleteGroupPersona(groupID string)
 }
 
+// AgentGateStore 持久化会话级的 Agent 开关（同时管打标签与生成）。
+// 与 PersonaStore 分开：两个接口各自的写入时机不同，测试里也只需实现用到的那一个。
+// 读取不在这里——启动时由工作空间一次性 `LoadGroupGates` 后交给 `RestoreAgentGates`。
+type AgentGateStore interface {
+	SaveGroupGate(chatID string, enabled bool) error
+}
+
 // NewRouter 创建路由器并初始化所有内部指令。
 // mcpProvider 可传 nil（MCP 未启用），此时对话一律走单轮无工具调用。
 func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient llm.Client, obClient *onebot.Client, mcpProvider MCPProvider, shutdownCtx context.Context) *Router {
@@ -103,6 +119,7 @@ func NewRouter(appCfg config.Snapshot, promptCfg *config.PromptConfig, llmClient
 		store:        conversation.DefaultStore(),
 		starter:      async.New(shutdownCtx),
 		groupPersona: make(map[string]*groupPersonaBinding),
+		agentGate:    make(map[string]bool),
 		ledger:       NewMemoryLedger(),
 	}
 	r.handlerMap = map[string]HandlerFunc{
@@ -147,6 +164,9 @@ func (r *Router) SetDisplayName(fn func(groupID, userID string) string) { r.disp
 
 // SetPersonaStore 注入人格持久化。必须在开始处理消息前调用。
 func (r *Router) SetPersonaStore(store PersonaStore) { r.personaStore = store }
+
+// SetAgentGateStore 注入会话开关持久化。必须在开始处理消息前调用。
+func (r *Router) SetAgentGateStore(store AgentGateStore) { r.agentGateStore = store }
 
 // cacheStore 返回注入的 Store；未注入时退回进程级默认 Store。
 func (r *Router) cacheStore() *conversation.Store {
@@ -225,6 +245,51 @@ func (r *Router) RestorePersonas(stored map[string]string) {
 		}
 		r.setGroupPersona(groupID, binding)
 	}
+}
+
+// AgentEnabled 回答「这个会话的打标签与生成要不要跑」。
+//
+// 显式设置过的会话按设置；没设置过的跟随 bot.agent_default_enabled——
+// 默认值每次现取，改配置对"没设置过"的会话立即生效，不影响已显式关掉/打开的。
+func (r *Router) AgentEnabled(chatID string) bool {
+	r.agentGateMu.RLock()
+	enabled, ok := r.agentGate[chatID]
+	r.agentGateMu.RUnlock()
+	if ok {
+		return enabled
+	}
+	return r.appCfg().AgentDefaultEnabled
+}
+
+// SetAgentEnabled 记录某会话的开关并落库（#启动 / #关闭）。
+// 落库失败只告警：内存里的状态已经变了，本条消息及后续几条按新状态走，
+// 重启后回落到默认值——比因为一次写盘失败就把指令当成没执行要好。
+func (r *Router) SetAgentEnabled(chatID string, enabled bool) {
+	if chatID == "" {
+		return
+	}
+	r.agentGateMu.Lock()
+	r.agentGate[chatID] = enabled
+	r.agentGateMu.Unlock()
+	if r.agentGateStore == nil {
+		return
+	}
+	if err := r.agentGateStore.SaveGroupGate(chatID, enabled); err != nil {
+		logutil.Warn("保存会话开关失败", "workspace", r.workspace, "chat", chatID, "enabled", enabled, "err", err)
+	}
+}
+
+// RestoreAgentGates 从档案恢复会话开关（启动时调用一次）。
+// 只写内存不回写：恢复本身就是"库里已有的值"，再写一遍只会白抬自增号。
+func (r *Router) RestoreAgentGates(stored map[string]bool) {
+	if len(stored) == 0 {
+		return
+	}
+	r.agentGateMu.Lock()
+	for chatID, enabled := range stored {
+		r.agentGate[chatID] = enabled
+	}
+	r.agentGateMu.Unlock()
 }
 
 // personaBinding 按关键字找一条自带人格的路由，复制成自包含绑定。

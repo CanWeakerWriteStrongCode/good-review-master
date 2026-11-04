@@ -18,14 +18,14 @@ import (
 //
 // 两件事拆成两个类型，编排层就不必靠「tag 是不是空」去猜一条回执说的是什么。
 //
-// 事件名不必全局唯一：它只在所属的那条工作流里查，所以两条工作流各有一个 “done”
-// 互不干扰——和 MQ 一样，tag 只在 topic 内唯一。
+// 事件名不必全局唯一：它只在所属的那条工作流里查——和 MQ 一样，tag 只在 topic 内唯一。
+// 所以以后新加的工作流可以有自己的 "done"，不跟这里的事件名撞车。
 const (
-	WorkflowChat    = "chat"    // 聊天：打标签 → 生成
-	WorkflowCommand = "command" // 管理指令：只走控制平面
+	WorkflowChat = "chat" // 聊天：指令/闸门 → 打标签 → 生成
 
+	EventCommandPass = "command_pass" // 不是指令、或门控指令：继续往下走
+	EventCommandDone = "command_done" // 指令已执行，到此为止
 	EventTagged      = "tagged"       // 打完标签的会话：进入生成
-	EventCommandDone = "command_done" // 管理指令已执行
 	EventReplied     = "replied"      // 回复已发出（含不回、放弃）
 )
 

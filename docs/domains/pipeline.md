@@ -1,11 +1,14 @@
-# 域与队列（一个前置 + 两条工作流）
+# 域与队列（一个前置 + 一条工作流）
 
 一条消息由编排层放进前置，前置补完名后回一句「走哪条工作流」，然后在那条工作流里由一个域传到下一个域，走到回复或指令执行。节点之间的传送带是内存队列，每个节点自己管批量、并发、重试。
 
-**前置不属于任何一条工作流**：所有消息都要过它（入口 + 补名），但它不做业务。剩下两条工作流互不相连：
+**前置不属于任何一条工作流**：所有消息都要过它（入口 + 补名），但它不做业务。现在只有一条工作流，四站：
 
-- 聊天工作流（数据平面）：打图标签 → 生成回复。
-- 指令工作流（控制平面）：管理指令执行完就结束，不占大模型并发槽、不进群聊缓存。
+- 聊天工作流（唯一一条）：`command` 闸门（执行指令，并决定还往不往下走）→ `assets` 打图标签 → `agent` 生成回复。
+
+管理指令不再是一条独立工作流，而是聊天链的第一站：默认执行完就止（`command_done` 是终点）；只有门控指令（`#启动`，`Command.ContinueAfterRun`）执行完继续往下走，于是它自己那句话会被刚打开的 Agent 回复。
+
+**多工作流的机制原样保留**：`workflow` / `connect` / `exit`、`Pick.Workflow`、`enter` / `advance` / `isEnd` 一个没少；只是现在 `workflows` 表里只有 `chat` 一条，`workflowOf` 是个单分支函数（参数用 `_` 收着）。加第二条时把判断填回去就行。
 
 **域不知道下游是谁**。域处理完只交回一组事件（`Signal`：`Event` + 载荷），由编排层在**所属工作流**的 `next` 里查到下一个域再投；域的代码里搜不到任何 `Buffer`。
 
@@ -26,9 +29,9 @@
 | 队列 | 谁放 | 谁取 | 载荷 | 消息的 tag |
 | --- | --- | --- | --- | --- |
 | `sync`（前置） | `orch.admit`（`bot.AcceptEvent` 调） | `handleSync` | `conversation.Inbound` | 无（还没有） |
-| `assets` | 前置回执 `chat` → 聊天工作流入口 | `handleAssets` | `conversation.Synced` | `chat` |
+| `command` | 前置回执 `chat` → 聊天工作流入口 | `handleCommand` | `conversation.Synced` | `chat` |
+| `assets` | 闸门回执 `command_pass` | `handleAssets` | `conversation.Synced`（可能多了 `CommandRan`） | `chat` |
 | `agent` | 编排层收到 `EventTagged` 回执 | `handleAgent` | `conversation.Synced`（多了 `Assets` / `ImageNotes`） | `chat` |
-| `command` | 前置回执 `command` → 指令工作流入口 | `handleCommand` | `conversation.Synced`（管理指令，只走这一个域） | `command` |
 
 `Item` 字段：`ID`（`node|tag|key|消息ID`，天然幂等键）、`Key`（分区键，现在是 `workspaceID|chatID`）、`Node`（**要去**的那个节点，接 MQ 时就是 topic）、`Tag`（**所属工作流**，接 MQ 时就是 tag；进前置时还没有，`admit` 传空）、`Body`（JSON）、`Attempts`。载荷类型定义在 `conversation` 里，`pipeline` 不定义——否则底层包为了用值对象会反过来 import 编排层。
 
@@ -38,20 +41,21 @@
 
 | 节点 | 入口 | 做什么 | 交回什么 | 失败去哪 |
 | --- | --- | --- | --- | --- |
-| `sync` 前置：补全 | `handleSync`，再交 `router.route` 择路 | 按工作空间分组 → `PrepareBatch` 补成员名、补被引用消息 → 写 `messages` | 工作流名：`WorkflowCommand`（命中管理指令）或 `WorkflowChat` | 补全会重试 `sync_retries` 次，超限进 alerts；择路不会失败 |
-| `assets` 图片标签 | `handleAssets` | 查图库有没有这条图的描述，没有才调视觉模型 → 写 `image_notes`；没打完的写 `asset_tag_jobs` 欠条 | `EventTagged` | 欠条留给后台补，不阻塞消息 |
-| `agent` 生成回复 | `handleAgent` | 进群聊缓存 → 学身份 → 判断该不该回 → 交 `speech` | `EventReplied`（聊天工作流的终点） | 生成的失败由 `speech` 自己兜 |
-| `command` 管理指令 | `handleCommand` | 交 `speech.RunInternalCommand`：再判一次匹配 → 判权限 → 执行 handler | `EventCommandDone`（指令工作流的终点） | 不重试（`Retries` 固定 0，指令副作用不幂等），失败只记日志 |
+| `sync` 前置：补全 | `handleSync`，再交 `router.route` 择路 | 按工作空间分组 → `PrepareBatch` 补成员名、补被引用消息 → 写 `messages` | 工作流名：`WorkflowChat`（现在只有这一个可能） | 补全会重试 `sync_retries` 次，超限进 alerts；择路不会失败 |
+| `command` 闸门 | `handleCommand` | 不是指令 → 放行；是指令 → 交 `speech.RunInternalCommand`（再判一次匹配 → 判权限 → 执行 handler） | `EventCommandPass`（继续去 `assets`，门控指令还会在载荷里写下 `CommandRan`）/ `EventCommandDone`（聊天工作流的终点） | 不重试（`Retries` 固定 0，指令副作用不幂等），失败只记日志 |
+| `assets` 图片标签 | `handleAssets` | 会话开关开着时：查图库有没有这条图的描述，没有才调视觉模型 → 写 `image_notes`；没打完的写 `asset_tag_jobs` 欠条 | `EventTagged` | 欠条留给后台补，不阻塞消息 |
+| `agent` 生成回复 | `handleAgent` | 进群聊缓存 → 学身份 → 会话开关关着就静默 → 判断该不该回 → 交 `speech` | `EventReplied`（聊天工作流的终点） | 生成的失败由 `speech` 自己兜 |
 
-**字段的含义**：`Item.Node` 记的是目标节点，不是造出它的节点。前置造出「进聊天工作流」那条 item 时，`Node` 已经是 `assets`，不是 `sync`。幂等键与告警分类（`dead_letter_<node>`）都按它算。
+**字段的含义**：`Item.Node` 记的是目标节点，不是造出它的节点。前置造出「进聊天工作流」那条 item 时，`Node` 已经是 `command`，不是 `sync`。幂等键与告警分类（`dead_letter_<node>`）都按它算。
 
-前置的路由用的是只读匹配（`speech.MatchInternalCommand`），它不执行任何东西；真正的执行集中在 `RunInternalCommand`，权限判定只写在它里面。路由与执行各判一次：两次之间路由表可能被别的指令改过（`#删除人格` 会把关键字删掉），第二次失配就丢弃（正文在前置已经入库）。
+前置只回「进哪条工作流」，不再判断「这是不是指令」：那个判断下移到 `command` 域，同一件事不再留两份。执行仍然集中在 `RunInternalCommand`，权限判定只写在它里面。闸门与执行各匹配一次：两次之间路由表可能被别的指令改过（`#删除人格` 会把关键字删掉），第二次失配就放行（正文在前置已经入库）。
 
-`record_only_accounts` 里的账号不走指令域：指令消息按普通消息进 `agent`，由那里的既有分支回固定话术。
+`record_only_accounts` 里的账号在闸门处直接放行（不执行指令）：指令消息按普通消息进 `agent`，由那里的 record-only 分支回固定话术。
 
-`agent` 里有两个容易看漏的取舍：
+`agent` 里有三个容易看漏的取舍：
 
 - **只记录不回复的账号**（`record_only_accounts`）到这里就结束：缓存、入库、标签全部照做，只在被点名时回一句固定话术。所以主备切换时备份号的数据一直是热的。
+- **会话开关关着**（`#关闭` 过）同样入库进缓存，但一句都不回：群已经让它闭嘴了，再回一句「我关着」正是该停的噪音。
 - **主动插话是 latest-wins**：同一批里只看最后一条；如果这个会话自己队列里还有积压（`orch.backlog`），这次干脆不判，等下一批的最后一条。刷屏时不会每条都跑一次裁判。
 
 ## 调度方式
@@ -61,19 +65,17 @@ flowchart TB
   subgraph "前置（所有消息共用）"
     R0["固定协程池 ×sync_concurrency<br/>入口 + 补全"]
   end
-  subgraph "工作流一：聊天"
+  subgraph "工作流：聊天"
+    PC["command 域（闸门）<br/>固定协程池 ×command_concurrency"]
     P2["assets 域<br/>固定协程池 ×asset_concurrency"]
     P3["agent 域<br/>固定协程池 ×agent_concurrency"]
   end
-  subgraph "工作流二：管理指令"
-    PC["command 域<br/>固定协程池 ×command_concurrency"]
-  end
   IN["orch.admit(Inbound)<br/>tag 为空"] --> R0
-  R0 -->|"enter(chat) → tag=chat"| P2
-  R0 -->|"enter(command) → tag=command"| PC
+  R0 -->|"enter(chat) → tag=chat"| PC
+  PC -->|"回执 command_pass → advance(chat)"| P2
+  PC -->|"回执 command_done → 声明为终点"| EX["到此为止"]
   P2 -->|"回执 tagged → advance(chat)"| P3
-  P3 -->|"回执 replied → 声明为终点"| EX["到此为止"]
-  PC -->|"回执 command_done → 声明为终点"| EX
+  P3 -->|"回执 replied → 声明为终点"| EX
 ```
 
 每条箭头都由编排层执行：节点把手里的活干完、把「这一步发生了什么」交回去，编排层在**消息自带的那条工作流**里查到下一站，再投进对应队列（同时把 tag 带下去）。域之间没有直接连线，也没有“我到终点了”这种汇报——终点是工作流的属性。

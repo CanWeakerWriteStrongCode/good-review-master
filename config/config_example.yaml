@@ -31,6 +31,10 @@ bot:
   command_admins:
     "group-openid-1": ["user-openid-1", "user-openid-2"]
     # 也支持逗号分隔："group-openid-2": "user-openid-1,user-openid-2"
+  # 会话没有显式 #启动 / #关闭 过时，打标签与 Agent 是否运行。
+  # 一个开关同时管两件事（打标签只为 Agent 看得见图），"开/关"按会话记在 state.db。
+  # 默认 true：与改造前行为一致；配成 false 则新群默认静默，要 #启动 才回复。
+  agent_default_enabled: true
   # 主动插话：没被 @ 时也先让大模型判断"要不要接话"。默认关闭。
   # 全局一份，所有账号共用。冷却/上限只约束主动路径，不影响 @ 回复。
   # 裁判和生成用的是同一份窗口：进入 Agent 时先按 llm_send_count / 缓存命中算一次，

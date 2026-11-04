@@ -16,13 +16,15 @@ import (
 // 工作流里的域依次处理，每一步都把结果交回编排层，由编排层按连线投给下一个域。
 // 域与域之间没有引用关系，顺序写在 NewBot 的连线上。
 //
-// 现在是**一个前置 + 两条工作流**：
+// 现在是**一个前置 + 一条工作流**（机制仍是多条：添工作流仍从这里下手）：
 //
-//	聊天   前置补全 → 打标签（assets）→ 生成（agent）
-//	指令   前置补全 → 管理指令（command）
+//	聊天   前置补全 → 指令/闸门（command）→ 打标签（assets）→ 生成（agent）
 //
-// 两条工作流在补全之后分开：控制平面不占打标签与生成的并发槽，也不进群聊缓存。
-// 加一条工作流 = 一行 workflow + 几次 connect，前置不用动、也不需要新实例。
+// 指令是聊天工作流的第一站：它改的是后面两个域要不要跑（会话开关），
+// 所以必须先执行、再让同一条消息走下去；其他指令执行完就到此为止。
+// 「到此为止」还是「继续」写成指令自己的属性（Command.ContinueAfterRun），
+// 拓扑只负责照抄——以后再加一条"执行完还要办事"的指令，只改那个字段，
+// 不用在前置里加特例。
 //
 // 接 MQ 时：**工作流名就是消息的 tag，域的名字就是 topic**。消息带着 tag 在域之间
 // 走，每个域只订阅自己的 topic，所以加一条工作流不建 topic、不复制消费组配置。
@@ -117,17 +119,17 @@ func NewBot(cfg config.Snapshot, workspaces *workspace.Manager) *Bot {
 	b.orch.mount(pipeline.NodeAgent, b.handleAgent, b.agentConfig, perChat, global)
 	b.orch.mount(pipeline.NodeCommand, b.handleCommand, b.commandConfig, perChat, global)
 
-	// 工作流一：聊天。前置路由到这里，之后打标签 → 生成。
-	b.orch.workflow(WorkflowChat, pipeline.NodeAssets)
-	b.orch.connect(WorkflowChat, EventTagged, pipeline.NodeAgent)
-	b.orch.exit(WorkflowChat, EventReplied)
-
-	// 工作流二：管理指令。只走控制平面，执行完就结束。
+	// 工作流：前置路由到这里，指令先跑，再打标签、生成。
 	//
-	// 终点写在这里而不是让域“沉默”——域只汇报发生过什么，链决定还要不要往下走。
-	// 将来要让指令执行完接下一个域，把这里换成 connect 即可，域一行代码都不用改。
-	b.orch.workflow(WorkflowCommand, pipeline.NodeCommand)
-	b.orch.exit(WorkflowCommand, EventCommandDone)
+	// 两条出口写在指令自己身上：门控指令（#启动）回 command_pass 继续往下，
+	// 其余指令回 command_done 直接收尾——拓扑只照抄，不认关键字。
+	// 顺序有意思：指令在打标签之前，所以 #启动 打开开关的那一刻，本条消息的
+	// 打标签与生成已经能看到新状态（这也是它必须排在最前面的原因）。
+	b.orch.workflow(WorkflowChat, pipeline.NodeCommand)
+	b.orch.connect(WorkflowChat, EventCommandPass, pipeline.NodeAssets)
+	b.orch.connect(WorkflowChat, EventTagged, pipeline.NodeAgent)
+	b.orch.exit(WorkflowChat, EventCommandDone)
+	b.orch.exit(WorkflowChat, EventReplied)
 	return b
 }
 

@@ -372,6 +372,8 @@ func (m *Manager) load(id, platform, accountKind, account string) (*Workspace, e
 	ws.Router.SetWorkspace(id)
 	if st != nil {
 		ws.Router.SetPersonaStore(st)
+		// 会话开关（#启动/#关闭）也要落库：否则重启后每个群都回到默认状态。
+		ws.Router.SetAgentGateStore(st)
 		// 机器人自己的回复也要落库：否则重启后模型只能看到用户说过的话。
 		ws.Router.SetMessageSink(st.SaveMessage)
 		// 选窗锚点也要落库：它是"上次发到哪"的位置，重启后靠它接着往后加，
@@ -452,6 +454,11 @@ func (w *Workspace) restore(cfg *config.Config) {
 		logutil.Warn("读取群人格失败", "workspace", w.ID, "err", err)
 	} else {
 		w.Router.RestorePersonas(personas)
+	}
+	if gates, err := w.State.LoadGroupGates(); err != nil {
+		logutil.Warn("读取会话开关失败", "workspace", w.ID, "err", err)
+	} else {
+		w.Router.RestoreAgentGates(gates)
 	}
 	if profile, ok, err := w.State.LoadProfile(); err != nil {
 		logutil.Warn("读取工作空间画像失败", "workspace", w.ID, "err", err)

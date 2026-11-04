@@ -16,6 +16,7 @@ import (
 	"good-review-master/internal/testutil"
 	"good-review-master/logutil"
 	"good-review-master/onebot"
+	"good-review-master/pipeline"
 	"good-review-master/workspace"
 )
 
@@ -51,11 +52,13 @@ func Test消息走完三段流水线(t *testing.T) {
 		AllowGroups:       []string{"g1"},
 		WorkspaceAccounts: []string{"qq_official_bot_1906"},
 		BotNickname:       "小助理",
-		MaxCacheMsg:       100,
-		MaxMsgRune:        500,
-		LLMSendCount:      10,
-		LLMTimeout:        2 * time.Second,
-		LLMConfig:         config.LLMConf{},
+		// 直接构造的配置不走 SetDefaults，会话开关得手动打开，否则 agent 会静默。
+		AgentDefaultEnabled: true,
+		MaxCacheMsg:         100,
+		MaxMsgRune:          500,
+		LLMSendCount:        10,
+		LLMTimeout:          2 * time.Second,
+		LLMConfig:           config.LLMConf{},
 	}
 	snapshot := func() *config.Config { return cfg }
 	fake := testutil.NewFakeLLM()
@@ -140,10 +143,12 @@ func Test图片消息在assets生成描述并入库(t *testing.T) {
 		AllowGroups:       []string{"g1"},
 		WorkspaceAccounts: []string{"qq_official_bot_1906"},
 		BotNickname:       "小助理",
-		MaxCacheMsg:       100,
-		MaxMsgRune:        500,
-		LLMSendCount:      10,
-		LLMTimeout:        2 * time.Second,
+		// 直接构造的配置不走 SetDefaults：会话开关关着时 assets 会跳过打标签。
+		AgentDefaultEnabled: true,
+		MaxCacheMsg:         100,
+		MaxMsgRune:          500,
+		LLMSendCount:        10,
+		LLMTimeout:          2 * time.Second,
 		Assets: config.AssetsConf{
 			MessageBudget: 5 * time.Second, TagConcurrency: 1, PromptVersion: "test",
 		},
@@ -287,9 +292,10 @@ func Test只记录账号不回复但照常入缓存(t *testing.T) {
 	}
 }
 
-// Test管理指令走独立工作流 内部指令不该进 assets/agent：不调大模型、不进群聊缓存。
-// 走错路径时 #帮助 会先被 gc.Add 再回复，所以“缓存里没有它”就是分流生效的证据。
-func Test管理指令走独立工作流(t *testing.T) {
+// Test指令在聊天工作流入口终止 内部指令是聊天链的第一站，执行完就地终止：
+// 不调大模型、不进群聊缓存。走错路径时 #帮助 会先被 gc.Add 再回复，
+// 所以“缓存里没有它”就是 command_done 生效的证据。
+func Test指令在聊天工作流入口终止(t *testing.T) {
 	dir := t.TempDir()
 	system := filepath.Join(dir, "prompt_system.yaml")
 	if err := os.WriteFile(system, []byte("cmd: {}\nrules: {}\n"), 0o644); err != nil {
@@ -299,11 +305,13 @@ func Test管理指令走独立工作流(t *testing.T) {
 		AllowGroups:       []string{"g1"},
 		WorkspaceAccounts: []string{"qq_official_bot_1906"},
 		BotNickname:       "小助理",
-		CommandAdmins:     map[string][]string{"g1": {"u1"}},
-		MaxCacheMsg:       100,
-		MaxMsgRune:        500,
-		LLMSendCount:      10,
-		LLMTimeout:        2 * time.Second,
+		// 开关开着才能证明“没进缓存”是指令终止造成的，而不是被闸门静默了。
+		AgentDefaultEnabled: true,
+		CommandAdmins:       map[string][]string{"g1": {"u1"}},
+		MaxCacheMsg:         100,
+		MaxMsgRune:          500,
+		LLMSendCount:        10,
+		LLMTimeout:          2 * time.Second,
 	}
 	snapshot := func() *config.Config { return cfg }
 	fake := testutil.NewFakeLLM()
@@ -364,21 +372,30 @@ func Test管理指令走独立工作流(t *testing.T) {
 		t.Fatalf("管理指令不应调用大模型，实际 %d 次", len(calls))
 	}
 
-	// 拓扑要覆盖全部事件：每条工作流各自认识自己的事件（tagged / replied、
-	// command_done）。终点必须是显式声明——不能靠"没连线"推断，那样漏一条线
-	// 就会变成静默少走一步。
-	assertEventsCovered(t, b.orch, WorkflowChat, EventTagged, EventReplied)
-	assertEventsCovered(t, b.orch, WorkflowCommand, EventCommandDone)
+	// 拓扑要覆盖全部事件：指令工作流并进 chat 之后，四个事件都归 chat 认识。
+	// 终点必须是显式声明——不能靠"没连线"推断，那样漏一条线就会变成静默少走一步。
+	assertEventsCovered(t, b.orch, WorkflowChat,
+		EventCommandPass, EventCommandDone, EventTagged, EventReplied)
 	if b.orch.router == nil {
 		t.Fatal("应当挂了一个前置")
 	}
-	if len(b.orch.workflows) != 2 {
-		t.Fatalf("应当有两条工作流，实际 %d 条", len(b.orch.workflows))
+	if len(b.orch.workflows) != 1 {
+		t.Fatalf("指令已并进聊天工作流，应当只有一条工作流，实际 %d 条", len(b.orch.workflows))
 	}
-	if !b.orch.workflows[WorkflowChat].ends[EventReplied] {
+	wf := b.orch.workflows[WorkflowChat]
+	if wf.entry != pipeline.NodeCommand {
+		t.Fatalf("聊天工作流的入口应当是指令域，实际 %q", wf.entry)
+	}
+	if wf.next[EventCommandPass] != pipeline.NodeAssets {
+		t.Fatalf("command_pass 应当接打标签域，实际 %q", wf.next[EventCommandPass])
+	}
+	if wf.next[EventTagged] != pipeline.NodeAgent {
+		t.Fatalf("tagged 应当接生成域，实际 %q", wf.next[EventTagged])
+	}
+	if !wf.ends[EventCommandDone] {
+		t.Fatal("command_done 应当是聊天工作流的终点")
+	}
+	if !wf.ends[EventReplied] {
 		t.Fatal("replied 应当是聊天工作流的终点")
-	}
-	if !b.orch.workflows[WorkflowCommand].ends[EventCommandDone] {
-		t.Fatal("command_done 应该是指令工作流的终点")
 	}
 }

@@ -22,8 +22,8 @@ type Inbound struct {
 
 // Synced 是一条消息走完全程的载荷。
 //
-// sync 填 Message（补名、补引用、入库）；assets 补 Message.ImageIDs 与
-// ImageNotes，再填 Assets / AssetStatus；agent 只读。
+// sync 填 Message（补名、补引用、入库）；command 执行门控指令并可能填 CommandRan；
+// assets 补 Message.ImageIDs 与 ImageNotes，再填 Assets / AssetStatus；agent 只读。
 //
 // 以前是 SyncedMessage 和 EnrichedMessage 两个类型，后者只是为了绕开
 // Message.ImageNotes 上的 json:"-"，于是把同名字段又抄了一份。
@@ -39,4 +39,10 @@ type Synced struct {
 	Assets []Asset `json:"assets,omitempty"`
 	// AssetStatus 本条消息资产的整体状态，agent 据此追加降级提示。
 	AssetStatus string `json:"asset_status,omitempty"`
+
+	// CommandRan 本条消息的门控指令已由 command 域执行过，值为命中的关键字。
+	//
+	// agent 看到非空就不再走 RouteMessageNow（那会二次执行并吞掉这句话），
+	// 而是直接按当前人格直答。空字符串 = 没有指令执行过，走正常分发。
+	CommandRan string `json:"command_ran,omitempty"`
 }

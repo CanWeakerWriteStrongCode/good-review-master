@@ -40,7 +40,8 @@
 | `deliver.go` | 交付：句子 → 发送动作 → 台账 → 聊天渠道 |
 | `persona_render.go` | 人格：按群绑定，渲染成提示片段 |
 | `internal_cmd.go` | 内置指令：群内动态增删指令、切人格这类不花模型钱的命令 |
-| `command_run.go` | 内部指令的“判”与“做”：`MatchInternalCommand`（只读，给前置路由用）、`RunInternalCommand`（唯一副作用入口） |
+| `agent_gate.go` | 门控指令 `#启动` / `#关闭`：写会话开关（打标签 + 生成一起管），`#启动` 带人格名时顺带绑定 |
+| `command_run.go` | 内部指令的“判”与“做”：`MatchInternalCommand`（只读，给闸门用，顺带交回 `ContinueAfterRun`）、`RunInternalCommand`（唯一副作用入口） |
 
 ## 管理指令的权限与入口
 
@@ -50,7 +51,9 @@
 - **两个例外**：`#帮助` 对所有人开放（查看列表无副作用）；私聊直接放行（只有一个人，没必要再压权限）。
 - **只判 `internal`**：「锐评」这类功能指令（`chat_review`）不受影响。
 
-权限判定只有一份实现（`policy.CanUseCommand`），调用点只有 `RunInternalCommand`。`MatchInternalCommand` 是只读的、不判权限，它只回答“这条消息要不要送到 `command` 域”。
+权限判定只有一份实现（`policy.CanUseCommand`），调用点只有 `RunInternalCommand`。`MatchInternalCommand` 是只读的、不判权限，它只回答“这条消息要不要在闸门里执行”，并把该指令的 `ContinueAfterRun` 一并交回拓扑。
+
+`#启动` 是唯一 `ContinueAfterRun = true` 的内部指令：它执行完还要让这条消息继续去 `agent`，所以执行完由闸门域把关键字记进 `Synced.CommandRan`，下游看到它就不再把这句话当指令匹配一遍（那会二次执行、而且一句不回），而是走 `ReplyAddressedNow` 按当前人格直答。`#关闭` 则是普通终止型：开关关上、回一句回执就结束。
 
 指令参数按**文本段**解析（`commandText`）：渲染后的正文会把 `@昵称(ID)` 按原位置拼进去，直接拿来切参数会让「`#切换人格` + 末尾还 @ 了机器人」变成「未找到人格：@昵称(ID)」。
 
@@ -70,7 +73,7 @@ sequenceDiagram
 
   B->>R: RouteMessageNow(content, event, chatID, 窗口快照)
   R->>C: 匹配指令
-  alt 命中管理指令（正常链路已在控制域执行，这里只有面板/调试触发）
+  alt 命中管理指令（正常链路已在闸门执行，这里只有面板/调试触发）
     R->>R: RunInternalCommand：判权限 → 取参数 → handler
   else 命中功能指令
     C-->>R: HandlerFunc

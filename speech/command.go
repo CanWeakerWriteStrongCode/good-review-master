@@ -30,6 +30,14 @@ type Command struct {
 	Category    string // "chat_review" | "internal"
 	Handler     HandlerFunc
 	Persona     *config.Persona // 可选：该指令的人格（渲染进 system prompt）
+
+	// ContinueAfterRun 执行完不停工作流，继续交给下游（打标签 → 生成）。
+	// 零值 false = 到此为止。只有门控指令（#启动）会把它置 true：
+	// 它改变的是后面两个域要不要跑，所以必须自己先跑完、再让这条消息走下去。
+	//
+	// 「继续还是终止」写成指令自己的属性，而不是散在择路里：拓扑只负责照抄，
+	// 以后再加一条"执行完还要办别的事"的指令，只改这里一个字段。
+	ContinueAfterRun bool
 }
 
 // groupPersonaBinding 某群"当前人格"的快照：切换时从路由表里把源关键字的人格

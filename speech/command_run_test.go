@@ -60,15 +60,17 @@ func TestMatchInternalCommand只认管理指令(t *testing.T) {
 	}
 
 	cmd := group("@bot(u1) #切换人格 锐评下")
-	if keyword, ok := e.router.MatchInternalCommand(cmd, cmd.PlainText(), true); !ok || keyword != "#切换人格" {
-		t.Fatalf("应命中 #切换人格，got %q ok=%v", keyword, ok)
+	// 普通指令执行完就终止：continues 必须为 false，否则会白跑后半条链。
+	if keyword, continues, ok := e.router.MatchInternalCommand(cmd, cmd.PlainText(), true); !ok ||
+		keyword != "#切换人格" || continues {
+		t.Fatalf("应命中 #切换人格 且终止，got %q continues=%v ok=%v", keyword, continues, ok)
 	}
 	feature := group("@bot(u1) 锐评下 这台机器")
-	if _, ok := e.router.MatchInternalCommand(feature, feature.PlainText(), true); ok {
+	if _, _, ok := e.router.MatchInternalCommand(feature, feature.PlainText(), true); ok {
 		t.Fatal("功能指令不应进入指令域")
 	}
 	chat := group("@bot(u1) 今天天气不错")
-	if _, ok := e.router.MatchInternalCommand(chat, chat.PlainText(), true); ok {
+	if _, _, ok := e.router.MatchInternalCommand(chat, chat.PlainText(), true); ok {
 		t.Fatal("普通聊天不应进入指令域")
 	}
 }
