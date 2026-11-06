@@ -10,7 +10,10 @@ import (
 )
 
 // ConsumerConfig 是某个节点当前生效的一批参数。取数前现读，
-// 这样 settings 表里改批量/并发/重试后不需要重启。
+// 所以 settings 表里改批量、等待、重试之后，下一批就生效。
+//
+// Concurrency 是例外：它是池子里协程的个数，只在 Run（进程启动）时读一次，
+// 运行中改这个值不会动已有的池子，要重启。原因见 Run 的注释。
 type ConsumerConfig struct {
 	Batch       int
 	Linger      time.Duration
@@ -56,6 +59,8 @@ type ConsumerOptions struct {
 // 同一个 key 同一时刻只会有一个协程持有（inflight 标记），因此“同一个账号在同一个群里
 // 按到达顺序串行处理”这条不变；不同 key 之间并行。每个节点各有一个 Consumer，
 // 名额互不挤占，但一条消息仍然要依次走完它所在工作流的那几个节点。
+//
+// 池子的协程数在 Run 时定死，运行中不扩缩：改 *_concurrency 要重启。
 type Consumer struct {
 	opts   ConsumerOptions
 	peeker Peeker // 构造期就断言好，取数路径不必每批再断言
@@ -118,12 +123,16 @@ func (w *Consumer) Config() ConsumerConfig {
 	return cfg
 }
 
-// Run 按当时的并发数把池拉起来。之后并发数变化会在 Submit/交还时自动扩缩。
+// Run 按当时的并发数把池拉起来。这是池子唯一的起点，之后不再扩缩。
+//
+// 不让 Submit 顺手起协程，是因为它可能在 Run 之前就被调用（测试里直接投一批、
+// 或者 Run 之前先放一条）：那时 w.ctx 还是 context.Background()，拉起来的协程
+// 既不跟随关停，也看不到真正的生命周期。池子的起点只留 Run 一个。
 func (w *Consumer) Run(ctx context.Context) {
 	cfg := w.Config()
 	w.mu.Lock()
 	w.ctx = ctx
-	w.resizeLocked(cfg.Concurrency)
+	w.startLocked(cfg.Concurrency)
 	w.mu.Unlock()
 	w.observe()
 }
@@ -134,13 +143,11 @@ func (w *Consumer) Submit(key string) {
 	if key == "" {
 		return
 	}
-	cfg := w.Config()
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
 		return
 	}
-	w.resizeLocked(cfg.Concurrency)
 	if w.inflight[key] {
 		// 这个会话正在被处理。处理完那一批协程会自己回头看积压，
 		// 在途期间到达的消息不会漏。
@@ -162,33 +169,27 @@ func (w *Consumer) markReadyLocked(key string) {
 	w.ready = append(w.ready, key)
 }
 
-// resizeLocked 把协程数调整到 target。少就补，多就广播一次让超编的协程在 next 里自行退场。
-func (w *Consumer) resizeLocked(target int) {
+// startLocked 按 target 起池子。只在 Run 里调一次，之后不扩也不缩，
+// 所以这里没有「多了就让超编的协程退场」那一半——退场只发生在关闭时。
+func (w *Consumer) startLocked(target int) {
 	if target < 1 {
-		target = 1
+		target = 1 // 兜底：并发配成 0 会让流水线停摆
 	}
 	for w.workers < target {
 		w.workers++
 		w.wg.Add(1)
 		go w.worker()
 	}
-	if w.workers > target {
-		w.cond.Broadcast()
-	}
 }
 
 // next 阻塞到拿到一个有数据的分区，返回时该 key 已标记为处理中。
-// 第二个返回值 false 表示这个协程该退场了（消费者关闭或并发被调小）；
-// 计数在这里扣，保证判断和减数在同一把锁里，不会几个协程一起退光了。
+// 第二个返回值 false 表示这个协程该退场了（消费者关闭）；计数在这里扣，
+// 保证判断和减数在同一把锁里，不会几个协程一起退光了。
 func (w *Consumer) next() (string, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for {
 		if w.closed || w.ctx.Err() != nil {
-			w.workers--
-			return "", false
-		}
-		if w.workers-1 >= w.Config().Concurrency {
 			w.workers--
 			return "", false
 		}
@@ -272,7 +273,6 @@ func (w *Consumer) takeBatch(ctx context.Context, key string, cfg ConsumerConfig
 // release 交还分区：还有积压就重新挂回就绪队列（排到队尾，让别的会话先来），
 // 然后把协程还给池子。
 func (w *Consumer) release(key string) {
-	cfg := w.Config()
 	w.mu.Lock()
 	delete(w.inflight, key)
 	if w.closed {
@@ -283,7 +283,6 @@ func (w *Consumer) release(key string) {
 		w.markReadyLocked(key)
 		w.cond.Signal()
 	}
-	w.resizeLocked(cfg.Concurrency)
 	w.mu.Unlock()
 	w.observe()
 }

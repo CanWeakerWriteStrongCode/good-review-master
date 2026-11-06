@@ -192,8 +192,9 @@ func TestConsumer空闲会话不占名额(t *testing.T) {
 	}
 }
 
-// 并发数改了池子跟着变，不用重启进程。
-func TestConsumer并发数热调整(t *testing.T) {
+// 并发数只在 Run 时读一次：运行中改配置不动池子，重启才生效。
+// 这条同时钉住「Run 之前 Submit 拉不起协程」——那正是无 ctx 协程的来源。
+func TestConsumer并发数只在启动时定下来(t *testing.T) {
 	buf := NewMemoryBuffer(10, 100)
 	var limit atomic.Int32
 	limit.Store(1)
@@ -207,28 +208,43 @@ func TestConsumer并发数热调整(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	consumer.Run(ctx)
-	if got := consumer.Workers(); got != 1 {
-		t.Fatalf("初始协程数 = %d", got)
+
+	// Run 之前投一条：只登记就绪队列，不拉起任何协程。
+	if err := buf.Put(ctx, mustItem(t, NodeSync, "k", "0", struct{}{})); err != nil {
+		t.Fatal(err)
+	}
+	consumer.Submit("k")
+	if got := consumer.Workers(); got != 0 {
+		t.Fatalf("Run 之前不该有协程，实际 %d", got)
 	}
 
+	consumer.Run(ctx)
+	if got := consumer.Workers(); got != 1 {
+		t.Fatalf("初始协程数 = %d，want 1", got)
+	}
+
+	// Run 之前投的那条不能被漏掉：Signal 在没人等的时候是空操作，
+	// 但就绪队列是持久状态，协程起来后会先扫一遍。
+	deadline := time.Now().Add(time.Second)
+	for buf.Len("k") > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if buf.Len("k") != 0 {
+		t.Fatalf("Run 之前投递的那条没被处理，剩余 %d", buf.Len("k"))
+	}
+
+	// 运行中调大：池子不动，不会凭空多出协程。
 	limit.Store(4)
 	if err := buf.Put(ctx, mustItem(t, NodeSync, "k", "1", struct{}{})); err != nil {
 		t.Fatal(err)
 	}
 	consumer.Submit("k")
-	if got := consumer.Workers(); got != 4 {
-		t.Fatalf("调大后协程数 = %d", got)
+	if got := consumer.Workers(); got != 1 {
+		t.Fatalf("运行中改并发数不该生效，实际协程数 %d，want 1", got)
 	}
-
-	limit.Store(2)
-	consumer.Submit("k")
-	deadline := time.Now().Add(time.Second)
-	for consumer.Workers() != 2 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if got := consumer.Workers(); got != 2 {
-		t.Fatalf("调小后协程数 = %d", got)
+	time.Sleep(20 * time.Millisecond)
+	if got := consumer.Workers(); got != 1 {
+		t.Fatalf("运行中改并发数不该生效，20ms 后协程数 %d，want 1", got)
 	}
 }
 
