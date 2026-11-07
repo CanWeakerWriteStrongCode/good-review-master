@@ -54,3 +54,4 @@
 | [0004](0004-update-before-insert.md) | 单行写入先 UPDATE，没命中才 INSERT | 已采纳 |
 | [0005](0005-orchestration-layer.md) | 各域由编排层用消息串联，不引消息队列 | 已采纳 |
 | [0006](0006-token-cost-cache-window.md) | 缓存窗口按 token 成本扩展，不按固定条数 | 已采纳 |
+| [0007](0007-judge-prompt-layers.md) | 判定提示词拆机械层与氛围层，人格片固定在最前 | 已采纳 |

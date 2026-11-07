@@ -174,6 +174,7 @@ sequenceDiagram
 ## 相关决策
 
 - 窗口按 token 成本扩还是重置：[ADR-0006](../adr/0006-token-cost-cache-window.md)
+- 判定为什么要分机械层与氛围层、人格为什么放最前：[ADR-0007](../adr/0007-judge-prompt-layers.md)
 
 ## 代码位置
 
