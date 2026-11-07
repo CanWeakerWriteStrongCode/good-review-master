@@ -162,9 +162,13 @@ func TestAddPersonaPrompt(t *testing.T) {
 	}
 }
 
-// TestProactiveJudgePrompt 验证主动插话裁判提示词从 prompt_system.yaml 的
-// internal.proactive_judge 读取；老配置没有这一段时退回内置默认值。
-func TestProactiveJudgePrompt(t *testing.T) {
+// TestProactiveJudge分层提示词 验证判官的五个内部提示词都从 prompt_system.yaml 读取，
+// 缺哪一段就退回哪一段的兜底值。
+//
+// 拆层不是重命名：升级前的 prompt_system.yaml 里只有旧的 proactive_judge，
+// 新 key 全部缺失。若它们不兜底，判官会拿到空字符串，只剩 user 里的聊天记录，
+// 于是“默认沉默”的开关失效——这是本测试盯住的那个后果。
+func TestProactiveJudge分层提示词(t *testing.T) {
 	dir := t.TempDir()
 	systemPath := filepath.Join(dir, "prompt_system.yaml")
 	customPath := filepath.Join(dir, "prompt_custom.yaml")
@@ -175,16 +179,46 @@ func TestProactiveJudgePrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载失败：%v", err)
 	}
-	if got := pc.ProactiveJudgePrompt(); got != defaultProactiveJudgePrompt {
-		t.Errorf("缺少 internal.proactive_judge 时应退回内置默认值，实际 %q", got)
+
+	layers := []struct {
+		key   string
+		value func() string
+		deflt string
+	}{
+		{"proactive_judge_role", pc.ProactiveJudgeRole, defaultProactiveJudgeRole},
+		{"proactive_judge_mechanical", pc.ProactiveJudgeMechanical, defaultProactiveJudgeMechanical},
+		{"proactive_judge_vibe", pc.ProactiveJudgeVibe, defaultProactiveJudgeVibe},
+		{"proactive_judge_output", pc.ProactiveJudgeOutput, defaultProactiveJudgeOutput},
+		{"proactive_judge_persona_intro", pc.JudgePersonaIntro, defaultJudgePersonaIntro},
+	}
+	for _, layer := range layers {
+		if got := layer.value(); got != layer.deflt {
+			t.Errorf("缺少 internal.%s 时应退回内置默认值，实际 %q", layer.key, got)
+		}
 	}
 
-	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+"\ninternal:\n  proactive_judge: \"配置里的裁判提示词\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(systemPath, []byte(promptSystemYAML+`
+internal:
+  proactive_judge_role: "配置里的外壳"
+  proactive_judge_mechanical: "配置里的机械层"
+  proactive_judge_vibe: "配置里的氛围层"
+  proactive_judge_output: "配置里的输出"
+  proactive_judge_persona_intro: "配置里的人格片"
+`), 0o600); err != nil {
 		t.Fatalf("写入失败：%v", err)
 	}
 	pc.Reload()
-	if got := pc.ProactiveJudgePrompt(); got != "配置里的裁判提示词" {
-		t.Errorf("应从 prompt_system.yaml 读取，实际 %q", got)
+	wants := map[string]string{
+		"proactive_judge_role":          "配置里的外壳",
+		"proactive_judge_mechanical":    "配置里的机械层",
+		"proactive_judge_vibe":          "配置里的氛围层",
+		"proactive_judge_output":        "配置里的输出",
+		"proactive_judge_persona_intro": "配置里的人格片",
+	}
+	for _, layer := range layers {
+		if got, want := layer.value(), wants[layer.key]; got != want {
+			t.Errorf("internal.%s 应从 prompt_system.yaml 读取 %q，实际 %q", layer.key, want, got)
+		}
 	}
 }
 
@@ -286,7 +320,8 @@ func TestPromptSystem示例含内置提示词(t *testing.T) {
 		t.Fatalf("内嵌模板解析失败：%v", err)
 	}
 	for _, key := range []string{
-		"reply_requirement", "add_persona", "proactive_judge",
+		"reply_requirement", "add_persona", "proactive_judge_role", "proactive_judge_mechanical",
+		"proactive_judge_vibe", "proactive_judge_output", "proactive_judge_persona_intro",
 		"proactive_requirement", "focus_context", "focus_last", "focus_mention", "reply_rewrite", "image_describe",
 	} {
 		if strings.TrimSpace(cfg.Internal[key]) == "" {

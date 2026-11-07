@@ -20,8 +20,9 @@ import (
 // 主动插话：没有被 @ 时，先让一个轻量"裁判"调用判断要不要接话，
 // 判定为要才走与普通 @ 相同的生成链路。设计上的四个关键点：
 //
-//  1. 两步：裁判只输出 {reply, reason}，不带人格、不带 MCP 工具；
-//     绝大多数消息止步于此，成本远低于每次都跑完整锐评。
+//  1. 两步：裁判只输出 {reply, long_form, focus, reason}，不带 MCP 工具；
+//     它拿到的是**判官视角的人格片**（只有身份/性格/与群友的关系，见 judge_persona.go），
+//     不是生成用的完整人格块。绝大多数消息止步于此，成本远低于每次都跑完整锐评。
 //  2. 默认沉默：解析失败、超时、报错一律按"不回"处理（fail closed）。
 //  3. 每 (工作空间, 群) 串行：Router 本来就是每工作空间一个，所以这里的
 //     状态表按 groupID 建键即可。运行期间新消息只覆盖单槽 pending（latest-wins），
@@ -365,16 +366,26 @@ func (r *Router) proactiveWindow(cand *proactiveCandidate, groupID string, cfg *
 
 // proactiveSystemPrompt 主动插话的 system prompt：在普通问答基础上换成
 // "主动参与"的要求（原始提示词里那句"根据最后@你的群友"在这里不成立）。
+//
+// 人格块与直答一样由 ComposeProactiveSystemPrompt 放在最前，焦点提示固在最后。
 func (r *Router) proactiveSystemPrompt(cfg *config.Config, event onebot.Event, groupID string, focusLast bool) string {
-	systemPrompt := ComposeProactiveSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ProactiveRequirement())
-	if b, ok := r.getGroupPersona(groupID); ok {
-		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
-	} else {
-		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
-	}
+	systemPrompt := ComposeProactiveSystemPrompt(cfg, event.BotID(), r.groupPersonaBlock(groupID),
+		r.promptCfg.ProactiveRequirement())
 	// 裁判判了回复焦点：把它作为最后一条关键提示词，决定按整段语境还是只盯最后一句组织回答。
 	systemPrompt += "\n" + r.promptCfg.FocusPrompt(focusLast)
 	return systemPrompt
+}
+
+// judgeSystemPrompt 拼主动判定与直答判定共用的 system prompt：
+// 人格片（群设了人格时才有）→ 判官外壳 → 机械层 → 氛围层 → 输出契约。
+//
+// 人格片按群变化，放最前面之后，同一个群后面的四段永远逐字节一致，
+// 于是每个群各自形成一条稳定的缓存前缀。没有群人格时只少第一段。
+func (r *Router) judgeSystemPrompt(groupID string) string {
+	if b, ok := r.getGroupPersona(groupID); ok {
+		return composeJudgeSystem(r.promptCfg, &b.persona)
+	}
+	return composeJudgeSystem(r.promptCfg, nil)
 }
 
 // judgeProactive 问裁判"这条要不要回"。任何失败都由调用方按"不回"处理。
@@ -396,10 +407,10 @@ func (r *Router) judgeProactive(ctx context.Context, groupID string, cand *proac
 		dataURLs = append(dataURLs, llm.DataURL(img.MIMEType, img.Data))
 	}
 	userText := buildJudgeText(window, cfg.BotNickname, cand.event.BotID(), len(dataURLs) > 0, mention)
-	// 裁判提示词来自 prompt_system.yaml 的 internal.proactive_judge（缺失时用内置默认值）。
+	// 裁判提示词来自 prompt_system.yaml 的 internal.proactive_judge_*（缺失时用内置默认值）。
 	// 内容必须逐字节稳定才能持续命中 prompt 缓存；动态内容都在 user 消息里。
 	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: r.promptCfg.ProactiveJudgePrompt()},
+		{Role: llm.RoleSystem, Content: r.judgeSystemPrompt(groupID)},
 		{Role: llm.RoleUser, Content: userText, ImageDataURLs: dataURLs},
 	}
 

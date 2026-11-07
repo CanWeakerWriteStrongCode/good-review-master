@@ -354,7 +354,7 @@ func (r *Router) imageCandidatesBlock(msgs []conversation.Message) string {
 // BuildUserMsg 组装发给大模型的 user message：聊天记录 + 该指令的提示词。
 // 「按最后一条消息回复/执行」与工具使用的固定要求只放在 system prompt（见 replyRequirement
 // 与 composeSystemPrompt），这里不再重复，避免同一条指令发两遍。
-// 人格块不在 user 消息里：由调用方渲染后拼进 systemPrompt（RouteMessage 关键字路由 / replyDefault 群人格）。
+// 人格块不在 user 消息里：由调用方渲染后交给 ComposeSystemPrompt 拼在最前（关键字路由传 route.Persona，直答与主动接话传 groupPersonaBlock）。
 //
 // 导出是给 tests/eval 用的（与 ComposeSystemPrompt 同理）：离线评测必须看到与线上逐字相同的输入。
 //

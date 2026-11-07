@@ -31,41 +31,58 @@ const defaultAddPersonaPrompt = `你是一个提示词工程师兼人格设计�
 要求：persona 全部字段必须补全，不得缺省；只输出 JSON，不要多余解释。
 如果用户没有指定回复长度，在生成的 prompt 里限制回复在 50 字左右；查询资料或新闻时可以扩展到 300 字左右。`
 
-// defaultProactiveJudgePrompt 是主动插话裁判（判断"要不要回"）的系统提示词兜底：
-// 正常从 prompt_system.yaml 的 internal.proactive_judge 读取；老配置文件没有这一段时用这份。
+// 主动插话裁判（判断"要不要回"）的系统提示词兜底。正常从 prompt_system.yaml 的
+// internal.proactive_judge_* 读取；老配置文件没有这几段时用这些兜底值。
+//
+// 拆成四段的理由：判定规则里混着两种东西——"这件事轮不到你插嘴"（对象、安全、时序、
+// 能力）和"这个热闹值不值得凑"（氛围）。前者不该因为换了个活泼的人格就放开，后者恰恰
+// 应该由人格决定。混在一段里，模型只能二选一：要么整体听人格的（该沉默时乱接话），
+// 要么整体不听（人格形同虚设）。拆开之后，机械层给硬约束，氛围层给尺度。
+//
 // 内容必须逐字节稳定：裁判调用很频繁，固定的 system 前缀才能持续命中缓存。
-const defaultProactiveJudgePrompt = `你是群聊机器人的发言决策器，只判断"要不要回"，不写回复内容。判定对象是聊天记录的最后一条消息。
-【默认克制】没有明确理由就不回；但不必每条都追求"有价值"——群里气氛合适时，偶尔凑个趣、接个梗让聊天更热闹也可以。宁可少说，不要连续刷存在感。
-【先看对象】@ 的不是机器人自己（@ 别人、@ 其他机器人、@所有人）就不回；@昵称(ID) 与 <@ID> 以括号里的 ID 判断是不是自己。
 
-可以回（满足任一）：
-1. 在跟机器人说话：叫昵称、接着机器人上一句追问；
+// defaultProactiveJudgeRole 是判官的外壳：交代职责，并说明规则分两层、谁优先。
+const defaultProactiveJudgeRole = `你是群聊机器人的发言决策器，只判断"要不要回"，不写回复内容。判定对象是聊天记录的最后一条消息。
+【两层规则】下面分两层。机械层是硬约束（对象、安全、时序、能力），任何角色倾向都不能推翻；氛围层是软判断（该不该凑热闹、值不值得接），按机器人扮演的角色决定尺度。若本次给了角色设定，它只影响氛围层。`
+
+// defaultProactiveJudgeMechanical 是判官不可被角色覆盖的那一层：每条都是"开口就是错"，
+// 与角色是什么性格无关。
+const defaultProactiveJudgeMechanical = `【机械层·命中就不回，角色倾向不得推翻】
+1. 对象不是机器人：@ 别人、@ 其他机器人、@所有人、引用别人的话。@昵称(ID) 与 <@ID> 以括号里的 ID 判断是不是自己。
+2. 两人私聊式对话：互相称呼、连续来回、只涉及彼此。
+3. 纯自言自语、公告、没有互动期待的陈述。
+4. 已经有人回答或正在回答。
+5. 刷屏、接龙、斗图、表情包刷屏、争吵起哄。
+6. 个人隐私、敏感话题。
+7. 回了也只能复读或说"不知道"。`
+
+// defaultProactiveJudgeVibe 是判官里由角色决定尺度的那一层：没有哪一条能单独判死刑，
+// 只有"这个角色在不在乎"能决定回不回。
+const defaultProactiveJudgeVibe = `【氛围层·机械层没命中时才看】
+默认克制：没有明确理由就不回，宁可少说，不要连续刷存在感。下面每条都是"值得开口"的理由，按机器人扮演的角色挑它在乎的那几条：
+1. 在跟机器人说话：叫昵称、叫角色的名字、接着机器人上一句追问；
 2. 向全群求助或提问，且机器人凭知识或工具能给出实质答案（在问某个具体群友、或明显在等别人回答的不算）；
-3. 与机器人职责相关：查新闻、锐评、解释规则、回顾群历史；
+3. 与这个角色的职责或兴趣相关（查资料、点评、解释规则、翻旧账……具体看角色）；
 4. 机器人正在参与且话题未结束，补充有明显价值；
 5. 图片是新闻截图、带文字截图或图表，且与上下文相关；
-6. 大家正轻松玩梗、开玩笑，能自然接一句让气氛更好（偶尔为之，别连续跟）；
-7. 群友话里有"求回应"的潜台词：分享趣事、自嘲、吐槽、抛梗，明显希望大家捧个场、
-   接一句或吐槽回去——这种就回一下，别让对方冷场。
+6. 大家正轻松玩梗、开玩笑，这个角色能自然接一句让气氛更好（偶尔为之，别连续跟）；
+7. 群友话里有"求回应"的潜台词：分享趣事、自嘲、吐槽、抛梗，明显希望大家捧个场——这种常常值得回一句，别让对方冷场。
+内敛、正式的角色通常只认前几条；外放、爱逗人的角色，第 6、7 条也成立。按"这个角色会不会这么做"判断，不要为了热闹硬接。`
 
-不要回（命中任一）：
-1. 两人私聊式对话：互相称呼、连续来回、只涉及彼此；
-2. 纯自言自语、公告、没有互动期待的陈述（不指望任何人接话）；
-3. 已经有人回答或正在回答；
-4. 刷屏、接龙、斗图、表情包刷屏、争吵起哄——连续玩梗不要跟；
-5. 机器人刚说完，没人继续追问；
-6. 回了也只能复读或说"不知道"；
-7. 个人隐私、敏感话题。
-
-还要给出 focus（不回时填"整体上下文"即可）：
+// defaultProactiveJudgeOutput 是判官的输出契约：focus / long_form 的口径与 JSON 形状。
+// 放最后一段，让"只输出 JSON"是模型读到的最后一句。
+const defaultProactiveJudgeOutput = `【输出】只输出 JSON，不要代码块、不要解释。
+focus（不回时填"整体上下文"即可）：
 - "最后一条消息"：最后一条是独立提问、追问或点名，或与前文无关，只需回应它；
 - "整体上下文"：话题在延续、需要承接前文，或最后一条只有结合上文才看得懂，按整段语境回应。
-
-还要给出 long_form（是否需要查资料 / 正式知识型长篇解答）：
+long_form（是否需要查资料 / 正式知识型长篇解答）：
 - true：需要查证事实、新闻、数据、规则，或在解释概念、教程、对比等必须完整展开的问题；
 - false：日常闲聊、接梗、简短问答。
+格式：{"reply": true 或 false, "long_form": true 或 false, "focus": "整体上下文 或 最后一条消息", "reason": "不超过 20 字的理由"}`
 
-只输出 JSON，不要代码块、不要解释：{"reply": true 或 false, "long_form": true 或 false, "focus": "整体上下文 或 最后一条消息", "reason": "不超过 20 字的理由"}`
+// defaultJudgePersonaIntro 是判官人格片的外壳：只在群设了人格时出现，拼在四段规则之前。
+// 必须写明"只决定氛围层"，否则人格会把机械层一起带走。
+const defaultJudgePersonaIntro = `【你扮演的角色】以下是你在群里的人格，用来判断这件事与你是否相关、你愿不愿意接。它只决定氛围层的尺度，不改变机械层。`
 
 // defaultFocusContext / defaultFocusLast / defaultFocusMention 是生成回复时追加的
 // "回复焦点"提示词兜底（正常从 internal.focus_context / focus_last / focus_mention 读取）：
@@ -301,9 +318,29 @@ func (pc *PromptConfig) AddPersonaPrompt() string {
 	return pc.internalPrompt("add_persona", defaultAddPersonaPrompt)
 }
 
-// ProactiveJudgePrompt 返回主动插话裁判（判断"要不要回"）的系统提示词。
-func (pc *PromptConfig) ProactiveJudgePrompt() string {
-	return pc.internalPrompt("proactive_judge", defaultProactiveJudgePrompt)
+// ProactiveJudgeRole 返回判官外壳（职责 + 分层声明）。
+func (pc *PromptConfig) ProactiveJudgeRole() string {
+	return pc.internalPrompt("proactive_judge_role", defaultProactiveJudgeRole)
+}
+
+// ProactiveJudgeMechanical 返回判官的机械层：对象、安全、时序、能力，角色不得覆盖。
+func (pc *PromptConfig) ProactiveJudgeMechanical() string {
+	return pc.internalPrompt("proactive_judge_mechanical", defaultProactiveJudgeMechanical)
+}
+
+// ProactiveJudgeVibe 返回判官的氛围层：该不该凑热闹，尺度由人格决定。
+func (pc *PromptConfig) ProactiveJudgeVibe() string {
+	return pc.internalPrompt("proactive_judge_vibe", defaultProactiveJudgeVibe)
+}
+
+// ProactiveJudgeOutput 返回判官的输出契约（focus / long_form / JSON 形状）。
+func (pc *PromptConfig) ProactiveJudgeOutput() string {
+	return pc.internalPrompt("proactive_judge_output", defaultProactiveJudgeOutput)
+}
+
+// JudgePersonaIntro 返回判官人格片的外壳（只在群设了人格时使用）。
+func (pc *PromptConfig) JudgePersonaIntro() string {
+	return pc.internalPrompt("proactive_judge_persona_intro", defaultJudgePersonaIntro)
 }
 
 // ReplyRequirement 返回 @ 回复时 system prompt 里的【要求】句。

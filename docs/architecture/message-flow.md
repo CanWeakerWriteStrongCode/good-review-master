@@ -235,8 +235,8 @@ return WorkflowChat   // 现在只有一条工作流
 | `appCfg()` 快照 | `speech/router.go` | 开头取一次全程共用，避免「新模型名 + 旧昵称」这种混合提示词 |
 | `stripCQPrefix` | `speech/dispatch.go` | 剥掉开头的 `@机器人` / 昵称前缀 |
 | `trieMatch` | `speech/command.go` | 命中关键字就拿到 `*Command` |
-| `ComposeSystemPrompt` | `speech/prompt.go` | 机器人身份 + 人格块 + 回复要求 + 焦点提示，拼成 system prompt |
-| `groupPersona` | `speech/router.go` | 本群当前人格（`#切换人格` 维护），只在「未命中关键字的纯 @」时追加 |
+| `ComposeSystemPrompt` | `speech/prompt.go` | 人格块（最前）+ 机器人身份 + 聊天记录约定 + 回复要求 + 焦点提示（最后），拼成 system prompt |
+| `groupPersona` | `speech/router.go` | 本群当前人格（`#切换人格` 维护），只在「未命中关键字的纯 @」与主动接话里生效（`groupPersonaBlock`）；关键字路由用自带的 `route.Persona` |
 | `HandlerFunc` | `speech/command.go` | 功能指令如 `chat_review` 的处理器；`Handler` 为 nil 或未命中时走 `replyDefaultNow` |
 
 三条岔路：

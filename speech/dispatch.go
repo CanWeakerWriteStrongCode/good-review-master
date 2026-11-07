@@ -40,7 +40,8 @@ func (r *Router) ReplyAddressedNow(ctx context.Context, content string, event on
 	cfg := r.appCfg()
 	// 与 routeMessage 同一个剥前缀函数：这里不匹配关键字，但正文仍要去掉 @昵称。
 	text := stripCQPrefix(content, cfg)
-	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement(), "")
+	systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), r.groupPersonaBlock(groupID),
+		r.promptCfg.ReplyRequirement(), r.directFocusPrompt(event))
 	r.replyDefaultNow(ctx, text, event, groupID, systemPrompt, snapshot)
 }
 
@@ -73,9 +74,10 @@ func (r *Router) routeMessage(ctx context.Context, content string, event onebot.
 		route = trieMatch(r.table.Load().trie, text)
 	}
 	if route == nil {
-		// 未命中：走普通问答（replyDefault 会视群人格再补一段）
-		// 焦点提示由 replyDefault 在人格块之后追加，保证它是最后一条指令。
-		systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), "", r.promptCfg.ReplyRequirement(), "")
+		// 未命中：走普通问答。人格块与焦点提示在这里一次拼好：
+		// 人格在最前（先立角色），焦点在最后（决定这次回应到哪）。
+		systemPrompt := ComposeSystemPrompt(cfg, event.BotID(), r.groupPersonaBlock(groupID),
+			r.promptCfg.ReplyRequirement(), r.directFocusPrompt(event))
 		if sync {
 			r.replyDefaultNow(ctx, text, event, groupID, systemPrompt, snapshot)
 		} else {
@@ -119,28 +121,16 @@ func (r *Router) routeMessage(ctx context.Context, content string, event onebot.
 }
 
 // replyDefault @bot 但未匹配任何指令：直接发给大模型。
-// systemPrompt 只含机器人身份（模型名+昵称），不带指令共享规则；若本群已 #切换人格，
-// 则在末尾追加渲染好的人格块（仅纯 @ 聊天生效）；否则显式声明当前是普通问答、
-// 不代入任何人格，避免模型曾在被切换过人格的群里继续沿用旧人设。
+//
+// systemPrompt 由调用方用 ComposeSystemPrompt 拼好（人格块在最前，焦点提示在最后），
+// 这里不再往里加任何东西：人格段是 prompt 的事，不是分发的事。
 // 复用 chatReview 的缓存窗口/回复/锚点逻辑。
 func (r *Router) replyDefault(ctx context.Context, text string, event onebot.Event, groupID string, systemPrompt string) {
-	if b, ok := r.getGroupPersona(groupID); ok {
-		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
-	} else {
-		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
-	}
-	systemPrompt += "\n" + r.directFocusPrompt(event)
 	r.chatReview(ctx, event, groupID, systemPrompt, "", r.nameOf(groupID, event.UserID), text)
 }
 
 // replyDefaultNow 是 replyDefault 的同步版本，供 agent 使用。
 func (r *Router) replyDefaultNow(ctx context.Context, text string, event onebot.Event, groupID, systemPrompt string, snapshot []conversation.Message) {
-	if b, ok := r.getGroupPersona(groupID); ok {
-		systemPrompt += "\n" + RenderPersona(b.persona, b.sharedRules)
-	} else {
-		systemPrompt += "\n当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
-	}
-	systemPrompt += "\n" + r.directFocusPrompt(event)
 	logutil.InfoCtx(ctx, "触发锐评", "group", groupID, "user", r.nameOf(groupID, event.UserID), "user_id", event.UserID)
 	reply, err := r.Generate(ctx, replyParams{
 		event: event, groupID: groupID, systemPrompt: systemPrompt,

@@ -9,8 +9,8 @@ import (
 	"good-review-master/config"
 )
 
-// RenderPersona 把人格渲染成提示片段（纯函数），由调用方追加到 systemPrompt 末尾：
-// RouteMessage 关键字路由渲染 route.Persona；replyDefault 群人格渲染 #切换人格 的快照。
+// RenderPersona 把人格渲染成提示片段（纯函数），由 ComposeSystemPrompt 统一放在 systemPrompt 最前面：
+// RouteMessage 关键字路由传 route.Persona；直答与主动接话传 groupPersonaBlock（#切换人格 的快照）。
 // 渲染顺序：身份 → 性格 → 与群友的关系 → 人格级系统指令 → 情绪维度 → 该指令的共享规则。
 // 只保留 essence 字段；说话方式不预设，由 LLM 依据性格+情绪维度自然生成。
 func RenderPersona(p config.Persona, sharedRules string) string {
@@ -23,6 +23,21 @@ func RenderPersona(p config.Persona, sharedRules string) string {
 	writeJSONLine(&b, "情绪维度", p.Emotion)
 	b.WriteString("\n" + sharedRules + "\n")
 	return b.String()
+}
+
+// groupPersonaBlock 返回要拼进 system prompt 的人格段：本群设了人格就渲染，
+// 没设就写一句"普通问答模式"。
+//
+// 后半句不是客套：群曾 #切换人格 过、后来又删了那个人格时，不显式声明
+// "当前无人格"，模型会顺着聊天记录里的旧人设继续演。
+//
+// 调用方一律把它交给 ComposeSystemPrompt，由那里统一放在最前面——
+// 各条链路自己 += 人格块时，挪一次顺序就要改四处处方，漏一处就变成"人格在末尾"。
+func (r *Router) groupPersonaBlock(groupID string) string {
+	if b, ok := r.getGroupPersona(groupID); ok {
+		return RenderPersona(b.persona, b.sharedRules)
+	}
+	return "当前无指定人格，现在是普通大模型问答模式：请如实正常回答，不要代入任何虚构人格或角色。"
 }
 
 // writeJSONLine 写入缩进后的 JSON 字段（json.Indent），失败则回退原始文本

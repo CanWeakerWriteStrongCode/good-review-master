@@ -2,6 +2,7 @@ package speech
 
 import (
 	"fmt"
+	"strings"
 
 	"good-review-master/config"
 	"good-review-master/onebot"
@@ -12,10 +13,14 @@ import (
 // 否则"评测全绿、线上照样回归"。
 
 // ComposeSystemPrompt 拼装发给大模型的 system prompt：
-// 机器人身份（模型名 / 昵称 / 稳定 ID）+ 聊天记录约定 + 可选的人格块 + 末尾的回复焦点提示。
+// 可选的人格块 + 机器人身份（昵称 / 稳定 ID）+ 聊天记录约定 + 【要求】句 + 末尾的回复焦点提示。
 // botID 为空时省略 ID 行（例如离线评测或拿不到 bot 身份时）。
 // requirement 是【要求】句，focus 是回复焦点提示（空串表示不追加），直答分别传
 // promptCfg.ReplyRequirement() / directFocusPrompt(event)（群 @ 用 mention 版，私聊用 focus_last）。
+//
+// 人格块放最前面：先立"你是谁"，再讲工具、聊天记录与要求——人格是对整段回答的总前提，
+// 而不是对某条规则的补充说明。整段 system 每轮都不变（变的是 user 里的聊天记录），
+// 所以段内顺序不影响缓存命中范围，只影响模型怎么理解指令的主次。
 func ComposeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement, focus string) string {
 	systemPrompt := composeSystemPrompt(cfg, botID, personaBlock, requirement)
 	if focus != "" {
@@ -75,10 +80,10 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement st
 	if identity != "" {
 		identity += "。"
 	}
-	// 开头不写「你是一个AI，模型是XXX」：模型自己就是 AI，这句话没有信息量；
-	// 写死模型名更糟——换一次模型或改一次别名，整段前缀就从头断开，而这是所有请求
-	// 最前面、最值钱的那几十个 token。身份由下面的 identity 行交代。
-	systemPrompt := fmt.Sprintf("【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
+	// 正文开头不写「你是一个AI，模型是XXX」：模型自己就是 AI，这句话没有信息量；
+	// 写死模型名更糟——换一次模型或改一次别名，整段前缀就从头断开。
+	// 身份由下面这行 identity 交代。
+	body := fmt.Sprintf("【工具使用】当用户询问真实信息时，应调用对应MCP工具，禁止自行编造答案。"+
 		"%s【聊天记录】每行一条群消息，message_id 是这条消息的编号（同一条消息每次都一样，按它引用），user_id 是发言者的稳定ID，nickname 是昵称，message 是正文；"+
 		"@昵称(ID) 表示 @ 了该用户，昵称可能变化，以括号里的 ID 为准。"+
 		"reply_id 表示该消息引用了哪条 message_id。"+
@@ -88,8 +93,10 @@ func composeSystemPrompt(cfg *config.Config, botID, personaBlock, requirement st
 	// 窗口里真有图时，user 消息尾部会拼【群内图片候选】段（imageCandidatesBlock），
 	// 里面已经写了"候选只是文字 / low 不看 / url 逐字复制 / 最多看 N 张 / 别编造"。
 	// 固定写在 system 里等于没图的请求白付两百字符，而且和那段重复。
-	if personaBlock != "" {
-		systemPrompt += "\n" + personaBlock
+	if personaBlock == "" {
+		return body
 	}
-	return systemPrompt
+	// 人格块自身以换行结尾（RenderPersona 的最后一行），这里统一抹掉再只补一个换行，
+	// 不靠调用方恰好传了带尾随换行的字符串。
+	return strings.TrimRight(personaBlock, "\n") + "\n" + body
 }

@@ -34,6 +34,7 @@
 | `command.go` | 指令表：前缀树 + 整表原子替换 |
 | `judge.go` | 判定：这条消息冲谁来（`IsAddressed`）、要不要主动接话 |
 | `proactive.go` | 主动接话：裁判 + 每群串行 worker + 三重限流 |
+| `judge_persona.go` | 判官视角的人格片：只取身份/性格/与群友的关系，拼在判官 system 最前面 |
 | `generate.go` | 生成：选窗 → 拼 user 消息 → 调模型，有工具就进多轮 |
 | `mcp_loop.go` | 工具轮：执行调用、截断结果、回填、直到模型给出文本 |
 | `reply_format.go` | 排版：把长回复拆成最多 N 句 |
@@ -99,6 +100,21 @@ sequenceDiagram
   D->>D: 记 send_ledger
 ```
 
+## system prompt 的拼装顺序
+
+三条链路（关键字命中 / 直答 / 主动接话）共用 `ComposeSystemPrompt`，段序固定：
+
+| # | 段 | 来源 |
+| --- | --- | --- |
+| 1 | 人格块 | 关键字路由用 `route.Persona`；直答与主动接话用 `groupPersonaBlock`（群人格，没设时是一句“普通问答模式”） |
+| 2 | 【工具使用】 | 写死在 `composeSystemPrompt` |
+| 3 | 身份行（昵称 / 稳定 ID） | `cfg.BotNickname` + `event.BotID()` |
+| 4 | 【聊天记录】字段约定 | 写死 |
+| 5 | 【要求】 | `reply_requirement`（主动接话换成 `proactive_requirement`） |
+| 6 | 【回复焦点】 | `focus_mention` / `focus_last` / `focus_context`，永远是最后一句 |
+
+人格放最前、焦点放最后：先立角色，再讲怎么干活，最后一句决定这次回应到哪。整段 system 每轮都不变（变的是 user 里的聊天记录），所以段内顺序不影响缓存命中范围——人格不会因为“聊天记录一变”就不命中。
+
 ## 要不要回
 
 被 @ 或被叫昵称，`IsAddressed` 返回 true，走上面那条路。没被点名的消息交给主动插话，要过三道闸：
@@ -112,6 +128,22 @@ sequenceDiagram
 再加一道超时：单次判定超过 `proactive_judge_timeout_sec` 一律按"不回"处理。`proactive_judge_images` 控制判定时能不能附图片（0 = 纯图片消息不判）。
 
 三重闸之外，`bot.handleAgent` 还做了一层：只有 `agent` 节点没有积压时才判，且一批只看最后一条。这是为了刷屏时不重复烧裁判的钱。
+
+### 裁判也看人格，但只看气氛那一层
+
+判官的 system prompt 由五段拼成，顺序就是拼装顺序（`prompt_system.yaml` 的 `internal.proactive_judge_*`）：
+
+| 段 | 内容 | 谁能改它 |
+| --- | --- | --- |
+| 人格片 | 身份 / 性格特质 / 与群友的关系（`judge_persona.go`） | 群人格；没设人格时整段不出现 |
+| `_role` | 职责 + 两层规则的优先关系 | 配置 |
+| `_mechanical` | 对象、安全、时序、能力：命中就不回 | 只由配置改，角色改不动 |
+| `_vibe` | 该不该凑热闹、值不值得接 | 角色决定尺度（雌小鬼乐意拆台，教师只回应问题） |
+| `_output` | focus / long_form 的口径与 JSON 形状 | 配置 |
+
+人格片里**没有** `system_prompt`（人格级输出要求）、共享规则和 `emotion`：前两个会让判官以为自己要写回复并与机械层打架，`emotion` 对"该不该开口"没有稳定影响。也就是说，人格在这里不是"以什么身份说话"，而是"这个角色在乎什么、会把哪种话接下去"。
+
+人格片放在最前面：它按群变化，之后的四段对同一个群永远逐字节一致，于是每个群各自形成一条稳定的缓存前缀。放最后能跨群共享前缀，但那样判官读到的是"规则 → 角色"，角色被推到末尾，基本不起作用。
 
 ## 工具轮
 

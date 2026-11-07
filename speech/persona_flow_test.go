@@ -96,7 +96,7 @@ rules:
 		t.Fatal("FakeLLM 未被调用（异步 handler 未执行完成）")
 	}
 
-	// 5. 断言：人格渲染进 systemPrompt（关键字路由 route.Persona → systemPrompt 末尾），
+	// 5. 断言：人格渲染进 systemPrompt（关键字路由 route.Persona，放在最前面），
 	// user 消息（chatLog）只含聊天记录 + @者信息 + 关键词 prompt，不携带人格块。
 	systemPrompt := calls[0].SystemPrompt
 	chatLog := calls[0].ChatLog
@@ -114,8 +114,9 @@ rules:
 	if !strings.Contains(systemPrompt, "情绪反应性") {
 		t.Fatalf("systemPrompt 未包含情绪维度:\n%s", systemPrompt)
 	}
-	// 人格块在 systemPrompt 中位于身份头之后
-	if strings.Index(systemPrompt, "【人格】") <= strings.Index(systemPrompt, "你的昵称是") {
-		t.Fatalf("人格应位于身份头之后的 systemPrompt:\n%s", systemPrompt)
+	// 人格块在 systemPrompt 最前面：先立角色，再讲工具、聊天记录与要求
+	at, head := strings.Index(systemPrompt, "【人格】"), strings.Index(systemPrompt, "【工具使用】")
+	if at != 0 || head <= at {
+		t.Fatalf("人格应在 systemPrompt 最前面（【工具使用】之前）:\n%s", systemPrompt)
 	}
 }
